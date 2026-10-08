@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.angular/
+.env
+.env.*
+!.env.example
+backend/data/
+.vercel
+.DS_Store
+Thumbs.db

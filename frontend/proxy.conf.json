@@ -1,0 +1,32 @@
+{
+  "/session": {
+    "target": "http://127.0.0.1:3000",
+    "secure": false,
+    "changeOrigin": true
+  },
+  "/catalog": {
+    "target": "http://127.0.0.1:3000",
+    "secure": false,
+    "changeOrigin": true
+  },
+  "/checks": {
+    "target": "http://127.0.0.1:3000",
+    "secure": false,
+    "changeOrigin": true
+  },
+  "/reports": {
+    "target": "http://127.0.0.1:3000",
+    "secure": false,
+    "changeOrigin": true
+  },
+  "/admin": {
+    "target": "http://127.0.0.1:3000",
+    "secure": false,
+    "changeOrigin": true
+  },
+  "/preview": {
+    "target": "http://127.0.0.1:3000",
+    "secure": false,
+    "changeOrigin": true
+  }
+}

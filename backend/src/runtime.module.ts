@@ -1,0 +1,59 @@
+import { DynamicModule, Global, Module } from '@nestjs/common';
+import { AiClient } from './ai/ai.client';
+import { AioClient } from './aio/aio.client';
+import { AppConfig } from './config';
+import { LighthouseRunner } from './lighthouse/lighthouse';
+import { Repos } from './storage/repos';
+import { StaticChecks } from './static/static-checks';
+import {
+  APP_CONFIG,
+  CATALOG_REPO,
+  COSTS_REPO,
+  REPORTS_REPO,
+  RULES_REPO,
+  USERS_REPO,
+} from './tokens';
+
+export interface Runtime {
+  config: AppConfig;
+  repos: Repos;
+  aio: AioClient;
+  ai: AiClient;
+  lighthouse: LighthouseRunner;
+  staticChecks: StaticChecks;
+}
+
+@Global()
+@Module({})
+export class RuntimeModule {
+  static register(runtime: Runtime): DynamicModule {
+    return {
+      module: RuntimeModule,
+      global: true,
+      providers: [
+        { provide: APP_CONFIG, useValue: runtime.config },
+        { provide: USERS_REPO, useValue: runtime.repos.users },
+        { provide: CATALOG_REPO, useValue: runtime.repos.catalog },
+        { provide: REPORTS_REPO, useValue: runtime.repos.reports },
+        { provide: RULES_REPO, useValue: runtime.repos.rules },
+        { provide: COSTS_REPO, useValue: runtime.repos.costs },
+        { provide: AioClient, useValue: runtime.aio },
+        { provide: AiClient, useValue: runtime.ai },
+        { provide: LighthouseRunner, useValue: runtime.lighthouse },
+        { provide: StaticChecks, useValue: runtime.staticChecks },
+      ],
+      exports: [
+        APP_CONFIG,
+        USERS_REPO,
+        CATALOG_REPO,
+        REPORTS_REPO,
+        RULES_REPO,
+        COSTS_REPO,
+        AioClient,
+        AiClient,
+        LighthouseRunner,
+        StaticChecks,
+      ],
+    };
+  }
+}
