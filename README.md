@@ -1,48 +1,50 @@
 # QA Assistant
 
-Два независимых npm-пакета, без корневого `package.json`.
+Два независимых npm-пакета в одном репозитории, без корневого `package.json`.
 
-- `frontend/` — Angular 21 (`qa-assistant`). Сборка из каталога `frontend/`: `npm ci && npm run build`. Статика с `index.html` лежит в `frontend/dist/qa-assistant/browser`. Роутер path-based, нужен SPA fallback на `index.html`. `apiBaseUrl` пустой: запросы идут на тот же origin. В dev проксируются префиксы `/session`, `/catalog`, `/checks`, `/reports`, `/admin`, `/preview`.
-- `backend/` — NestJS, Postgres, сессии в памяти, файлы в локальном `WORK_DIR`, опционально Lighthouse/Chrome. Это долгоживущий процесс с диском. На Vercel (serverless) его не переносят.
+- `frontend/` — Angular 21 (`qa-assistant`). В dev `apiBaseUrl` пустой: запросы идут через прокси dev-сервера на порт Nest. Production-сборка подставляет origin API из `API_BASE_URL`.
+- `backend/` — NestJS. Postgres (Neon), сессии в памяти процесса, файлы в `WORK_DIR`. Точка входа — `src/main.ts`: `bootstrap()` вызывает `app.listen()`.
 
-## Деплой (Vercel + GitHub)
+## Два проекта Vercel
 
-На Vercel публикуется только статический фронтенд. API остаётся на отдельном хосте.
+Оба проекта создаются из ветки `main` одного и того же GitHub-репозитория. У каждого свой Root Directory.
 
-1. Импортируйте GitHub-репозиторий в Vercel.
-2. **Root Directory** — корень репозитория (не `frontend/`).
-3. **Framework Preset:** Other.
-4. **Node.js:** 22.x (Angular 21).
-5. Команды установки, сборки и каталог артефакта берутся из корневого `vercel.json`. Вручную их дублировать не нужно.
-6. Переменные API в проект Vercel не добавляйте. Фронтенд их не читает.
+### Фронтенд
 
-Пока постоянного API-хоста нет, сайт — статика. Логин не заработает, пока rewrites не проксируют префиксы API. Это ожидаемо.
+- **Root Directory:** `frontend`
+- **Framework Preset:** Other
+- **Node.js:** 22.x
+- Команды сборки и каталог артефакта берутся из `frontend/vercel.json`: `node scripts/apply-api-base.mjs && npm run build`, выход `dist/qa-assistant/browser`, SPA fallback на `index.html`.
 
-Когда появится постоянный HTTPS-хост API (контейнер или VM, не Vercel), добавьте эти rewrites **выше** SPA fallback в `vercel.json`. `API_ORIGIN` — хост без схемы в пути, подставьте реальный origin:
+Переменная сборки `API_BASE_URL` — origin бэкенд-проекта, без завершающего слэша. Секреты API в проект фронтенда не добавляйте.
 
-```json
-{ "source": "/session", "destination": "https://API_ORIGIN/session" },
-{ "source": "/session/:path*", "destination": "https://API_ORIGIN/session/:path*" },
-{ "source": "/catalog", "destination": "https://API_ORIGIN/catalog" },
-{ "source": "/catalog/:path*", "destination": "https://API_ORIGIN/catalog/:path*" },
-{ "source": "/checks", "destination": "https://API_ORIGIN/checks" },
-{ "source": "/checks/:path*", "destination": "https://API_ORIGIN/checks/:path*" },
-{ "source": "/reports", "destination": "https://API_ORIGIN/reports" },
-{ "source": "/reports/:path*", "destination": "https://API_ORIGIN/reports/:path*" },
-{ "source": "/admin", "destination": "https://API_ORIGIN/admin" },
-{ "source": "/admin/:path*", "destination": "https://API_ORIGIN/admin/:path*" },
-{ "source": "/preview", "destination": "https://API_ORIGIN/preview" },
-{ "source": "/preview/:path*", "destination": "https://API_ORIGIN/preview/:path*" }
-```
+### Бэкенд
 
-### Хост API
+- **Root Directory:** `backend`
+- **Framework Preset:** NestJS. Vercel находит `src/main.ts` и запускает существующий `bootstrap()` / `app.listen()` одной Function.
+- Поля Install, Build и Output не переопределяйте.
 
-Из каталога `backend/`:
+Переменные окружения — из `backend/.env.example`, на проекте бэкенда. Дополнительно:
 
-```bash
-npm ci && npm run build && npm start
-```
+- `FRONTEND_ORIGIN` — origin фронтенд-проекта (несколько значений через запятую, без завершающего слэша).
+- `LIGHTHOUSE_MODE=stub`
+- `CATALOG_AUTO_REFRESH=0`
+- `PUBLIC_BASE_URL` — origin бэкенд-проекта (ссылки превью), не origin фронтенда.
 
-Секреты задаются только в окружении этого хоста. Имена — в `backend/.env.example`. Реальные значения в репозиторий не класть. `LIGHTHOUSE_MODE=stub`, пока на хосте нет Chrome. `PUBLIC_BASE_URL` должен совпадать с origin сайта на Vercel, когда `/preview` уже проксируется.
+### Порядок
 
-Chrome и Lighthouse на Vercel не запускаются. Nest в serverless-функцию не переносится. Сессии и `WORK_DIR` требуют одного долгоживущего процесса и диска.
+1. Сначала задеплойте API.
+2. Скопируйте URL API в `API_BASE_URL` проекта фронтенда и задеплойте фронтенд заново.
+3. Задайте на API `FRONTEND_ORIGIN` (origin фронтенда) и `PUBLIC_BASE_URL` (origin API) и задеплойте API заново.
+
+### Сессия
+
+Логин возвращает `session_id` в JSON. Перехватчик Angular отправляет его заголовком `X-Session-Id`. Общая cookie на два домена не нужна. CORS бэкенда разрешает этот заголовок и `credentials`. Пока `FRONTEND_ORIGIN` пуст, бэкенд отражает origin запроса, чтобы вызовы с cookies и заголовком сессии проходили до того, как URL фронтенда известен. Когда переменная задана, разрешены только перечисленные origin.
+
+### Ограничения на Vercel
+
+Сессии и состояние проверок живут в памяти: холодный старт или второй инстанс их стирает. Распаковка лендингов требует диска — проверки, которые распаковывают zip, на Vercel не проходят. Lighthouse и Chrome недоступны. Интервал обновления каталога между запросами не тикает.
+
+## Локальный запуск
+
+В каталоге `frontend/` и в каталоге `backend/` — `npm start`. Скрипт backend запускает `dist/main.js`, поэтому перед первым запуском выполните `npm run build`. Имена секретов — в `backend/.env.example`. Реальные значения в репозиторий не класть.

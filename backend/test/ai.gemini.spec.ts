@@ -23,6 +23,7 @@ function geminiConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     standBrandName: 'Brand',
     standCdnBase: '',
     catalogAutoRefresh: false,
+    frontendOrigin: [],
     aioNotifyPollMs: 1,
     aioNotifyPollsPerAttempt: 2,
     aiMode: 'real',

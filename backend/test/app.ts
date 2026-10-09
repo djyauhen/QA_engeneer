@@ -48,6 +48,7 @@ export async function createTestApp(options?: {
     standBrandName: 'Acme',
     standCdnBase: '',
     catalogAutoRefresh: false,
+    frontendOrigin: [],
     aioNotifyPollMs: 1,
     aioNotifyPollsPerAttempt: 2,
     aiMode: 'stub',

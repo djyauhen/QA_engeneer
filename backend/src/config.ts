@@ -10,6 +10,7 @@ export interface AppConfig {
   workDir: string;
   port: number;
   publicBaseUrl: string;
+  frontendOrigin: string[];
   standFormHtml: string;
   standBrandName: string;
   standCdnBase: string;
@@ -66,6 +67,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       /\/$/,
       '',
     ),
+    frontendOrigin: parseFrontendOrigin(env.FRONTEND_ORIGIN),
     standFormHtml: env.STAND_FORM_HTML ?? '<div data-stand-form="1"></div>',
     standBrandName: env.STAND_BRAND_NAME ?? 'Brand',
     standCdnBase: env.STAND_CDN_BASE ?? '',
@@ -83,6 +85,14 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     lighthouseChromePath: env.LIGHTHOUSE_CHROME_PATH ?? '',
     bcryptRounds: positiveInt(env.BCRYPT_ROUNDS, 10),
   };
+}
+
+function parseFrontendOrigin(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
+    .filter((origin) => origin.length > 0);
 }
 
 function positiveInt(raw: string | undefined, fallback: number): number {

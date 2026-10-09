@@ -8,7 +8,11 @@ import { APP_CONFIG } from './tokens';
 export function configureApp(app: INestApplication): void {
   const config = app.get<AppConfig>(APP_CONFIG);
   app.useGlobalFilters(new RedactingFilter(config));
-  app.enableCors();
+  app.enableCors({
+    origin: config.frontendOrigin.length > 0 ? config.frontendOrigin : true,
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'X-Session-Id', 'Authorization'],
+  });
   const preview = app.get(PreviewService);
   app.use('/preview', (req: Request, res: Response, next: NextFunction) => {
     void preview.handle(req, res).catch(next);
