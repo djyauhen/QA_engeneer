@@ -76,7 +76,7 @@ describe('session and users', () => {
       .send({ login: 'qa-missing', password: 'wrong-pass' });
     expect(qaBad.body).toEqual(qaMissing.body);
 
-    for (const path of ['/admin/users', '/admin/rules', '/admin/costs']) {
+    for (const path of ['/admin/users', '/admin/rules', '/admin/costs', '/admin/catalog-query']) {
       const denied = await request(http.getHttpServer()).get(path).set('x-session-id', qaLogin.body.session_id);
       expect(denied.status).toBe(403);
       expect(denied.body).toEqual({ error: 'forbidden', message: 'Недостаточно прав' });

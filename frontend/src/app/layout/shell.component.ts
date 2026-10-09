@@ -22,6 +22,7 @@ import { ApiService } from '../core/api.service';
           <a routerLink="/costs" routerLinkActive="active">Затраты</a>
           <a routerLink="/config" routerLinkActive="active">Конфиг</a>
           <a routerLink="/users" routerLinkActive="active">Пользователи</a>
+          <a routerLink="/catalog-query" routerLinkActive="active">Каталог AIO</a>
         }
         <button type="button" class="secondary logout" (click)="logout()">Выйти</button>
       </aside>

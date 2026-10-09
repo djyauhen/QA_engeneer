@@ -7,6 +7,7 @@ import { Repos } from './storage/repos';
 import { StaticChecks } from './static/static-checks';
 import {
   APP_CONFIG,
+  CATALOG_QUERY_REPO,
   CATALOG_REPO,
   COSTS_REPO,
   REPORTS_REPO,
@@ -34,6 +35,7 @@ export class RuntimeModule {
         { provide: APP_CONFIG, useValue: runtime.config },
         { provide: USERS_REPO, useValue: runtime.repos.users },
         { provide: CATALOG_REPO, useValue: runtime.repos.catalog },
+        { provide: CATALOG_QUERY_REPO, useValue: runtime.repos.catalogQuery },
         { provide: REPORTS_REPO, useValue: runtime.repos.reports },
         { provide: RULES_REPO, useValue: runtime.repos.rules },
         { provide: COSTS_REPO, useValue: runtime.repos.costs },
@@ -46,6 +48,7 @@ export class RuntimeModule {
         APP_CONFIG,
         USERS_REPO,
         CATALOG_REPO,
+        CATALOG_QUERY_REPO,
         REPORTS_REPO,
         RULES_REPO,
         COSTS_REPO,

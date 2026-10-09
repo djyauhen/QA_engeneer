@@ -4,7 +4,8 @@ import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 import {
   AdminRules,
-  CatalogItem,
+  CatalogPayload,
+  CatalogQuery,
   CheckView,
   ReportListItem,
   ReportPayload,
@@ -29,12 +30,20 @@ export class ApiService {
     return this.http.delete<{ ok: boolean }>(this.url('/session'));
   }
 
-  catalog(): Observable<{ items: CatalogItem[] }> {
-    return this.http.get<{ items: CatalogItem[] }>(this.url('/catalog'));
+  catalog(): Observable<CatalogPayload> {
+    return this.http.get<CatalogPayload>(this.url('/catalog'));
   }
 
-  refreshCatalog(): Observable<{ items: CatalogItem[] }> {
-    return this.http.post<{ items: CatalogItem[] }>(this.url('/catalog/refresh'), {});
+  refreshCatalog(): Observable<CatalogPayload> {
+    return this.http.post<CatalogPayload>(this.url('/catalog/refresh'), {});
+  }
+
+  catalogQuery(): Observable<CatalogQuery> {
+    return this.http.get<CatalogQuery>(this.url('/admin/catalog-query'));
+  }
+
+  saveCatalogQuery(body: CatalogQuery): Observable<CatalogQuery> {
+    return this.http.put<CatalogQuery>(this.url('/admin/catalog-query'), body);
   }
 
   startCheck(body: { human_id: string; uuid?: string }): Observable<{ check_id: string }> {

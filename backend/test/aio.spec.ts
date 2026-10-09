@@ -1,4 +1,5 @@
 import { HttpAioClient, buildTablesBody, collectCatalogRows } from '../src/aio/aio.client';
+import { CatalogQuery } from '../src/catalog/catalog-query';
 import { AppConfig } from '../src/config';
 import { METRIC_STUB } from '../src/tokens';
 
@@ -57,14 +58,46 @@ describe('AIO client', () => {
       expect(headers.get('cookie')).toBeNull();
       expect(headers.get('x-tenant-id')).toBeNull();
     }
-    const table = (buildTablesBody(1).request as Record<string, { metrics: string[]; sort_key: string; sort_direction: string; filters: unknown[]; limit: number }>)[
-      'Funnel\\Landers'
-    ];
+    const table = landerTable(buildTablesBody(1));
     expect(table.metrics).toEqual([METRIC_STUB]);
     expect(table.sort_key).toBe('_identity');
     expect(table.sort_direction).toBe('desc');
     expect(table.filters).toEqual([]);
+    expect(table.search).toBe('');
     expect(table.limit).toBe(50);
+    expect(table).not.toHaveProperty('dates');
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual(buildTablesBody(1));
+  });
+
+  it('puts the saved search, mode filter, and dates into the AIO body and leaves sort and limit', async () => {
+    const query: CatalogQuery = {
+      search: '359',
+      filters: [{ key: 'mode', operator: 'in', value: ['Editor'] }],
+      dates: ['2026-10-01 00:00:00', '2026-10-31 23:59:59', 'Europe/Minsk'],
+    };
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      return jsonResponse({ 'Funnel\\Landers': { response: { rows: [{ n: 1 }], next: false } } });
+    };
+    const client = new HttpAioClient(config(), fetchImpl);
+    await client.loadCatalogRows(query);
+    expect(calls).toHaveLength(1);
+    const url = new URL(calls[0].url);
+    expect(url.searchParams.get('token')).toBe('test-aio-token-value');
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get('authorization')).toBeNull();
+    const body = JSON.parse(String(calls[0].init?.body)) as Record<string, unknown>;
+    expect(body).toEqual(buildTablesBody(1, query));
+    expect(JSON.stringify(body)).not.toContain('test-aio-token-value');
+    const table = landerTable(body);
+    expect(table.search).toBe('359');
+    expect(table.filters).toEqual(query.filters);
+    expect(table.dates).toEqual(query.dates);
+    expect(table.sort_key).toBe('_identity');
+    expect(table.sort_direction).toBe('desc');
+    expect(table.limit).toBe(50);
+    expect(table.metrics).toEqual([METRIC_STUB]);
   });
 
   it('stops when next is false and never echoes the token from a transport error', async () => {
@@ -135,6 +168,11 @@ describe('AIO client', () => {
     expect(JSON.stringify(file)).not.toContain('sign' + 'ature');
   });
 });
+
+function landerTable(body: Record<string, unknown>): Record<string, unknown> {
+  const requestBody = body.request as Record<string, Record<string, unknown>>;
+  return requestBody['Funnel\\Landers'];
+}
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {

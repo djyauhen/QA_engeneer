@@ -1,8 +1,15 @@
 import { BadGatewayException, Inject, Injectable } from '@nestjs/common';
 import { AioClient } from '../aio/aio.client';
-import { CATALOG_REPO } from '../tokens';
-import { CatalogRepo } from '../storage/repos';
+import { CatalogQuery, effectiveCatalogQuery } from './catalog-query';
+import { CATALOG_QUERY_REPO, CATALOG_REPO } from '../tokens';
+import { CatalogQueryRepo, CatalogRepo } from '../storage/repos';
 import { CatalogCard, mapCatalogRows, sortByHumanIdDesc, toScreenItem } from './map-row';
+
+export interface CatalogScreen {
+  items: ReturnType<typeof toScreenItem>[];
+  refreshed_at: string | null;
+  query: CatalogQuery;
+}
 
 export type ResolveResult =
   | { kind: 'ok'; card: CatalogCard }
@@ -16,15 +23,20 @@ export class CatalogService {
 
   constructor(
     @Inject(CATALOG_REPO) private readonly catalog: CatalogRepo,
+    @Inject(CATALOG_QUERY_REPO) private readonly queries: CatalogQueryRepo,
     @Inject(AioClient) private readonly aio: AioClient,
   ) {}
 
-  async screen() {
+  async screen(): Promise<CatalogScreen> {
     const rows = sortByHumanIdDesc(await this.catalog.load());
-    return { items: rows.map(toScreenItem) };
+    return {
+      items: rows.map(toScreenItem),
+      refreshed_at: await this.catalog.refreshedAt(),
+      query: await this.currentQuery(),
+    };
   }
 
-  async refresh(): Promise<{ items: ReturnType<typeof toScreenItem>[] }> {
+  async refresh(): Promise<CatalogScreen> {
     if (!this.inflight) {
       this.inflight = this.fetchAndStore().finally(() => {
         this.inflight = null;
@@ -50,9 +62,13 @@ export class CatalogService {
     return { kind: 'ok', card: hits[0] };
   }
 
+  private async currentQuery(): Promise<CatalogQuery> {
+    return effectiveCatalogQuery(await this.queries.get());
+  }
+
   private async fetchAndStore(): Promise<void> {
     try {
-      const raw = await this.aio.loadCatalogRows();
+      const raw = await this.aio.loadCatalogRows(await this.currentQuery());
       await this.catalog.save(mapCatalogRows(raw));
     } catch {
       throw new BadGatewayException({ error: 'catalog_refresh_failed', message: 'Не удалось обновить каталог' });

@@ -1,6 +1,7 @@
 import AdmZip from 'adm-zip';
 import { AiClient, AiResult } from '../src/ai/ai.client';
 import { AioClient, OriginalFile } from '../src/aio/aio.client';
+import { CatalogQuery, cloneCatalogQuery, defaultCatalogQuery } from '../src/catalog/catalog-query';
 import { LighthouseRunner, StubLighthouseRunner } from '../src/lighthouse/lighthouse';
 import { AiFinding, LighthouseMetrics } from '../src/reports/report.types';
 
@@ -70,6 +71,8 @@ export function aioRow(input: {
 
 export class FakeAio extends AioClient {
   catalogCalls = 0;
+  catalogQueries: CatalogQuery[] = [];
+  lastCatalogQuery: CatalogQuery | null = null;
   downloadRequests: string[] = [];
   notificationPolls: string[] = [];
   fileReads = 0;
@@ -77,8 +80,11 @@ export class FakeAio extends AioClient {
   zip: Buffer = structurePassZip();
   failDownloads = 0;
 
-  async loadCatalogRows(): Promise<unknown[]> {
+  async loadCatalogRows(query?: CatalogQuery): Promise<unknown[]> {
     this.catalogCalls += 1;
+    const captured = query ? cloneCatalogQuery(query) : defaultCatalogQuery();
+    this.lastCatalogQuery = captured;
+    this.catalogQueries.push(captured);
     return this.rows;
   }
 

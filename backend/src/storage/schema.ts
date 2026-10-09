@@ -9,6 +9,11 @@ export const SCHEMA_STATEMENTS: string[] = [
     rows JSONB NOT NULL,
     refreshed_at TIMESTAMPTZ NOT NULL
   )`,
+  `ALTER TABLE catalog_cache ADD COLUMN IF NOT EXISTS refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+  `CREATE TABLE IF NOT EXISTS catalog_query (
+    id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    query JSONB NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS reports (
     id UUID PRIMARY KEY,
     human_id TEXT NOT NULL,

@@ -2,6 +2,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ApiService } from '../core/api.service';
+import { catalogSourceLine, normalizeCatalogQuery } from '../core/catalog-query';
 import { errorCode, errorText } from '../core/http-error';
 import { formatTimestamp, inputValue, joinList } from '../core/format';
 import {
@@ -12,6 +13,8 @@ import {
   NOT_IN_CATALOG,
   PREVIEW_CAPTION,
   CatalogItem,
+  CatalogPayload,
+  CatalogQuery,
 } from '../core/models';
 import { SessionStore } from '../core/session.store';
 
@@ -19,6 +22,15 @@ import { SessionStore } from '../core/session.store';
   selector: 'app-launch',
   template: `
     <h1>Запуск проверки</h1>
+    @if (catalogSource()) {
+      <p class="meta">
+        {{ catalogSource() }}
+        @if (refreshedAt()) {
+          <br />
+          Обновлено {{ formatTimestamp(refreshedAt()) }}
+        }
+      </p>
+    }
     <div class="toolbar">
       <div class="field">
         <label for="search">Поиск</label>
@@ -157,6 +169,8 @@ export class LaunchComponent {
   private readonly router = inject(Router);
   private readonly session = inject(SessionStore);
   readonly items = signal<CatalogItem[]>([]);
+  readonly catalogQuery = signal<CatalogQuery | null>(null);
+  readonly refreshedAt = signal<string | null>(null);
   readonly query = signal('');
   readonly humanId = signal('');
   readonly selected = signal<CatalogItem | null>(null);
@@ -177,6 +191,11 @@ export class LaunchComponent {
   readonly emptySearch = EMPTY_SEARCH;
   readonly previewCaption = PREVIEW_CAPTION;
   readonly statusCaption = CATALOG_STATUS_CAPTION;
+
+  readonly catalogSource = computed(() => {
+    const query = this.catalogQuery();
+    return query ? catalogSourceLine(query) : '';
+  });
 
   readonly filtered = computed(() => {
     const query = this.query().trim().toLowerCase();
@@ -204,7 +223,7 @@ export class LaunchComponent {
     this.loading.set(true);
     this.api.catalog().subscribe({
       next: (response) => {
-        this.items.set(response.items ?? []);
+        this.applyCatalog(response);
         this.loading.set(false);
       },
       error: (error: unknown) => {
@@ -218,17 +237,9 @@ export class LaunchComponent {
     this.refreshing.set(true);
     this.refreshError.set('');
     this.api.refreshCatalog().subscribe({
-      next: () => {
-        this.api.catalog().subscribe({
-          next: (response) => {
-            this.items.set(response.items ?? []);
-            this.refreshing.set(false);
-          },
-          error: (error: unknown) => {
-            this.refreshing.set(false);
-            this.refreshError.set(errorText(error, 'Не удалось обновить каталог'));
-          },
-        });
+      next: (response) => {
+        this.applyCatalog(response);
+        this.refreshing.set(false);
       },
       error: (error: unknown) => {
         this.refreshing.set(false);
@@ -298,6 +309,13 @@ export class LaunchComponent {
 
   hasPreview(row: CatalogItem): boolean {
     return typeof row.preview_image === 'string' && row.preview_image.length > 0;
+  }
+
+  private applyCatalog(response: Partial<CatalogPayload>): void {
+    this.items.set(response.items ?? []);
+    this.catalogQuery.set(normalizeCatalogQuery(response.query));
+    const refreshed = response.refreshed_at;
+    this.refreshedAt.set(typeof refreshed === 'string' && refreshed.length > 0 ? refreshed : null);
   }
 
   private post(body: { human_id: string; uuid?: string }): void {

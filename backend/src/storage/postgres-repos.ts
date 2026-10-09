@@ -1,10 +1,12 @@
 import { randomUUID } from 'crypto';
 import { Pool } from 'pg';
+import { CatalogQuery, cloneCatalogQuery } from '../catalog/catalog-query';
 import { CatalogCard } from '../catalog/map-row';
 import { ReportPayload } from '../reports/report.types';
 import { AdminRules, retentionCutoff } from '../rules/rules';
 import { SCHEMA_STATEMENTS } from './schema';
 import {
+  CatalogQueryRepo,
   CatalogRepo,
   CostEntry,
   CostsRepo,
@@ -37,6 +39,7 @@ export async function createPostgresRepos(databaseUrl: string): Promise<Repos> {
   return {
     users: new PgUsersRepo(pool),
     catalog: new PgCatalogRepo(pool),
+    catalogQuery: new PgCatalogQueryRepo(pool),
     reports: new PgReportsRepo(pool),
     rules: new PgRulesRepo(pool),
     costs: new PgCostsRepo(pool),
@@ -105,6 +108,33 @@ class PgCatalogRepo implements CatalogRepo {
   async load(): Promise<CatalogCard[]> {
     const result = await this.pool.query<{ rows: CatalogCard[] }>('SELECT rows FROM catalog_cache WHERE id = 1');
     return result.rows[0]?.rows ?? [];
+  }
+
+  async refreshedAt(): Promise<string | null> {
+    const result = await this.pool.query<{ refreshed_at: Date | string }>(
+      'SELECT refreshed_at FROM catalog_cache WHERE id = 1',
+    );
+    const value = result.rows[0]?.refreshed_at;
+    if (!value) return null;
+    return new Date(value).toISOString();
+  }
+}
+
+class PgCatalogQueryRepo implements CatalogQueryRepo {
+  constructor(private readonly pool: Pool) {}
+
+  async get(): Promise<CatalogQuery | null> {
+    const result = await this.pool.query<{ query: CatalogQuery }>('SELECT query FROM catalog_query WHERE id = 1');
+    const stored = result.rows[0]?.query;
+    return stored ? cloneCatalogQuery(stored) : null;
+  }
+
+  async set(query: CatalogQuery): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO catalog_query (id, query) VALUES (1, $1::jsonb)
+       ON CONFLICT (id) DO UPDATE SET query = EXCLUDED.query`,
+      [JSON.stringify(query)],
+    );
   }
 }
 

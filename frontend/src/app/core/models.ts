@@ -72,6 +72,24 @@ export interface CatalogItem {
   mvt_settings?: string;
 }
 
+export interface CatalogModeFilter {
+  key: 'mode';
+  operator: 'in';
+  value: string[];
+}
+
+export interface CatalogQuery {
+  search: string;
+  filters: CatalogModeFilter[];
+  dates: [string, string, string] | null;
+}
+
+export interface CatalogPayload {
+  items: CatalogItem[];
+  refreshed_at: string | null;
+  query: CatalogQuery;
+}
+
 export interface StaticFinding {
   text: string;
   file?: string;

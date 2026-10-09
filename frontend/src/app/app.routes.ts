@@ -38,6 +38,11 @@ export function buildRoutes(role: Role | null): Routes {
         canActivate: [tlGuard],
         loadComponent: () => import('./pages/users.component').then((module) => module.UsersComponent),
       },
+      {
+        path: 'catalog-query',
+        canActivate: [tlGuard],
+        loadComponent: () => import('./pages/catalog-query.component').then((module) => module.CatalogQueryComponent),
+      },
     );
   }
   const home = role ? 'launch' : 'login';

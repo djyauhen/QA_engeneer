@@ -1,6 +1,12 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
-import { COSTS_REPO, RULES_REPO } from '../tokens';
-import { CostsRepo, RulesRepo } from '../storage/repos';
+import {
+  CatalogQuery,
+  CatalogQueryValidationError,
+  effectiveCatalogQuery,
+  parseCatalogQuery,
+} from '../catalog/catalog-query';
+import { CATALOG_QUERY_REPO, COSTS_REPO, RULES_REPO } from '../tokens';
+import { CatalogQueryRepo, CostsRepo, RulesRepo } from '../storage/repos';
 import { AdminRules, cloneRules, defaultRules, mergeRules, RulesValidationError } from '../rules/rules';
 
 @Injectable()
@@ -21,6 +27,28 @@ export class RulesService {
     } catch (error) {
       if (error instanceof RulesValidationError) {
         throw new BadRequestException({ error: error.message });
+      }
+      throw error;
+    }
+  }
+}
+
+@Injectable()
+export class CatalogQueryService {
+  constructor(@Inject(CATALOG_QUERY_REPO) private readonly queries: CatalogQueryRepo) {}
+
+  async current(): Promise<CatalogQuery> {
+    return effectiveCatalogQuery(await this.queries.get());
+  }
+
+  async replace(body: unknown): Promise<CatalogQuery> {
+    try {
+      const next = parseCatalogQuery(body);
+      await this.queries.set(next);
+      return effectiveCatalogQuery(next);
+    } catch (error) {
+      if (error instanceof CatalogQueryValidationError) {
+        throw new BadRequestException({ error: 'invalid_catalog_query', message: error.message });
       }
       throw error;
     }

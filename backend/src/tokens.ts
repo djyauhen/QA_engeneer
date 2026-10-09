@@ -2,6 +2,7 @@ export const APP_CONFIG = 'APP_CONFIG';
 export const RUNTIME = 'RUNTIME';
 export const USERS_REPO = 'USERS_REPO';
 export const CATALOG_REPO = 'CATALOG_REPO';
+export const CATALOG_QUERY_REPO = 'CATALOG_QUERY_REPO';
 export const REPORTS_REPO = 'REPORTS_REPO';
 export const RULES_REPO = 'RULES_REPO';
 export const COSTS_REPO = 'COSTS_REPO';

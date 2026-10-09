@@ -1,9 +1,11 @@
 import { randomUUID } from 'crypto';
+import { CatalogQuery, cloneCatalogQuery } from '../catalog/catalog-query';
 import { CatalogCard } from '../catalog/map-row';
 import { ReportPayload } from '../reports/report.types';
 import { AdminRules } from '../rules/rules';
 import { retentionCutoff } from '../rules/rules';
 import {
+  CatalogQueryRepo,
   CatalogRepo,
   CostEntry,
   CostsRepo,
@@ -36,13 +38,19 @@ export class MemoryUsersRepo implements UsersRepo {
 
 export class MemoryCatalogRepo implements CatalogRepo {
   rows: CatalogCard[] = [];
+  refreshedAtValue: string | null = null;
 
   async save(rows: CatalogCard[]): Promise<void> {
     this.rows = rows.map((row) => ({ ...row }));
+    this.refreshedAtValue = new Date().toISOString();
   }
 
   async load(): Promise<CatalogCard[]> {
     return this.rows.map((row) => ({ ...row }));
+  }
+
+  async refreshedAt(): Promise<string | null> {
+    return this.refreshedAtValue;
   }
 }
 
@@ -113,6 +121,18 @@ export class MemoryReportsRepo implements ReportsRepo {
   }
 }
 
+export class MemoryCatalogQueryRepo implements CatalogQueryRepo {
+  current: CatalogQuery | null = null;
+
+  async get(): Promise<CatalogQuery | null> {
+    return this.current ? cloneCatalogQuery(this.current) : null;
+  }
+
+  async set(query: CatalogQuery): Promise<void> {
+    this.current = cloneCatalogQuery(query);
+  }
+}
+
 export class MemoryRulesRepo implements RulesRepo {
   current: AdminRules | null = null;
 
@@ -147,6 +167,7 @@ export function createMemoryRepos(): Repos {
   return {
     users: new MemoryUsersRepo(),
     catalog: new MemoryCatalogRepo(),
+    catalogQuery: new MemoryCatalogQueryRepo(),
     reports: new MemoryReportsRepo(),
     rules: new MemoryRulesRepo(),
     costs: new MemoryCostsRepo(),

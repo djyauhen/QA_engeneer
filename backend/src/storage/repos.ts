@@ -1,3 +1,4 @@
+import { CatalogQuery } from '../catalog/catalog-query';
 import { AdminRules } from '../rules/rules';
 import { CatalogCard } from '../catalog/map-row';
 import { ReportPayload } from '../reports/report.types';
@@ -17,6 +18,12 @@ export interface UsersRepo {
 export interface CatalogRepo {
   save(rows: CatalogCard[]): Promise<void>;
   load(): Promise<CatalogCard[]>;
+  refreshedAt(): Promise<string | null>;
+}
+
+export interface CatalogQueryRepo {
+  get(): Promise<CatalogQuery | null>;
+  set(query: CatalogQuery): Promise<void>;
 }
 
 export interface ReportListItem {
@@ -58,6 +65,7 @@ export interface CostsRepo {
 export interface Repos {
   users: UsersRepo;
   catalog: CatalogRepo;
+  catalogQuery: CatalogQueryRepo;
   reports: ReportsRepo;
   rules: RulesRepo;
   costs: CostsRepo;

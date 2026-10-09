@@ -1,3 +1,4 @@
+import { CatalogQuery, defaultCatalogQuery } from '../catalog/catalog-query';
 import { AIO_PAGE_LIMIT, CATALOG_LIMIT, METRIC_STUB } from '../tokens';
 import { AppConfig } from '../config';
 
@@ -11,25 +12,31 @@ export interface OriginalFile {
 }
 
 export abstract class AioClient {
-  abstract loadCatalogRows(): Promise<unknown[]>;
+  abstract loadCatalogRows(query?: CatalogQuery): Promise<unknown[]>;
   abstract requestDownload(uuid: string): Promise<void>;
   abstract findOriginal(uuid: string): Promise<OriginalFile>;
 }
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
-export function buildTablesBody(page: number): Record<string, unknown> {
+export function buildTablesBody(page: number, query: CatalogQuery = defaultCatalogQuery()): Record<string, unknown> {
+  const filters = query.filters.map((filter) => ({
+    key: filter.key,
+    operator: filter.operator,
+    value: [...filter.value],
+  }));
   return {
     request: {
       'Funnel\\Landers': {
         table: 'Funnel\\Landers',
         page,
         limit: AIO_PAGE_LIMIT,
-        search: '',
+        search: query.search,
         sort_key: '_identity',
         sort_direction: 'desc',
         analytics_position: 1,
-        filters: [],
+        filters,
+        ...(query.dates === null ? {} : { dates: [query.dates[0], query.dates[1], query.dates[2]] }),
         hide_empty_metrics: false,
         show_empty_fields: false,
         hide_bots: true,
@@ -84,8 +91,8 @@ export class HttpAioClient extends AioClient {
     super();
   }
 
-  async loadCatalogRows(): Promise<unknown[]> {
-    return collectCatalogRows((page) => this.fetchPage(page));
+  async loadCatalogRows(query: CatalogQuery = defaultCatalogQuery()): Promise<unknown[]> {
+    return collectCatalogRows((page) => this.fetchPage(page, query));
   }
 
   async requestDownload(uuid: string): Promise<void> {
@@ -115,12 +122,12 @@ export class HttpAioClient extends AioClient {
     };
   }
 
-  private async fetchPage(page: number): Promise<AioPage> {
+  private async fetchPage(page: number, query: CatalogQuery): Promise<AioPage> {
     const url = this.withToken('/api/v1/tables/data');
     const response = await this.call(url, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
-      body: JSON.stringify(buildTablesBody(page)),
+      body: JSON.stringify(buildTablesBody(page, query)),
     });
     const body = (await response.json()) as Record<string, unknown>;
     const table = readTable(body);
