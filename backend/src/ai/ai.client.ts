@@ -1,8 +1,9 @@
+import OpenAI from 'openai';
 import { AppConfig } from '../config';
 import { AiFinding } from '../reports/report.types';
 
-export const DEFAULT_GEMINI_API_BASE = 'https://generativelanguage.googleapis.com';
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+export const DEFAULT_DEEPSEEK_API_BASE = 'https://api.deepseek.com';
+export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
 
 export interface AiInput {
   files: Array<{ path: string; text: string }>;
@@ -51,20 +52,32 @@ export class StubAiClient extends AiClient {
   }
 }
 
-export class GeminiAiClient extends AiClient {
+/** Official OpenAI types include reasoning_effort and omit DeepSeek thinking. */
+type DeepSeekChatRequest = OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
+  thinking: { type: 'enabled' };
+};
+
+export class DeepSeekAiClient extends AiClient {
+  private readonly openai: OpenAI;
+
   constructor(
     private readonly config: AppConfig,
-    private readonly fetchImpl: typeof fetch = globalThis.fetch,
+    fetchImpl: typeof fetch = globalThis.fetch,
   ) {
     super();
+    const baseURL = (this.config.aiBaseUrl || DEFAULT_DEEPSEEK_API_BASE).replace(/\/$/, '');
+    this.openai = new OpenAI({
+      baseURL,
+      apiKey: this.config.aiApiKey,
+      fetch: fetchImpl,
+      maxRetries: 0,
+      logLevel: 'off',
+    });
   }
 
   async review(input: AiInput): Promise<AiResult> {
     try {
-      const model = this.config.aiModel || DEFAULT_GEMINI_MODEL;
-      const base = (this.config.aiBaseUrl || DEFAULT_GEMINI_API_BASE).replace(/\/$/, '');
-      const url = `${base}/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-      const useUrlContext = isPublicHttpUrl(input.standUrl);
+      const model = this.config.aiModel || DEFAULT_DEEPSEEK_MODEL;
       const userPayload = {
         name: input.name,
         languages: input.languages,
@@ -72,71 +85,30 @@ export class GeminiAiClient extends AiClient {
         stand_url: input.standUrl,
         files: input.files,
       };
-      const body: Record<string, unknown> = {
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: 'user', parts: [{ text: JSON.stringify(userPayload) }] }],
-        generationConfig: { responseMimeType: 'application/json' },
+      const request: DeepSeekChatRequest = {
+        model,
+        stream: false,
+        thinking: { type: 'enabled' },
+        reasoning_effort: 'high',
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: JSON.stringify(userPayload) },
+        ],
       };
-      if (useUrlContext && input.standUrl) {
-        body.tools = [{ urlContext: {} }];
-      }
-      const response = await this.fetchImpl(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-goog-api-key': this.config.aiApiKey,
-        },
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) throw new Error('status');
-      const payload = (await response.json()) as GeminiGenerateContentResponse;
-      const content = extractGeminiText(payload);
-      const parsed = parseFindings(content);
-      const usage = payload.usageMetadata && typeof payload.usageMetadata === 'object' ? payload.usageMetadata : null;
-      return { findings: parsed, usage };
+      const completion = await this.openai.chat.completions.create(request);
+      const content = completion.choices[0]?.message?.content;
+      if (typeof content !== 'string') throw new Error('empty');
+      return { findings: parseFindings(content), usage: plainUsage(completion.usage) };
     } catch {
       throw new Error('Сбой вызова ИИ');
     }
   }
 }
 
-interface GeminiGenerateContentResponse {
-  candidates?: Array<{
-    content?: { parts?: Array<{ text?: string }> };
-  }>;
-  usageMetadata?: Record<string, unknown>;
-}
-
-export function isPublicHttpUrl(raw: string | null | undefined): boolean {
-  if (!raw) return false;
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
-    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (host === 'localhost' || host === '::1' || host === '0.0.0.0') return false;
-    if (host.endsWith('.local') || host.endsWith('.internal')) return false;
-    if (isPrivateOrLocalIpv4(host)) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isPrivateOrLocalIpv4(host: string): boolean {
-  const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!match) return false;
-  const a = Number(match[1]);
-  const b = Number(match[2]);
-  if (a === 10 || a === 127 || a === 0) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  return false;
-}
-
-function extractGeminiText(payload: GeminiGenerateContentResponse): string {
-  const parts = payload.candidates?.[0]?.content?.parts ?? [];
-  return parts.map((part) => (typeof part.text === 'string' ? part.text : '')).join('');
+function plainUsage(usage: unknown): Record<string, unknown> | null {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;
+  return usage as Record<string, unknown>;
 }
 
 function parseFindings(content: string): Array<Partial<AiFinding>> {
@@ -146,6 +118,6 @@ function parseFindings(content: string): Array<Partial<AiFinding>> {
 }
 
 export function createAiClient(config: AppConfig): AiClient {
-  if (config.aiMode === 'real' && config.aiApiKey) return new GeminiAiClient(config);
+  if (config.aiMode === 'real' && config.aiApiKey) return new DeepSeekAiClient(config);
   return new StubAiClient();
 }

@@ -24,7 +24,7 @@ function config(): AppConfig {
     aiMode: 'stub',
     aiBaseUrl: '',
     aiApiKey: '',
-    aiModel: 'gemini-3.5-flash-lite',
+    aiModel: 'deepseek-flash',
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
     bcryptRounds: 4,
