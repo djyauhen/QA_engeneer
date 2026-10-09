@@ -1,15 +1,68 @@
-import { AiFinding, LighthouseMetrics, StaticFinding, StepSnapshot } from './models';
+import type { AiFinding, LighthouseMetrics, StaticFinding, StepSnapshot } from './models';
 
-/** Day, month, year and time as written in the string. No timezone conversion. */
+/**
+ * Business zone for clocks a person reads (reports, catalog refresh, lists).
+ * Europe/Minsk is Belarus: a fixed UTC+3 offset, with no daylight saving time.
+ * Persistence stays UTC instants; this zone is for display only.
+ */
+export const BUSINESS_TIME_ZONE = 'Europe/Minsk';
+
+const INSTANT =
+  /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:\d{2})/i;
+const NAIVE_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/;
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+const minskClock = new Intl.DateTimeFormat('en-GB', {
+  timeZone: BUSINESS_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/**
+ * User-visible `DD.MM.YYYY HH:mm` in Europe/Minsk.
+ * Instants with `Z` or `±hh:mm` are converted. Naive datetimes and `YYYY-MM-DD`
+ * stay as written so catalog period wall clocks are not shifted.
+ */
 export function formatTimestamp(value: string | null | undefined): string {
   if (!value) return '';
-  const withTime = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(value);
+  const instant = instantInMinsk(value);
+  if (instant === 'invalid') return value;
+  if (instant) return instant;
+  const withTime = NAIVE_DATE_TIME.exec(value);
   if (withTime) {
     return `${withTime[3]}.${withTime[2]}.${withTime[1]} ${withTime[4]}:${withTime[5]}`;
   }
-  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const dateOnly = DATE_ONLY.exec(value);
   if (dateOnly) return `${dateOnly[3]}.${dateOnly[2]}.${dateOnly[1]}`;
   return value;
+}
+
+function instantInMinsk(value: string): string | 'invalid' | null {
+  const match = INSTANT.exec(value);
+  if (!match) return null;
+  const year = match[1];
+  const month = match[2];
+  const day = match[3];
+  const hour = match[4];
+  const minute = match[5];
+  const second = match[6] ?? '00';
+  const fraction = match[7] ? `.${match[7]}` : '';
+  const zone = match[8];
+  const iso = `${year}-${month}-${day}T${hour}:${minute}:${second}${fraction}${zone}`;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'invalid';
+  return formatInMinsk(date);
+}
+
+function formatInMinsk(date: Date): string {
+  const parts = minskClock.formatToParts(date);
+  const pick = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '';
+  const hour = pick('hour') === '24' ? '00' : pick('hour');
+  return `${pick('day')}.${pick('month')}.${pick('year')} ${hour}:${pick('minute')}`;
 }
 
 export function joinList(value: string[] | undefined): string {

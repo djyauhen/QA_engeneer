@@ -1,11 +1,15 @@
 export const APP_CONFIG = 'APP_CONFIG';
 export const RUNTIME = 'RUNTIME';
 export const USERS_REPO = 'USERS_REPO';
+export const SESSIONS_REPO = 'SESSIONS_REPO';
 export const CATALOG_REPO = 'CATALOG_REPO';
 export const CATALOG_QUERY_REPO = 'CATALOG_QUERY_REPO';
 export const REPORTS_REPO = 'REPORTS_REPO';
 export const RULES_REPO = 'RULES_REPO';
 export const COSTS_REPO = 'COSTS_REPO';
+export const ACTIVE_CHECKS_REPO = 'ACTIVE_CHECKS_REPO';
+
+export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 export const CATALOG_REFRESH_MS = 10 * 60 * 1000;
 export const PART_ATTEMPTS = 3;

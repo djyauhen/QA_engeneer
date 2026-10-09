@@ -4,7 +4,10 @@ import { CatalogCard } from '../catalog/map-row';
 import { ReportPayload } from '../reports/report.types';
 import { AdminRules } from '../rules/rules';
 import { retentionCutoff } from '../rules/rules';
+import { cloneSnapshot, mergeActiveSnapshot } from './active-snapshot';
 import {
+  ActiveCheckSnapshot,
+  ActiveChecksRepo,
   CatalogQueryRepo,
   CatalogRepo,
   CostEntry,
@@ -13,6 +16,9 @@ import {
   ReportsRepo,
   Repos,
   RulesRepo,
+  SessionInsert,
+  SessionRecord,
+  SessionsRepo,
   StoredUser,
   UsersRepo,
 } from './repos';
@@ -151,6 +157,49 @@ export class MemoryRulesRepo implements RulesRepo {
   }
 }
 
+export class MemorySessionsRepo implements SessionsRepo {
+  readonly rows = new Map<string, SessionRecord>();
+
+  async insert(row: SessionInsert): Promise<void> {
+    this.rows.set(row.id, {
+      login: row.login,
+      role: row.role,
+      source: row.source,
+      expires_at: row.expires_at,
+    });
+  }
+
+  async get(id: string): Promise<SessionRecord | null> {
+    const row = this.rows.get(id);
+    return row ? { ...row } : null;
+  }
+
+  async touch(id: string, expiresAt: string): Promise<void> {
+    const row = this.rows.get(id);
+    if (!row) return;
+    row.expires_at = expiresAt;
+  }
+
+  async delete(id: string): Promise<void> {
+    this.rows.delete(id);
+  }
+}
+
+export class MemoryActiveChecksRepo implements ActiveChecksRepo {
+  readonly rows = new Map<string, { owner_login: string; payload: ActiveCheckSnapshot }>();
+
+  async upsert(id: string, ownerLogin: string, payload: ActiveCheckSnapshot): Promise<void> {
+    const current = this.rows.get(id)?.payload ?? null;
+    this.rows.set(id, { owner_login: ownerLogin, payload: mergeActiveSnapshot(current, payload) });
+  }
+
+  async get(id: string): Promise<{ owner_login: string; payload: ActiveCheckSnapshot } | null> {
+    const row = this.rows.get(id);
+    if (!row) return null;
+    return { owner_login: row.owner_login, payload: cloneSnapshot(row.payload) };
+  }
+}
+
 export class MemoryCostsRepo implements CostsRepo {
   readonly rows: CostEntry[] = [];
 
@@ -166,11 +215,13 @@ export class MemoryCostsRepo implements CostsRepo {
 export function createMemoryRepos(): Repos {
   return {
     users: new MemoryUsersRepo(),
+    sessions: new MemorySessionsRepo(),
     catalog: new MemoryCatalogRepo(),
     catalogQuery: new MemoryCatalogQueryRepo(),
     reports: new MemoryReportsRepo(),
     rules: new MemoryRulesRepo(),
     costs: new MemoryCostsRepo(),
+    activeChecks: new MemoryActiveChecksRepo(),
     close: async () => undefined,
   };
 }

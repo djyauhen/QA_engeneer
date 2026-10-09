@@ -1,7 +1,7 @@
 import { CatalogQuery } from '../catalog/catalog-query';
 import { AdminRules } from '../rules/rules';
 import { CatalogCard } from '../catalog/map-row';
-import { ReportPayload } from '../reports/report.types';
+import { AiBlock, LighthouseBlock, ReportPayload, StaticBlock, StepSnapshot } from '../reports/report.types';
 
 export interface StoredUser {
   login: string;
@@ -62,12 +62,60 @@ export interface CostsRepo {
   list(): Promise<CostEntry[]>;
 }
 
+export interface SessionInsert {
+  id: string;
+  login: string;
+  role: string;
+  source: 'environment' | 'neon';
+  expires_at: string;
+}
+
+export interface SessionRecord {
+  login: string;
+  role: string;
+  source: 'environment' | 'neon';
+  expires_at: string;
+}
+
+export interface SessionsRepo {
+  insert(row: SessionInsert): Promise<void>;
+  get(id: string): Promise<SessionRecord | null>;
+  touch(id: string, expiresAt: string): Promise<void>;
+  delete(id: string): Promise<void>;
+}
+
+export interface ActiveCheckSnapshot {
+  ownerLogin: string;
+  ownerRole: string;
+  human_id: string;
+  name: string;
+  preview_image: string;
+  steps: StepSnapshot[];
+  static: StaticBlock | null;
+  ai: AiBlock | null;
+  lighthouse: LighthouseBlock | null;
+  replaced_previous_stand: boolean;
+  standReady: boolean;
+  standUrl: string | null;
+  actionsAllowed: boolean;
+  reportSaved: boolean;
+  aborted: boolean;
+  pendingDecision: 'allow' | 'deny' | null;
+}
+
+export interface ActiveChecksRepo {
+  upsert(id: string, ownerLogin: string, payload: ActiveCheckSnapshot): Promise<void>;
+  get(id: string): Promise<{ owner_login: string; payload: ActiveCheckSnapshot } | null>;
+}
+
 export interface Repos {
   users: UsersRepo;
+  sessions: SessionsRepo;
   catalog: CatalogRepo;
   catalogQuery: CatalogQueryRepo;
   reports: ReportsRepo;
   rules: RulesRepo;
   costs: CostsRepo;
+  activeChecks: ActiveChecksRepo;
   close(): Promise<void>;
 }

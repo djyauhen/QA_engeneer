@@ -18,7 +18,7 @@ export class SessionController {
     const credentials = parseCredentials(body);
     const user = await this.auth.login(credentials.login, credentials.password);
     if (!user) this.auth.refused();
-    const sessionId = this.sessions.create(user as SessionUser);
+    const sessionId = await this.sessions.create(user as SessionUser);
     res.setHeader('Set-Cookie', sessionCookie(sessionId));
     return { role: user?.role, session_id: sessionId };
   }
@@ -32,7 +32,7 @@ export class SessionController {
   @Delete()
   @HttpCode(200)
   @UseGuards(SessionGuard)
-  logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const header = req.header('x-session-id');
     const authorization = req.header('authorization');
     const bearer = authorization?.toLowerCase().startsWith('bearer ') ? authorization.slice(7).trim() : null;
@@ -43,7 +43,7 @@ export class SessionController {
       .find((part) => part.startsWith('qa_session='))
       ?.slice('qa_session='.length);
     const id = header || bearer || (fromCookie ? decodeURIComponent(fromCookie) : null);
-    if (id) this.sessions.delete(id);
+    if (id) await this.sessions.delete(id);
     res.setHeader('Set-Cookie', sessionCookie('', true));
     return { ok: true };
   }

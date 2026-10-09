@@ -31,4 +31,17 @@ export const SCHEMA_STATEMENTS: string[] = [
     provider_usage JSONB NOT NULL,
     recorded_at TIMESTAMPTZ NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    login TEXT NOT NULL,
+    role TEXT NOT NULL,
+    source TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS active_checks (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+  )`,
 ];

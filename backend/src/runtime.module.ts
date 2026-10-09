@@ -6,12 +6,14 @@ import { LighthouseRunner } from './lighthouse/lighthouse';
 import { Repos } from './storage/repos';
 import { StaticChecks } from './static/static-checks';
 import {
+  ACTIVE_CHECKS_REPO,
   APP_CONFIG,
   CATALOG_QUERY_REPO,
   CATALOG_REPO,
   COSTS_REPO,
   REPORTS_REPO,
   RULES_REPO,
+  SESSIONS_REPO,
   USERS_REPO,
 } from './tokens';
 
@@ -34,11 +36,13 @@ export class RuntimeModule {
       providers: [
         { provide: APP_CONFIG, useValue: runtime.config },
         { provide: USERS_REPO, useValue: runtime.repos.users },
+        { provide: SESSIONS_REPO, useValue: runtime.repos.sessions },
         { provide: CATALOG_REPO, useValue: runtime.repos.catalog },
         { provide: CATALOG_QUERY_REPO, useValue: runtime.repos.catalogQuery },
         { provide: REPORTS_REPO, useValue: runtime.repos.reports },
         { provide: RULES_REPO, useValue: runtime.repos.rules },
         { provide: COSTS_REPO, useValue: runtime.repos.costs },
+        { provide: ACTIVE_CHECKS_REPO, useValue: runtime.repos.activeChecks },
         { provide: AioClient, useValue: runtime.aio },
         { provide: AiClient, useValue: runtime.ai },
         { provide: LighthouseRunner, useValue: runtime.lighthouse },
@@ -47,11 +51,13 @@ export class RuntimeModule {
       exports: [
         APP_CONFIG,
         USERS_REPO,
+        SESSIONS_REPO,
         CATALOG_REPO,
         CATALOG_QUERY_REPO,
         REPORTS_REPO,
         RULES_REPO,
         COSTS_REPO,
+        ACTIVE_CHECKS_REPO,
         AioClient,
         AiClient,
         LighthouseRunner,

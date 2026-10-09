@@ -2,26 +2,45 @@ import { randomBytes, timingSafeEqual } from 'crypto';
 import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import { AppConfig, SessionUser } from '../config';
-import { APP_CONFIG, LOGIN_REFUSED, USERS_REPO } from '../tokens';
-import { UsersRepo } from '../storage/repos';
-import { ROLE_TL, Role } from '../roles';
+import { APP_CONFIG, LOGIN_REFUSED, SESSIONS_REPO, SESSION_TTL_MS, USERS_REPO } from '../tokens';
+import { SessionsRepo, UsersRepo } from '../storage/repos';
+import { isRole, ROLE_TL, Role } from '../roles';
+
+const SESSION_REFRESH_AFTER_MS = SESSION_TTL_MS - 60 * 60 * 1000;
 
 @Injectable()
 export class SessionService {
-  private readonly sessions = new Map<string, SessionUser>();
+  constructor(@Inject(SESSIONS_REPO) private readonly sessions: SessionsRepo) {}
 
-  create(user: SessionUser): string {
+  async create(user: SessionUser): Promise<string> {
     const id = randomBytes(32).toString('hex');
-    this.sessions.set(id, { login: user.login, role: user.role, source: user.source });
+    await this.sessions.insert({
+      id,
+      login: user.login,
+      role: user.role,
+      source: user.source,
+      expires_at: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
+    });
     return id;
   }
 
-  get(id: string): SessionUser | null {
-    return this.sessions.get(id) ?? null;
+  async get(id: string): Promise<SessionUser | null> {
+    const row = await this.sessions.get(id);
+    if (!row || !isRole(row.role) || (row.source !== 'environment' && row.source !== 'neon')) return null;
+    const expiresAt = new Date(row.expires_at).getTime();
+    const now = Date.now();
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+      await this.sessions.delete(id);
+      return null;
+    }
+    if (expiresAt - now < SESSION_REFRESH_AFTER_MS) {
+      await this.sessions.touch(id, new Date(now + SESSION_TTL_MS).toISOString());
+    }
+    return { login: row.login, role: row.role, source: row.source };
   }
 
-  delete(id: string): void {
-    this.sessions.delete(id);
+  async delete(id: string): Promise<void> {
+    await this.sessions.delete(id);
   }
 }
 

@@ -4,8 +4,11 @@ import { CatalogQuery, cloneCatalogQuery } from '../catalog/catalog-query';
 import { CatalogCard } from '../catalog/map-row';
 import { ReportPayload } from '../reports/report.types';
 import { AdminRules, retentionCutoff } from '../rules/rules';
+import { mergeActiveSnapshot } from './active-snapshot';
 import { SCHEMA_STATEMENTS } from './schema';
 import {
+  ActiveCheckSnapshot,
+  ActiveChecksRepo,
   CatalogQueryRepo,
   CatalogRepo,
   CostEntry,
@@ -14,6 +17,9 @@ import {
   ReportsRepo,
   Repos,
   RulesRepo,
+  SessionInsert,
+  SessionRecord,
+  SessionsRepo,
   StoredUser,
   UsersRepo,
 } from './repos';
@@ -38,11 +44,13 @@ export async function createPostgresRepos(databaseUrl: string): Promise<Repos> {
     ensureSchema().then(() => query(...args))) as Pool['query'];
   return {
     users: new PgUsersRepo(pool),
+    sessions: new PgSessionsRepo(pool),
     catalog: new PgCatalogRepo(pool),
     catalogQuery: new PgCatalogQueryRepo(pool),
     reports: new PgReportsRepo(pool),
     rules: new PgRulesRepo(pool),
     costs: new PgCostsRepo(pool),
+    activeChecks: new PgActiveChecksRepo(pool),
     close: async () => {
       await pool.end();
     },
@@ -237,6 +245,94 @@ class PgRulesRepo implements RulesRepo {
       [JSON.stringify(rules)],
     );
   }
+}
+
+class PgSessionsRepo implements SessionsRepo {
+  constructor(private readonly pool: Pool) {}
+
+  async insert(row: SessionInsert): Promise<void> {
+    await this.pool.query(
+      'INSERT INTO sessions (id, login, role, source, expires_at) VALUES ($1, $2, $3, $4, $5)',
+      [row.id, row.login, row.role, row.source, row.expires_at],
+    );
+  }
+
+  async get(id: string): Promise<SessionRecord | null> {
+    const result = await this.pool.query<{
+      login: string;
+      role: string;
+      source: string;
+      expires_at: Date | string;
+    }>('SELECT login, role, source, expires_at FROM sessions WHERE id = $1', [id]);
+    const row = result.rows[0];
+    if (!row) return null;
+    if (row.source !== 'environment' && row.source !== 'neon') return null;
+    return {
+      login: row.login,
+      role: row.role,
+      source: row.source,
+      expires_at: new Date(row.expires_at).toISOString(),
+    };
+  }
+
+  async touch(id: string, expiresAt: string): Promise<void> {
+    await this.pool.query('UPDATE sessions SET expires_at = $2 WHERE id = $1', [id, expiresAt]);
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.pool.query('DELETE FROM sessions WHERE id = $1', [id]);
+  }
+}
+
+class PgActiveChecksRepo implements ActiveChecksRepo {
+  constructor(private readonly pool: Pool) {}
+
+  async upsert(id: string, ownerLogin: string, payload: ActiveCheckSnapshot): Promise<void> {
+    await this.pool.query('SELECT 1');
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const current = await client.query<{ payload: ActiveCheckSnapshot | string }>(
+        'SELECT payload FROM active_checks WHERE id = $1 FOR UPDATE',
+        [id],
+      );
+      const previous = readSnapshot(current.rows[0]?.payload);
+      const merged = mergeActiveSnapshot(previous, payload);
+      await client.query(
+        `INSERT INTO active_checks (id, owner_login, payload, updated_at)
+         VALUES ($1, $2, $3::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           owner_login = EXCLUDED.owner_login,
+           payload = EXCLUDED.payload,
+           updated_at = NOW()`,
+        [id, ownerLogin, JSON.stringify(merged)],
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async get(id: string): Promise<{ owner_login: string; payload: ActiveCheckSnapshot } | null> {
+    const result = await this.pool.query<{ owner_login: string; payload: ActiveCheckSnapshot | string }>(
+      'SELECT owner_login, payload FROM active_checks WHERE id = $1',
+      [id],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const payload = readSnapshot(row.payload);
+    if (!payload) return null;
+    return { owner_login: row.owner_login, payload };
+  }
+}
+
+function readSnapshot(value: ActiveCheckSnapshot | string | undefined): ActiveCheckSnapshot | null {
+  if (!value) return null;
+  if (typeof value === 'string') return JSON.parse(value) as ActiveCheckSnapshot;
+  return value;
 }
 
 class PgCostsRepo implements CostsRepo {

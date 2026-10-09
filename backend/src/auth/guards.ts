@@ -24,10 +24,10 @@ export function readSessionId(req: Request): string | null {
 export class SessionGuard implements CanActivate {
   constructor(private readonly sessions: SessionService) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<Request & { user?: SessionUser }>();
     const id = readSessionId(req);
-    const session = id ? this.sessions.get(id) : null;
+    const session = id ? await this.sessions.get(id) : null;
     if (!session) throw new UnauthorizedException({ error: 'unauthorized' });
     req.user = session;
     return true;
