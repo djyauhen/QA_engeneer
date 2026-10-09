@@ -5,11 +5,18 @@ import { RedactingFilter } from './http.filter';
 import { PreviewService } from './stand/preview.service';
 import { APP_CONFIG } from './tokens';
 
+const DEPLOYED_FRONTEND_ORIGIN = 'https://qa-engeneer.vercel.app';
+
+export function corsOrigin(frontendOrigin: string[]): true | string[] {
+  if (frontendOrigin.length === 0) return true;
+  return [...new Set([...frontendOrigin, DEPLOYED_FRONTEND_ORIGIN])];
+}
+
 export function configureApp(app: INestApplication): void {
   const config = app.get<AppConfig>(APP_CONFIG);
   app.useGlobalFilters(new RedactingFilter(config));
   app.enableCors({
-    origin: config.frontendOrigin.length > 0 ? config.frontendOrigin : true,
+    origin: corsOrigin(config.frontendOrigin),
     credentials: true,
     allowedHeaders: ['Content-Type', 'X-Session-Id', 'Authorization'],
   });

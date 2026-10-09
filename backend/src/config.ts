@@ -71,7 +71,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     standFormHtml: env.STAND_FORM_HTML ?? '<div data-stand-form="1"></div>',
     standBrandName: env.STAND_BRAND_NAME ?? 'Brand',
     standCdnBase: env.STAND_CDN_BASE ?? '',
-    catalogAutoRefresh: env.CATALOG_AUTO_REFRESH !== '0',
+    catalogAutoRefresh: env.VERCEL === '1' ? false : env.CATALOG_AUTO_REFRESH !== '0',
     aioNotifyPollMs: positiveInt(env.AIO_NOTIFY_POLL_MS, 2000),
     aioNotifyPollsPerAttempt: positiveInt(env.AIO_NOTIFY_POLLS_PER_ATTEMPT, 5),
     aiMode: env.AI_MODE === 'real' ? 'real' : 'stub',

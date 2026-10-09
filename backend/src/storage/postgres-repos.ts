@@ -17,10 +17,23 @@ import {
 } from './repos';
 
 export async function createPostgresRepos(databaseUrl: string): Promise<Repos> {
-  const pool = new Pool({ connectionString: databaseUrl });
-  for (const statement of SCHEMA_STATEMENTS) {
-    await pool.query(statement);
-  }
+  const pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 10_000 });
+  pool.on('error', (error: Error) => {
+    console.error(`postgres pool error: ${redactConnectionString(error.message)}`);
+  });
+  const query = pool.query.bind(pool) as Pool['query'];
+  let schema: Promise<void> | null = null;
+  const ensureSchema = (): Promise<void> => {
+    if (!schema) {
+      schema = runSchema(query).catch((error: unknown) => {
+        schema = null;
+        throw error;
+      });
+    }
+    return schema;
+  };
+  pool.query = ((...args: Parameters<Pool['query']>) =>
+    ensureSchema().then(() => query(...args))) as Pool['query'];
   return {
     users: new PgUsersRepo(pool),
     catalog: new PgCatalogRepo(pool),
@@ -31,6 +44,16 @@ export async function createPostgresRepos(databaseUrl: string): Promise<Repos> {
       await pool.end();
     },
   };
+}
+
+async function runSchema(query: Pool['query']): Promise<void> {
+  for (const statement of SCHEMA_STATEMENTS) {
+    await query(statement);
+  }
+}
+
+function redactConnectionString(message: string): string {
+  return message.replace(/postgres(?:ql)?:\/\/\S+/gi, '[redacted]');
 }
 
 class PgUsersRepo implements UsersRepo {
