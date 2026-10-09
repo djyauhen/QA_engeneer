@@ -10,13 +10,13 @@ npm.cmd install
 
 ## Запуск
 
-API по умолчанию слушает порт **3000** (`PORT` в `backend/src/config.ts`, `loadConfig`). Dev-сервер проксирует `/session`, `/catalog`, `/checks`, `/reports`, `/admin` и `/preview` на `http://127.0.0.1:3000`.
-
 ```powershell
 npm.cmd start
 ```
 
-Базовый URL API задаётся в `src/environments/environment.ts` (`apiBaseUrl`). Пустая строка означает запросы на тот же origin, что и приложение.
+Базовый URL API в dev задаётся в `src/environments/environment.ts` (`apiBaseUrl`): `https://backend-chi-six-58.vercel.app/`. Абсолютный адрес идёт напрямую на этот backend. Прокси dev-сервера (`proxy.conf.json` → `http://127.0.0.1:3000`) при абсолютном `apiBaseUrl` не используется.
+
+Production-сборка подменяет `environment.ts` на `environment.production.ts`, который берёт `apiBaseUrl` из `src/environments/api-base.ts`. По умолчанию там тот же backend без завершающего слэша. Скрипт `scripts/apply-api-base.mjs` записывает это значение, если `API_BASE_URL` не задан, и подставляет `API_BASE_URL`, если переменная задана.
 
 ## Сборка
 

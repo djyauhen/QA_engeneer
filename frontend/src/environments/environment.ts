@@ -1,4 +1,4 @@
 export const environment = {
-  /** Empty base uses the dev-server proxy to the Nest port from loadConfig (3000). */
-  apiBaseUrl: '',
+  /** Dev builds call this API directly. An absolute URL bypasses the dev-server proxy. */
+  apiBaseUrl: 'https://backend-chi-six-58.vercel.app/',
 };
