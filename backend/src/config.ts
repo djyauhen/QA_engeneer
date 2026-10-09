@@ -1,3 +1,5 @@
+import os from 'os';
+import path from 'path';
 import { Role } from './roles';
 
 export interface AppConfig {
@@ -61,7 +63,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     aioBaseUrl: (env.AIO_BASE_URL ?? 'https://app.aio.tech').replace(/\/$/, ''),
     tlLogin,
     tlPassword,
-    workDir: env.WORK_DIR ?? './data/workdir',
+    workDir: resolveWorkDir(env),
     port: Number.isFinite(port) ? port : 3000,
     publicBaseUrl: (env.PUBLIC_BASE_URL ?? `http://127.0.0.1:${Number.isFinite(port) ? port : 3000}`).replace(
       /\/$/,
@@ -82,6 +84,17 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     lighthouseChromePath: env.LIGHTHOUSE_CHROME_PATH ?? '',
     bcryptRounds: positiveInt(env.BCRYPT_ROUNDS, 10),
   };
+}
+
+function resolveWorkDir(env: NodeJS.ProcessEnv): string {
+  const configured = env.WORK_DIR?.trim() || './data/workdir';
+  if (env.VERCEL !== '1') return configured;
+  const tmp = os.tmpdir();
+  if (path.isAbsolute(configured)) {
+    const rel = path.relative(tmp, configured);
+    if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return configured;
+  }
+  return path.join(tmp, 'qa-workdir');
 }
 
 function parseFrontendOrigin(raw: string | undefined): string[] {

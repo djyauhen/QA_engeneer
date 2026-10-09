@@ -1,3 +1,5 @@
+import os from 'os';
+import path from 'path';
 import { loadConfig } from '../src/config';
 import { corsOrigin } from '../src/configure-app';
 import { createPostgresRepos } from '../src/storage/postgres-repos';
@@ -18,6 +20,15 @@ describe('startup', () => {
   it('skips the in-process catalog timer on Vercel', () => {
     const config = loadConfig({ ...required, VERCEL: '1', CATALOG_AUTO_REFRESH: '1' });
     expect(config.catalogAutoRefresh).toBe(false);
+  });
+
+  it('unpacks into the instance temp directory on Vercel', () => {
+    const deployed = loadConfig({ ...required, VERCEL: '1', WORK_DIR: './data/workdir' });
+    expect(deployed.workDir).toBe(path.join(os.tmpdir(), 'qa-workdir'));
+    const custom = loadConfig({ ...required, VERCEL: '1', WORK_DIR: path.join(os.tmpdir(), 'custom-work') });
+    expect(custom.workDir).toBe(path.join(os.tmpdir(), 'custom-work'));
+    const local = loadConfig({ ...required, WORK_DIR: './data/workdir' });
+    expect(local.workDir).toBe('./data/workdir');
   });
 
   it('keeps the deployed frontend origin when FRONTEND_ORIGIN is set', () => {

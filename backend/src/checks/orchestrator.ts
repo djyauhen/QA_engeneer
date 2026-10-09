@@ -140,18 +140,23 @@ export class CheckOrchestrator {
     try {
       await withAttempts(ATTEMPTS, async (attempt) => {
         check.step('unpack', attempt === 1 ? 'running' : 'retrying');
-        if (!check.zip) throw new Error('no-zip');
-        const prepared = this.workdir.prepare(check.ownerLogin);
-        check.replaced_previous_stand = check.replaced_previous_stand || prepared.replaced;
-        const unpacked = unpackZip(check.zip, prepared.dir);
-        check.projectPath = unpacked.projectPath;
-        check.landingFolder = unpacked.landingFolder;
+        if (!check.zip) throw new HaltAttempts(new Error('no-zip'));
+        try {
+          const prepared = this.workdir.prepare(check.ownerLogin);
+          check.replaced_previous_stand = check.replaced_previous_stand || prepared.replaced;
+          const unpacked = unpackZip(check.zip, prepared.dir);
+          check.projectPath = unpacked.projectPath;
+          check.landingFolder = unpacked.landingFolder;
+        } catch (error) {
+          if (permanentUnpackError(error)) throw new HaltAttempts(error);
+          throw error;
+        }
       });
       check.zip = null;
       check.step('unpack', 'done');
-    } catch {
+    } catch (error) {
       check.zip = null;
-      check.step('unpack', 'failed', 'Сбой распаковки после повторов');
+      check.step('unpack', 'failed', unpackFailureText(error));
       throw new Error('unpack-failed');
     }
   }
@@ -299,6 +304,33 @@ export class CheckOrchestrator {
   private throwIfAborted(check: CheckRecord): void {
     if (check.aborted) throw abortError();
   }
+}
+
+const PERMANENT_UNPACK_CODES = new Set(['EROFS', 'EPERM', 'EACCES', 'ENOSPC', 'ENOENT', 'ENOTDIR', 'EISDIR']);
+
+function permanentUnpackError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (
+    error.message === 'no-zip' ||
+    error.message === 'Недопустимый путь в архиве' ||
+    error.message === 'Не удалось определить каталог ленда'
+  ) {
+    return true;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return !!code && PERMANENT_UNPACK_CODES.has(code);
+}
+
+function unpackFailureText(error: unknown): string {
+  const base = 'Сбой распаковки после повторов';
+  if (!(error instanceof Error)) return base;
+  if (error.message === 'no-zip') return `${base}: нет архива`;
+  if (error.message === 'Недопустимый путь в архиве' || error.message === 'Не удалось определить каталог ленда') {
+    return `${base}: ${error.message}`;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code && PERMANENT_UNPACK_CODES.has(code)) return `${base}: ${code}`;
+  return base;
 }
 
 function downloadFailureText(error: unknown): string {
