@@ -11,6 +11,26 @@ export interface OriginalFile {
   read(): Promise<Buffer>;
 }
 
+export class AioDownloadError extends Error {
+  readonly status: number | null;
+  readonly permanent: boolean;
+
+  constructor(kind: 'http' | 'network' | 'body', status: number | null = null) {
+    const message =
+      kind === 'http' && status !== null
+        ? `Сбой скачивания файла: HTTP ${status}`
+        : kind === 'body'
+          ? 'Сбой скачивания файла: обрыв тела'
+          : 'Сбой скачивания файла: сеть';
+    super(message);
+    this.name = 'AioDownloadError';
+    this.status = status;
+    this.permanent =
+      kind === 'body' ||
+      (kind === 'http' && status !== null && status >= 400 && status < 500 && status !== 408 && status !== 429);
+  }
+}
+
 export abstract class AioClient {
   abstract loadCatalogRows(query?: CatalogQuery): Promise<unknown[]>;
   abstract requestDownload(uuid: string): Promise<void>;
@@ -176,11 +196,21 @@ export class HttpAioClient extends AioClient {
   }
 
   private async downloadFile(fileUrl: string): Promise<Buffer> {
-    const url = new URL(fileUrl);
-    url.searchParams.set('token', this.config.aioToken);
-    const response = await this.call(url.toString(), { method: 'GET', headers: { accept: 'application/octet-stream' } });
-    const bytes = Buffer.from(await response.arrayBuffer());
-    return bytes;
+    const headers = { accept: 'application/octet-stream' };
+    assertAioHeaders(headers);
+    const href = signedStorageUrl(fileUrl) ? fileUrl : withDownloadToken(fileUrl, this.config.aioToken);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(href, { method: 'GET', headers });
+    } catch {
+      throw new AioDownloadError('network');
+    }
+    if (!response.ok) throw new AioDownloadError('http', response.status);
+    try {
+      return Buffer.from(await response.arrayBuffer());
+    } catch {
+      throw new AioDownloadError('body');
+    }
   }
 
   private withToken(pathname: string): URL {
@@ -217,6 +247,21 @@ function readNotifications(body: unknown): Array<Record<string, unknown>> {
   const rows = (data as Record<string, unknown>).data;
   if (!Array.isArray(rows)) return [];
   return rows.filter((row): row is Record<string, unknown> => !!row && typeof row === 'object');
+}
+
+function signedStorageUrl(fileUrl: string): boolean {
+  try {
+    const url = new URL(fileUrl);
+    return url.searchParams.has('signature') && url.searchParams.has('expires');
+  } catch {
+    return false;
+  }
+}
+
+function withDownloadToken(fileUrl: string, token: string): string {
+  const url = new URL(fileUrl);
+  url.searchParams.set('token', token);
+  return url.toString();
 }
 
 function delay(ms: number): Promise<void> {

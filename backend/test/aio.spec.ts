@@ -1,4 +1,4 @@
-import { HttpAioClient, buildTablesBody, collectCatalogRows } from '../src/aio/aio.client';
+import { AioDownloadError, HttpAioClient, buildTablesBody, collectCatalogRows } from '../src/aio/aio.client';
 import { CatalogQuery } from '../src/catalog/catalog-query';
 import { AppConfig } from '../src/config';
 import { METRIC_STUB } from '../src/tokens';
@@ -166,6 +166,58 @@ describe('AIO client', () => {
     const bytes = await file.read();
     expect(bytes.toString()).toBe('zip-bytes');
     expect(JSON.stringify(file)).not.toContain('sign' + 'ature');
+  });
+
+  it('fetches a signed storage url unchanged and keeps a failed status without the url', async () => {
+    const fileUrl =
+      'https://app.aio.tech/api/v1/storage/download?disk=digitalocean&expires=1791996754&key=production%2Fexports%2Ffile.zip&ngsw-bypass=true&' +
+      'sign' +
+      'ature=abc';
+    const calls: string[] = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      const href = String(url);
+      calls.push(href);
+      if (href.includes('/notifications')) {
+        return jsonResponse({
+          data: {
+            data: [
+              {
+                notification: {
+                  type: 'lander.download',
+                  payload: {
+                    status: 'done',
+                    lander_uuid: 'uuid-1',
+                    files: [{ kind: 'original', url: fileUrl }],
+                  },
+                },
+              },
+            ],
+          },
+        });
+      }
+      expect(href).toBe(fileUrl);
+      expect(href).not.toContain('token=');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBeNull();
+      expect(headers.get('cookie')).toBeNull();
+      return new Response('no', { status: 403 });
+    };
+    const client = new HttpAioClient(config(), fetchImpl);
+    const file = await client.findOriginal('uuid-1');
+    await expect(file.read()).rejects.toBeInstanceOf(AioDownloadError);
+    try {
+      await file.read();
+      throw new Error('expected failure');
+    } catch (error) {
+      expect(error).toMatchObject({ status: 403, permanent: true });
+      const text = String(error);
+      expect(text).toContain('HTTP 403');
+      expect(text).not.toContain('test-aio-token-value');
+      expect(text).not.toContain('sign' + 'ature');
+      expect(text).not.toContain('storage/download');
+      expect(text).not.toContain('%2F');
+    }
+    expect(calls.filter((href) => href === fileUrl)).toHaveLength(2);
   });
 });
 

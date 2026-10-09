@@ -3,7 +3,7 @@ import path from 'path';
 import { Inject, Injectable } from '@nestjs/common';
 import { AiClient } from '../ai/ai.client';
 import { completeFindings } from '../ai/ai.client';
-import { AioClient } from '../aio/aio.client';
+import { AioClient, AioDownloadError } from '../aio/aio.client';
 import { CostsService } from '../admin/admin.services';
 import { RulesService } from '../admin/admin.services';
 import { unpackZip } from '../files/unpack';
@@ -26,7 +26,7 @@ import { getAllFilesByExtensions, relFromLanding } from '../static/landing-utils
 import { StaticChecks, summarizeStatic } from '../static/static-checks';
 import { PreviewService } from '../stand/preview.service';
 import { abortError, CheckRecord, isAbort } from './check.record';
-import { ATTEMPTS, withAttempts } from './retry';
+import { ATTEMPTS, HaltAttempts, withAttempts } from './retry';
 
 @Injectable()
 export class CheckOrchestrator {
@@ -121,12 +121,17 @@ export class CheckOrchestrator {
     try {
       await withAttempts(ATTEMPTS, async (attempt) => {
         check.step('download_file', attempt === 1 ? 'running' : 'retrying');
-        if (!original) throw new Error('no-file');
-        check.zip = await original.read();
+        if (!original) throw new HaltAttempts(new Error('no-file'));
+        try {
+          check.zip = await original.read();
+        } catch (error) {
+          if (error instanceof AioDownloadError && error.permanent) throw new HaltAttempts(error);
+          throw error;
+        }
       });
       check.step('download_file', 'done');
-    } catch {
-      check.step('download_file', 'failed', 'Сбой скачивания файла после повторов');
+    } catch (error) {
+      check.step('download_file', 'failed', downloadFailureText(error));
       throw new Error('download-file-failed');
     }
   }
@@ -294,6 +299,17 @@ export class CheckOrchestrator {
   private throwIfAborted(check: CheckRecord): void {
     if (check.aborted) throw abortError();
   }
+}
+
+function downloadFailureText(error: unknown): string {
+  const base = 'Сбой скачивания файла после повторов';
+  if (error instanceof AioDownloadError) {
+    if (error.status !== null) return `${base}: HTTP ${error.status}`;
+    if (error.message.includes('обрыв тела')) return `${base}: обрыв тела`;
+    return `${base}: сеть`;
+  }
+  if (error instanceof Error && error.message === 'no-file') return `${base}: нет файла`;
+  return base;
 }
 
 function readTexts(landingFolder: string): Array<{ path: string; text: string }> {
