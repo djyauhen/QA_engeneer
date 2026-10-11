@@ -49,6 +49,16 @@ const SYSTEM_PROMPT = [
   'Основной контекст — файлы ленда. Публичный URL стенда можно учесть, если модель умеет его открыть; локальный или закрытый URL не обязателен.',
 ].join(' ');
 
+export class AiCallError extends Error {
+  readonly detail: string;
+
+  constructor(detail: string) {
+    super('Сбой вызова ИИ');
+    this.name = 'AiCallError';
+    this.detail = detail;
+  }
+}
+
 export class StubAiClient extends AiClient {
   async review(): Promise<AiResult> {
     return { findings: [], usage: null };
@@ -102,22 +112,43 @@ export class DeepSeekAiClient extends AiClient {
       };
       const completion = await this.openai.chat.completions.create(request);
       const content = completion.choices[0]?.message?.content;
-      if (typeof content !== 'string') throw new Error('empty');
-      return { findings: parseFindings(content), usage: plainUsage(completion.usage) };
+      if (typeof content !== 'string' || !content.trim()) throw new AiCallError('empty');
+      try {
+        return { findings: parseFindings(content), usage: plainUsage(completion.usage) };
+      } catch {
+        throw new AiCallError('invalid_json');
+      }
     } catch (error) {
-      if (process.env.NODE_ENV !== 'test') console.error(`ai call failed: ${aiFailureLabel(error)}`);
-      throw new Error('Сбой вызова ИИ');
+      if (error instanceof AiCallError) {
+        logAiFailure(error.detail);
+        throw error;
+      }
+      const detail = aiFailureLabel(error);
+      logAiFailure(detail);
+      throw new AiCallError(detail);
     }
   }
 }
 
+function logAiFailure(detail: string): void {
+  if (process.env.NODE_ENV !== 'test') console.error(`ai call failed: ${detail}`);
+}
+
 function aiFailureLabel(error: unknown): string {
   const name = error instanceof Error ? error.name : 'Error';
+  if (!error || typeof error !== 'object') return name;
   const status =
-    error && typeof error === 'object' && 'status' in error && typeof (error as { status: unknown }).status === 'number'
-      ? ` HTTP ${(error as { status: number }).status}`
-      : '';
-  return `${name}${status}`;
+    'status' in error && typeof error.status === 'number' ? ` HTTP ${error.status}` : '';
+  return `${name}${status}${safeCode(error)}`;
+}
+
+function safeCode(error: object): string {
+  const direct = 'code' in error && typeof error.code === 'string' ? error.code : '';
+  const nested = 'error' in error ? error.error : undefined;
+  const nestedCode =
+    nested && typeof nested === 'object' && 'code' in nested && typeof nested.code === 'string' ? nested.code : '';
+  const code = direct || nestedCode;
+  return /^[a-z0-9_]{1,40}$/i.test(code) ? ` ${code}` : '';
 }
 
 function plainUsage(usage: unknown): Record<string, unknown> | null {

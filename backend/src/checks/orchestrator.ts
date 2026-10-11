@@ -1,8 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { Inject, Injectable } from '@nestjs/common';
-import { AiClient } from '../ai/ai.client';
-import { completeFindings } from '../ai/ai.client';
+import { AiCallError, AiClient, completeFindings } from '../ai/ai.client';
 import { AioClient, AioDownloadError } from '../aio/aio.client';
 import { CostsService } from '../admin/admin.services';
 import { RulesService } from '../admin/admin.services';
@@ -223,13 +222,14 @@ export class CheckOrchestrator {
         decision: check.aiBlock?.decision ?? null,
       };
       check.step('ai', 'done');
-    } catch {
+    } catch (error) {
       check.aiBlock = {
         status: AI_STATUS_ERROR,
         findings: [],
         decision: check.aiBlock?.decision ?? null,
       };
-      check.step('ai', 'failed', 'Ошибка ИИ после повторов');
+      const detail = error instanceof AiCallError ? error.detail : '';
+      check.step('ai', 'failed', detail ? `Ошибка ИИ после повторов: ${detail}` : 'Ошибка ИИ после повторов');
     }
   }
 

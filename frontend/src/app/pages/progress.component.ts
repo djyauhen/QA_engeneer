@@ -47,7 +47,7 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
               <span class="extra">Идёт повтор</span>
             }
             @if (step.state === 'failed') {
-              <span class="extra">Ошибка этой части</span>
+              <span class="extra">{{ failedText(step) }}</span>
             }
             @if (step.state === 'waiting_user') {
               <span class="extra">Развилка ИИ</span>
@@ -127,6 +127,11 @@ export class ProgressComponent {
     return STEP_LABELS[name] ?? name;
   }
 
+  failedText(step: StepSnapshot): string {
+    if (step.name === 'ai' && step.message) return step.message;
+    return 'Ошибка этой части';
+  }
+
   mark(step: StepSnapshot): string {
     if (step.state === 'done') return '✓';
     if (step.state === 'failed') return '!';
@@ -158,6 +163,7 @@ export class ProgressComponent {
       catalog_status: '',
       static: view.static,
       ai: view.ai,
+      ai_note: aiFailureNote(view.steps),
       lighthouse: view.lighthouse,
     };
   }
@@ -204,4 +210,9 @@ export class ProgressComponent {
     if (immediate) tick();
     this.timer = window.setInterval(tick, 1500);
   }
+}
+
+function aiFailureNote(steps: StepSnapshot[]): string {
+  const step = steps.find((item) => item.name === 'ai');
+  return step?.state === 'failed' && step.message ? step.message : '';
 }

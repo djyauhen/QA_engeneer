@@ -88,6 +88,9 @@ import { completeAiCard, findingPath, formatTimestamp, isImageSource, isSignedUr
           <span class="chip">{{ data().ai?.status }}</span>
         }
       </header>
+      @if (data().ai_note) {
+        <p class="hint">{{ data().ai_note }}</p>
+      }
       @for (card of aiCards(); track card.path + card.quote) {
         <article class="ai-card">
           <p class="mono path">{{ card.path }}</p>

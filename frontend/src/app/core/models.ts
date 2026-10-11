@@ -213,6 +213,7 @@ export interface ReportBody {
   catalog_status: string;
   static: StaticBlock | null;
   ai: AiBlock | null;
+  ai_note?: string;
   lighthouse: LighthouseBlock | null;
 }
 

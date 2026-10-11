@@ -81,6 +81,7 @@ export function toBody(report: ReportPayload): ReportBody {
     catalog_status: report.status ?? '',
     static: report.static,
     ai: report.ai,
+    ai_note: report.steps.find((step) => step.name === 'ai' && step.state === 'failed')?.message ?? '',
     lighthouse: report.lighthouse,
   };
 }

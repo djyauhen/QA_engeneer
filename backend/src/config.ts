@@ -77,9 +77,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     aioNotifyPollMs: positiveInt(env.AIO_NOTIFY_POLL_MS, 2000),
     aioNotifyPollsPerAttempt: positiveInt(env.AIO_NOTIFY_POLLS_PER_ATTEMPT, 5),
     aiMode: env.AI_MODE === 'real' ? 'real' : 'stub',
-    aiBaseUrl: (env.AI_BASE_URL || 'https://api.deepseek.com').replace(/\/$/, ''),
-    aiApiKey: env.DEEPSEEK_API_KEY || env.AI_API_KEY || '',
-    aiModel: env.AI_MODEL || 'deepseek-flash',
+    aiBaseUrl: (unwrapEnv(env.AI_BASE_URL) || 'https://api.deepseek.com').replace(/\/$/, ''),
+    aiApiKey: unwrapEnv(env.DEEPSEEK_API_KEY) || unwrapEnv(env.AI_API_KEY),
+    aiModel: unwrapEnv(env.AI_MODEL) || 'deepseek-flash',
     lighthouseMode: env.LIGHTHOUSE_MODE === 'real' ? 'real' : 'stub',
     lighthouseChromePath: env.LIGHTHOUSE_CHROME_PATH ?? '',
     bcryptRounds: positiveInt(env.BCRYPT_ROUNDS, 10),
@@ -103,6 +103,15 @@ function parseFrontendOrigin(raw: string | undefined): string[] {
     .split(',')
     .map((origin) => origin.trim().replace(/\/+$/, ''))
     .filter((origin) => origin.length > 0);
+}
+
+function unwrapEnv(value: string | undefined): string {
+  let text = (value ?? '').trim();
+  if (text.length >= 2) {
+    const quote = text[0];
+    if ((quote === '"' || quote === "'") && text.endsWith(quote)) text = text.slice(1, -1).trim();
+  }
+  return text;
 }
 
 function positiveInt(raw: string | undefined, fallback: number): number {

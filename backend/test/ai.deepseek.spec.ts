@@ -1,4 +1,5 @@
 import {
+  AiCallError,
   DeepSeekAiClient,
   StubAiClient,
   completeFindings,
@@ -137,12 +138,22 @@ describe('DeepSeek chat completions client', () => {
       throw new Error('network down test-deepseek-placeholder');
     };
     const http: typeof fetch = async () => jsonResponse({ error: 'test-deepseek-placeholder leaked' }, 502);
-    await expect(new DeepSeekAiClient(deepseekConfig(), network).review(sampleInput)).rejects.toMatchObject({
-      message: 'Сбой вызова ИИ',
-    });
-    await expect(new DeepSeekAiClient(deepseekConfig(), http).review(sampleInput)).rejects.toMatchObject({
-      message: 'Сбой вызова ИИ',
-    });
+    const networkError = await new DeepSeekAiClient(deepseekConfig(), network).review(sampleInput).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const httpError = await new DeepSeekAiClient(deepseekConfig(), http).review(sampleInput).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(networkError).toBeInstanceOf(AiCallError);
+    expect(httpError).toBeInstanceOf(AiCallError);
+    expect((networkError as AiCallError).message).toBe('Сбой вызова ИИ');
+    expect((httpError as AiCallError).message).toBe('Сбой вызова ИИ');
+    expect((networkError as AiCallError).detail).not.toContain('test-deepseek-placeholder');
+    expect((httpError as AiCallError).detail).toMatch(/HTTP 502/);
+    expect((httpError as AiCallError).detail).not.toContain('test-deepseek-placeholder');
+    expect((httpError as AiCallError).detail).not.toContain('leaked');
   });
 
   it('createAiClient stays stub when AI_MODE is not real or the key is empty', () => {
@@ -181,6 +192,14 @@ describe('AI config defaults', () => {
     expect(config.aiModel).toBe('deepseek-flash');
     expect(config.aiBaseUrl).toBe(DEFAULT_DEEPSEEK_API_BASE);
     expect(config.aiApiKey).toBe('');
+  });
+
+  it('unwraps quotes and spaces around the DeepSeek key', () => {
+    const config = loadConfig({
+      ...required,
+      DEEPSEEK_API_KEY: ' "test-deepseek-preferred" ',
+    });
+    expect(config.aiApiKey).toBe('test-deepseek-preferred');
   });
 
   it('prefers DEEPSEEK_API_KEY over AI_API_KEY', () => {
