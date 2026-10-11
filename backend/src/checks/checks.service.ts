@@ -6,6 +6,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { waitUntil } from '@vercel/functions';
 import { SessionUser } from '../config';
 import { CatalogService } from '../catalog/catalog.service';
 import { toChoiceRow } from '../catalog/map-row';
@@ -51,6 +52,9 @@ export class ChecksService {
     check.step('catalog', 'done');
     this.store.add(check);
     check.finished = this.orchestrator.run(check);
+    // The response returns immediately. On Vercel the invocation is cancelled with it
+    // unless this promise is registered; locally waitUntil is a no-op.
+    waitUntil(check.finished);
     return { check_id: check.id };
   }
 

@@ -4,6 +4,9 @@ import { AiFinding } from '../reports/report.types';
 
 export const DEFAULT_DEEPSEEK_API_BASE = 'https://api.deepseek.com';
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
+/** Thinking stays on, but the default high-effort budget is 64K tokens and outlives a Vercel function. */
+export const DEEPSEEK_REASONING_EFFORT = 'low';
+export const DEEPSEEK_MAX_OUTPUT_TOKENS = 8192;
 
 export interface AiInput {
   files: Array<{ path: string; text: string }>;
@@ -89,7 +92,8 @@ export class DeepSeekAiClient extends AiClient {
         model,
         stream: false,
         thinking: { type: 'enabled' },
-        reasoning_effort: 'high',
+        reasoning_effort: DEEPSEEK_REASONING_EFFORT,
+        max_tokens: DEEPSEEK_MAX_OUTPUT_TOKENS,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
@@ -100,10 +104,20 @@ export class DeepSeekAiClient extends AiClient {
       const content = completion.choices[0]?.message?.content;
       if (typeof content !== 'string') throw new Error('empty');
       return { findings: parseFindings(content), usage: plainUsage(completion.usage) };
-    } catch {
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'test') console.error(`ai call failed: ${aiFailureLabel(error)}`);
       throw new Error('Сбой вызова ИИ');
     }
   }
+}
+
+function aiFailureLabel(error: unknown): string {
+  const name = error instanceof Error ? error.name : 'Error';
+  const status =
+    error && typeof error === 'object' && 'status' in error && typeof (error as { status: unknown }).status === 'number'
+      ? ` HTTP ${(error as { status: number }).status}`
+      : '';
+  return `${name}${status}`;
 }
 
 function plainUsage(usage: unknown): Record<string, unknown> | null {

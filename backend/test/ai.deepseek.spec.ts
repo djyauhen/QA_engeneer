@@ -5,6 +5,8 @@ import {
   createAiClient,
   DEFAULT_DEEPSEEK_API_BASE,
   DEFAULT_DEEPSEEK_MODEL,
+  DEEPSEEK_MAX_OUTPUT_TOKENS,
+  DEEPSEEK_REASONING_EFFORT,
 } from '../src/ai/ai.client';
 import { AppConfig, loadConfig } from '../src/config';
 
@@ -105,7 +107,8 @@ describe('DeepSeek chat completions client', () => {
     expect(body.model).toBe('deepseek-flash');
     expect(body.stream).toBe(false);
     expect(body.thinking).toEqual({ type: 'enabled' });
-    expect(body.reasoning_effort).toBe('high');
+    expect(body.reasoning_effort).toBe(DEEPSEEK_REASONING_EFFORT);
+    expect(body.max_tokens).toBe(DEEPSEEK_MAX_OUTPUT_TOKENS);
     expect(body.response_format).toEqual({ type: 'json_object' });
     const messages = body.messages as Array<{ role: string; content: string }>;
     expect(messages).toHaveLength(2);
