@@ -194,12 +194,14 @@ describe('AI config defaults', () => {
     expect(config.aiApiKey).toBe('');
   });
 
-  it('unwraps quotes and spaces around the DeepSeek key', () => {
+  it('unwraps quotes and spaces around the DeepSeek key and the AIO token', () => {
     const config = loadConfig({
       ...required,
+      AIO_TOKEN: ' "test-aio-token-value" ',
       DEEPSEEK_API_KEY: ' "test-deepseek-preferred" ',
     });
     expect(config.aiApiKey).toBe('test-deepseek-preferred');
+    expect(config.aioToken).toBe('test-aio-token-value');
   });
 
   it('prefers DEEPSEEK_API_KEY over AI_API_KEY', () => {

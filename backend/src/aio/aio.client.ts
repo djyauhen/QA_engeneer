@@ -131,7 +131,7 @@ export class HttpAioClient extends AioClient {
     const requested = (body.messages ?? []).some((item) => item.message === 'Download Requested');
     const echoed = body.primary === uuid || body.uuid === uuid;
     if (!requested || !echoed) {
-      throw new Error('Сбой вызова AIO');
+      throw new Error('Сбой вызова AIO: нет Download Requested');
     }
   }
 
@@ -222,13 +222,16 @@ export class HttpAioClient extends AioClient {
   private async call(url: string | URL, init: RequestInit): Promise<Response> {
     assertAioHeaders(init.headers);
     const href = typeof url === 'string' ? url : url.toString();
+    let response: Response;
     try {
-      const response = await this.fetchImpl(href, init);
-      if (!response.ok) throw new Error('status');
-      return response;
-    } catch {
-      throw new Error('Сбой вызова AIO');
+      response = await this.fetchImpl(href, init);
+    } catch (error) {
+      const name = error instanceof Error ? error.name : '';
+      const safeName = /^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(name) && name !== 'Error' ? `: ${name}` : '';
+      throw new Error(`Сбой вызова AIO${safeName}`);
     }
+    if (!response.ok) throw new Error(`Сбой вызова AIO: HTTP ${response.status}`);
+    return response;
   }
 }
 

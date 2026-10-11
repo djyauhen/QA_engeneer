@@ -102,8 +102,13 @@ export class CheckOrchestrator {
         await this.aio.requestDownload(check.card.uuid);
       });
       check.step('download_request', 'done');
-    } catch {
-      check.step('download_request', 'failed', 'Сбой запроса на скачивание после повторов');
+    } catch (error) {
+      const detail = aioFailureDetail(error);
+      check.step(
+        'download_request',
+        'failed',
+        detail ? `Сбой запроса на скачивание после повторов: ${detail}` : 'Сбой запроса на скачивание после повторов',
+      );
       throw new Error('download-request-failed');
     }
     let original: { read(): Promise<Buffer> } | null = null;
@@ -331,6 +336,11 @@ function unpackFailureText(error: unknown): string {
   const code = (error as NodeJS.ErrnoException).code;
   if (code && PERMANENT_UNPACK_CODES.has(code)) return `${base}: ${code}`;
   return base;
+}
+
+function aioFailureDetail(error: unknown): string {
+  if (!(error instanceof Error) || !error.message.startsWith('Сбой вызова AIO')) return '';
+  return error.message.slice('Сбой вызова AIO'.length).replace(/^:\s*/, '');
 }
 
 function downloadFailureText(error: unknown): string {

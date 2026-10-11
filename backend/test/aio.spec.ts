@@ -109,6 +109,8 @@ describe('AIO client', () => {
       throw new Error(`network ${url}`);
     });
     await expect(client.loadCatalogRows()).rejects.toThrow('Сбой вызова AIO');
+    const refused = new HttpAioClient(config(), async () => new Response('no', { status: 401 }));
+    await expect(refused.requestDownload('uuid-1')).rejects.toThrow('Сбой вызова AIO: HTTP 401');
     try {
       await client.loadCatalogRows();
       throw new Error('expected failure');

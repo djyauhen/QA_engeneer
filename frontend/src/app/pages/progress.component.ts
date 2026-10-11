@@ -128,8 +128,7 @@ export class ProgressComponent {
   }
 
   failedText(step: StepSnapshot): string {
-    if (step.name === 'ai' && step.message) return step.message;
-    return 'Ошибка этой части';
+    return step.message || 'Ошибка этой части';
   }
 
   mark(step: StepSnapshot): string {

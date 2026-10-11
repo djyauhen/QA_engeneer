@@ -44,7 +44,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   const storage = env.STORAGE === 'memory' ? 'memory' : 'neon';
   const tlLogin = env.TL_LOGIN ?? '';
   const tlPassword = env.TL_PASSWORD ?? '';
-  const aioToken = env.AIO_TOKEN ?? '';
+  const aioToken = unwrapEnv(env.AIO_TOKEN);
   const databaseUrl = env.DATABASE_URL ?? '';
   if (!tlLogin || !tlPassword) {
     throw new Error('TL_LOGIN and TL_PASSWORD are required');
@@ -60,7 +60,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     storage,
     databaseUrl,
     aioToken,
-    aioBaseUrl: (env.AIO_BASE_URL ?? 'https://app.aio.tech').replace(/\/$/, ''),
+    aioBaseUrl: (unwrapEnv(env.AIO_BASE_URL) || 'https://app.aio.tech').replace(/\/$/, ''),
     tlLogin,
     tlPassword,
     workDir: resolveWorkDir(env),
