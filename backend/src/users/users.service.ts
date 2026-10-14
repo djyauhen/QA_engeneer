@@ -48,6 +48,9 @@ function parseCreate(body: unknown): { login: string; password: string; role: st
   if (typeof record.login !== 'string' || !record.login || typeof record.password !== 'string' || !record.password) {
     throw new BadRequestException({ error: 'Некорректный запрос' });
   }
+  if (record.password.length < 8 || record.password.length > 128) {
+    throw new BadRequestException({ error: 'Некорректный запрос' });
+  }
   if (!isRole(record.role)) throw new BadRequestException({ error: 'Некорректная роль' });
   return { login: record.login, password: record.password, role: record.role };
 }

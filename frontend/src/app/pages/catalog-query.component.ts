@@ -162,12 +162,15 @@ function fromForm(form: CatalogQueryForm): { ok: true; query: CatalogQuery } | {
   let dates: CatalogQuery['dates'];
   if (!from && !to && !timezone) {
     dates = null;
-  } else if (!from || !to || !timezone) {
-    return { ok: false, error: 'Укажите начало, конец и пояс периода.' };
+  } else if (!from || !to) {
+    return { ok: false, error: 'Укажите начало и конец периода.' };
+  } else if (!timezone) {
+    return { ok: false, error: 'Укажите пояс периода.' };
   } else {
     const fromApi = datetimeLocalToApiDate(from);
     const toApi = datetimeLocalToApiDate(to);
     if (!fromApi || !toApi) return { ok: false, error: 'Некорректная дата периода.' };
+    if (fromApi > toApi) return { ok: false, error: 'Конец периода раньше начала.' };
     dates = [fromApi, toApi, timezone];
   }
   return {

@@ -31,11 +31,19 @@ describe('startup', () => {
     expect(local.workDir).toBe('./data/workdir');
   });
 
-  it('keeps the deployed frontend origin when FRONTEND_ORIGIN is set', () => {
-    expect(corsOrigin(['http://localhost:4200'])).toEqual([
-      'http://localhost:4200',
-      'https://qa-engeneer.vercel.app',
-    ]);
+  it('uses only configured frontend origins', () => {
+    expect(corsOrigin(['http://localhost:4200'])).toEqual(['http://localhost:4200']);
+  });
+
+  it('requires FRONTEND_ORIGIN for a Vercel deploy with Neon', () => {
+    expect(() =>
+      loadConfig({
+        ...required,
+        STORAGE: 'neon',
+        DATABASE_URL: 'postgresql://USER:PASSWORD@HOST/DB?sslmode=verify-full',
+        VERCEL: '1',
+      }),
+    ).toThrow(/FRONTEND_ORIGIN is required/);
   });
 
   it('reflects any origin while FRONTEND_ORIGIN is empty', () => {

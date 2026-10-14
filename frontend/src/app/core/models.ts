@@ -148,6 +148,11 @@ export interface CheckView {
   lighthouse: LighthouseBlock | null;
   preview_image?: string;
   stand_url?: string;
+  actions_allowed?: boolean;
+  countries?: string[];
+  languages?: string[];
+  lander_type_name?: string;
+  catalog_status?: string;
 }
 
 export interface ReportPayload {
@@ -218,11 +223,11 @@ export interface ReportBody {
 }
 
 export const LH_METRICS: Array<{ key: keyof LighthouseMetrics; label: string }> = [
-  { key: 'performance_score', label: 'performance score' },
-  { key: 'first_contentful_paint', label: 'First Contentful Paint' },
-  { key: 'largest_contentful_paint', label: 'Largest Contentful Paint' },
-  { key: 'total_blocking_time', label: 'Total Blocking Time' },
-  { key: 'cumulative_layout_shift', label: 'Cumulative Layout Shift' },
-  { key: 'speed_index', label: 'Speed Index' },
-  { key: 'time_to_interactive', label: 'Time to Interactive' },
+  { key: 'performance_score', label: 'Оценка производительности' },
+  { key: 'first_contentful_paint', label: 'Первая отрисовка' },
+  { key: 'largest_contentful_paint', label: 'Крупнейшая отрисовка' },
+  { key: 'total_blocking_time', label: 'Время блокировки' },
+  { key: 'cumulative_layout_shift', label: 'Смещение вёрстки' },
+  { key: 'speed_index', label: 'Индекс скорости' },
+  { key: 'time_to_interactive', label: 'Время до интерактива' },
 ];

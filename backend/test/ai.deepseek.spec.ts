@@ -17,6 +17,7 @@ function deepseekConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     databaseUrl: '',
     aioToken: 'test-aio-token-value',
     aioBaseUrl: 'https://app.aio.tech',
+    aioStorageHosts: [],
     tlLogin: 'env-tl',
     tlPassword: 'env-tl-pass',
     workDir: '.',
@@ -35,7 +36,9 @@ function deepseekConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     aiModel: DEFAULT_DEEPSEEK_MODEL,
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
+    lighthouseNoSandbox: false,
     bcryptRounds: 4,
+    poolMax: 10,
     ...overrides,
   };
 }

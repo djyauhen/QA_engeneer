@@ -19,7 +19,8 @@ class StartupFailureModule {}
 
 async function buildRuntime(): Promise<Runtime> {
   const config = loadConfig(process.env);
-  const repos = config.storage === 'memory' ? createMemoryRepos() : await createPostgresRepos(config.databaseUrl);
+  const repos =
+    config.storage === 'memory' ? createMemoryRepos() : await createPostgresRepos(config.databaseUrl, config.poolMax);
   return {
     config,
     repos,
@@ -38,6 +39,7 @@ async function bootstrap(): Promise<void> {
     await app.listen(runtime.config.port);
   } catch (error) {
     console.error(`startup failed: ${safeError(error)}`);
+    if (isConfigError(error)) process.exit(1);
     await listenAfterStartupFailure();
   }
 }
@@ -58,6 +60,11 @@ async function listenAfterStartupFailure(): Promise<void> {
 function listenPort(): number {
   const port = Number(process.env.PORT ?? 3000);
   return Number.isFinite(port) && port > 0 ? port : 3000;
+}
+
+function isConfigError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : '';
+  return message.includes('is required') || message.includes('are required');
 }
 
 function safeError(error: unknown): string {

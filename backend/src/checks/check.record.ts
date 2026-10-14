@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { CatalogCard } from '../catalog/map-row';
 import { AiBlock, LighthouseBlock, StaticBlock, StepSnapshot } from '../reports/report.types';
 import { STEP_NAMES, StepName, StepState } from '../tokens';
@@ -13,14 +13,21 @@ export interface CheckHooks {
 }
 
 export class CheckRecord {
-  readonly id = randomUUID();
+  readonly id: string;
   readonly steps: StepSnapshot[];
+  previewToken: string;
   landingFolder: string | null = null;
   projectPath: string | null = null;
   zip: Buffer | null = null;
   effectiveLanguages: string[] | null = null;
   finished: Promise<void> = Promise.resolve();
   aborted = false;
+  detached = false;
+  running = false;
+  rerun = false;
+  resumeArmed = false;
+  private queuedDecision: 'allow' | 'deny' | null = null;
+  private readonly abortController = new AbortController();
 
   private _replacedPreviousStand = false;
   private _standReady = false;
@@ -42,8 +49,25 @@ export class CheckRecord {
     readonly ownerLogin: string,
     readonly ownerRole: string,
     readonly card: CatalogCard,
+    id?: string,
   ) {
+    this.id = id ?? randomUUID();
+    this.previewToken = randomBytes(16).toString('hex');
     this.steps = STEP_NAMES.map((name) => ({ name, state: 'pending' }));
+  }
+
+  get signal(): AbortSignal {
+    return this.abortController.signal;
+  }
+
+  queueDecision(decision: 'allow' | 'deny'): void {
+    if (!this.queuedDecision) this.queuedDecision = decision;
+  }
+
+  takeQueuedDecision(): 'allow' | 'deny' | null {
+    const decision = this.queuedDecision;
+    this.queuedDecision = null;
+    return decision;
   }
 
   attach(hooks: CheckHooks): void {
@@ -175,6 +199,7 @@ export class CheckRecord {
 
   markAborted(): void {
     this.aborted = true;
+    this.abortController.abort();
     this.stopDecisionPoll();
     const abort = this.abortWait;
     this.decisionWait = null;

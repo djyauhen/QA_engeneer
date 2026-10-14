@@ -88,36 +88,88 @@ export function isSignedUrl(value: string): boolean {
   return /signature=|expires=|[?&]token=/i.test(value);
 }
 
-export function isHttpUrl(value: string): boolean {
-  return /^https?:\/\//i.test(value);
-}
+const IMAGE_EXT = /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)(?:$|[?#])/i;
 
 export function isImageSource(value: string): boolean {
-  return value.startsWith('data:image/') || isHttpUrl(value) || /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(value);
+  return value.startsWith('data:image/') || IMAGE_EXT.test(value);
 }
 
 export function scrubSignedUrls(text: string): string {
   return text.replace(/https?:\/\/[^\s]+/gi, (url) => (isSignedUrl(url) ? '[ссылка скрыта]' : url));
 }
 
-export function formatMetric(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '';
-  return String(value);
+const NO_METRIC = 'нет данных';
+
+const TIMING_METRIC = new Set<keyof LighthouseMetrics>([
+  'first_contentful_paint',
+  'largest_contentful_paint',
+  'total_blocking_time',
+  'speed_index',
+  'time_to_interactive',
+]);
+
+export function formatMetric(value: number | null | undefined, key?: keyof LighthouseMetrics): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return NO_METRIC;
+  if (key === 'performance_score') {
+    const score = value >= 0 && value <= 1 ? value * 100 : value;
+    return `${Math.round(score)}%`;
+  }
+  if (key && TIMING_METRIC.has(key)) {
+    if (Math.abs(value) >= 1000) return `${trimTenths(value / 1000)} с`;
+    return `${trimTenths(value)} мс`;
+  }
+  return trimThousandths(value);
+}
+
+function trimTenths(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function trimThousandths(value: number): string {
+  const rounded = Math.round(value * 1000) / 1000;
+  return String(rounded);
 }
 
 export function metricValue(metrics: LighthouseMetrics | null, key: keyof LighthouseMetrics): string {
-  if (!metrics) return '';
-  return formatMetric(metrics[key]);
+  if (!metrics) return NO_METRIC;
+  return formatMetric(metrics[key], key);
 }
 
 export function shouldPoll(steps: StepSnapshot[]): boolean {
-  if (steps.some((step) => step.state === 'running' || step.state === 'retrying' || step.state === 'waiting_user')) {
-    return true;
-  }
   const report = steps.find((step) => step.name === 'report');
   if (report?.state === 'done' || report?.state === 'failed') return false;
-  if (steps.some((step) => step.state === 'failed')) return false;
-  return steps.some((step) => step.state === 'pending');
+  return steps.some(
+    (step) =>
+      step.state === 'running' ||
+      step.state === 'retrying' ||
+      step.state === 'waiting_user' ||
+      step.state === 'pending',
+  );
+}
+
+export function errorText(error: unknown, fallback: string): string {
+  const status = readStatus(error);
+  const body = readErrorBody(error);
+  const message = typeof body?.['message'] === 'string' ? body['message'] : '';
+  const code = typeof body?.['error'] === 'string' ? body['error'] : '';
+  if (status === 401 || code === 'unauthorized') return 'Сессия закончилась. Войдите снова.';
+  if (status === 403 || code === 'forbidden') return 'Недостаточно прав';
+  const raw = message || (code && code !== 'forbidden' ? code : '') || fallback;
+  return scrubSignedUrls(raw);
+}
+
+function readStatus(error: unknown): number {
+  if (typeof error !== 'object' || error === null || !('status' in error)) return 0;
+  const status = (error as { status: unknown }).status;
+  return typeof status === 'number' ? status : 0;
+}
+
+function readErrorBody(error: unknown): Record<string, unknown> | null {
+  if (typeof error !== 'object' || error === null || !('error' in error)) return null;
+  const body = (error as { error: unknown }).error;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  return body as Record<string, unknown>;
 }
 
 export function inputValue(event: Event): string {

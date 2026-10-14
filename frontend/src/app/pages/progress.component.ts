@@ -1,13 +1,15 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { Component, DestroyRef, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { EMPTY, Subject, Subscription } from 'rxjs';
+import { catchError, switchMap } from 'rxjs/operators';
 import { ApiService } from '../core/api.service';
 import { errorText } from '../core/http-error';
 import { shouldPoll } from '../core/format';
 import {
   AI_GATE_TEXT,
   REPLACED_STAND,
-  STATIC_SUMMARY_FAILED,
   STEP_LABELS,
   STRUCTURE_FAILED_TEXT,
   STRUCTURE_NAME,
@@ -15,6 +17,7 @@ import {
   ReportBody,
   StepName,
   StepSnapshot,
+  StepState,
 } from '../core/models';
 import { SessionStore } from '../core/session.store';
 import { ReportBlocksComponent } from '../report/report-blocks.component';
@@ -29,20 +32,24 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
     } @else if (loading() && !view()) {
       <h1>Ход проверки</h1>
       <p>Загрузка…</p>
-    } @else if (error()) {
+    } @else if (error() && !view()) {
       <h1>Ход проверки</h1>
       <p class="alert error" role="alert">{{ error() }}</p>
     } @else if (view(); as current) {
       <h1>Ход проверки</h1>
+      @if (error()) {
+        <p class="alert error" role="alert">{{ error() }}</p>
+      }
       <p class="meta">{{ current.name }} · <span class="mono">{{ current.human_id }}</span></p>
       @if (current.replaced_previous_stand) {
         <p class="alert neutral" role="status">{{ replaced }}</p>
       }
-      <ol class="steps">
+      <ol class="steps" aria-live="polite">
         @for (step of current.steps; track step.name) {
           <li [class]="'step step-' + step.state">
             <span class="mark" aria-hidden="true">{{ mark(step) }}</span>
             <span>{{ label(step.name) }}</span>
+            <span class="step-status">{{ statusText(step.state) }}</span>
             @if (step.state === 'retrying') {
               <span class="extra">Идёт повтор</span>
             }
@@ -64,8 +71,8 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
             <p>{{ structureText }}</p>
           }
           <div class="actions">
-            <button type="button" class="primary" (click)="decide('allow')" [disabled]="deciding()">Разрешить ИИ</button>
-            <button type="button" class="secondary" (click)="decide('deny')" [disabled]="deciding()">Не разрешать ИИ</button>
+            <button type="button" class="primary" (click)="decide('allow')" [disabled]="gateLocked()">Разрешить ИИ</button>
+            <button type="button" class="secondary" (click)="decide('deny')" [disabled]="gateLocked()">Не разрешать ИИ</button>
           </div>
           @if (decisionError()) {
             <p class="alert error" role="alert">{{ decisionError() }}</p>
@@ -82,7 +89,7 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
         <p><a routerLink="/checks/{{ current.check_id }}/stand">Стенд</a></p>
       }
 
-      <app-report-blocks [data]="body(current)" />
+      <app-report-blocks [data]="body(current)" idPrefix="progress" />
     }
   `,
 })
@@ -96,12 +103,14 @@ export class ProgressComponent {
   readonly view = signal<CheckView | null>(null);
   readonly loading = signal(false);
   readonly error = signal('');
-  readonly deciding = signal(false);
+  readonly gateLocked = signal(false);
   readonly decisionError = signal('');
   readonly replaced = REPLACED_STAND;
   readonly gateText = AI_GATE_TEXT;
   readonly structureText = STRUCTURE_FAILED_TEXT;
   private timer = 0;
+  private pollSub: Subscription | null = null;
+  private generation = 0;
 
   constructor() {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
@@ -114,17 +123,36 @@ export class ProgressComponent {
         }
         this.checkId.set('');
         this.view.set(null);
+        this.stopPoll();
         return;
       }
       this.checkId.set(id);
       this.session.rememberCheck(id);
       this.poll(true);
     });
-    this.destroyRef.onDestroy(() => window.clearInterval(this.timer));
+    this.destroyRef.onDestroy(() => this.stopPoll());
   }
 
   label(name: StepName): string {
     return STEP_LABELS[name] ?? name;
+  }
+
+  statusText(state: StepState): string {
+    switch (state) {
+      case 'done':
+        return 'выполнено';
+      case 'running':
+      case 'retrying':
+        return 'идёт';
+      case 'pending':
+        return 'ожидает';
+      case 'skipped':
+        return 'пропущен';
+      case 'failed':
+        return 'ошибка';
+      case 'waiting_user':
+        return 'нужно решение';
+    }
   }
 
   failedText(step: StepSnapshot): string {
@@ -139,8 +167,7 @@ export class ProgressComponent {
   }
 
   showGate(view: CheckView): boolean {
-    const gate = view.steps.find((step) => step.name === 'ai_gate');
-    return view.static?.summary === STATIC_SUMMARY_FAILED && gate?.state === 'waiting_user';
+    return view.steps.some((step) => step.name === 'ai_gate' && step.state === 'waiting_user');
   }
 
   structureFailed(view: CheckView): boolean {
@@ -155,11 +182,11 @@ export class ProgressComponent {
     return {
       name: view.name,
       human_id: view.human_id,
-      countries: [],
-      languages: [],
+      countries: view.countries ?? [],
+      languages: view.languages ?? [],
       created_at: '',
-      lander_type_name: '',
-      catalog_status: '',
+      lander_type_name: view.lander_type_name ?? '',
+      catalog_status: view.catalog_status ?? '',
       static: view.static,
       ai: view.ai,
       ai_note: aiFailureNote(view.steps),
@@ -170,44 +197,74 @@ export class ProgressComponent {
   decide(decision: 'allow' | 'deny'): void {
     const id = this.checkId();
     const view = this.view();
-    if (!id || !view || !this.showGate(view) || this.deciding()) return;
-    this.deciding.set(true);
+    if (!id || !view || !this.showGate(view) || this.gateLocked()) return;
+    this.gateLocked.set(true);
     this.decisionError.set('');
     this.api.aiDecision(id, decision).subscribe({
       next: () => {
-        this.deciding.set(false);
-        this.poll(false);
+        this.poll(true);
       },
       error: (error: unknown) => {
-        this.deciding.set(false);
+        this.gateLocked.set(false);
         this.decisionError.set(errorText(error, 'Решение не отправлено.'));
       },
     });
   }
 
   private poll(immediate: boolean): void {
-    window.clearInterval(this.timer);
+    this.stopPoll();
     const id = this.checkId();
     if (!id) return;
-    const tick = () => {
-      this.api.check(id).subscribe({
-        next: (view) => {
-          if (this.checkId() !== id) return;
-          this.loading.set(false);
-          this.error.set('');
-          this.view.set(view);
-          if (!shouldPoll(view.steps)) window.clearInterval(this.timer);
-        },
-        error: (error: unknown) => {
-          this.loading.set(false);
-          this.error.set(errorText(error, 'Не удалось получить ход проверки.'));
-          window.clearInterval(this.timer);
-        },
-      });
-    };
+    const generation = ++this.generation;
+    const ticks = new Subject<void>();
     this.loading.set(immediate && !this.view());
-    if (immediate) tick();
-    this.timer = window.setInterval(tick, 1500);
+    this.pollSub = ticks
+      .pipe(
+        switchMap(() =>
+          this.api.check(id).pipe(
+            catchError((error: unknown) => {
+              if (generation === this.generation) this.onPollError(id, error);
+              return EMPTY;
+            }),
+          ),
+        ),
+      )
+      .subscribe((view) => {
+        if (generation !== this.generation || this.checkId() !== id) return;
+        this.loading.set(false);
+        this.error.set('');
+        if (!this.showGate(view)) this.gateLocked.set(false);
+        this.view.set(view);
+        if (!shouldPoll(view.steps)) this.stopTimer();
+      });
+    const kick = () => {
+      if (generation !== this.generation) return;
+      ticks.next();
+    };
+    if (immediate) kick();
+    this.timer = window.setInterval(kick, 1500);
+  }
+
+  private onPollError(id: string, error: unknown): void {
+    if (this.checkId() !== id) return;
+    this.loading.set(false);
+    this.error.set(errorText(error, 'Не удалось получить ход проверки.'));
+    if (error instanceof HttpErrorResponse && error.status === 401) {
+      this.stopTimer();
+      return;
+    }
+    if (!this.view()) this.stopTimer();
+  }
+
+  private stopTimer(): void {
+    window.clearInterval(this.timer);
+    this.timer = 0;
+  }
+
+  private stopPoll(): void {
+    this.stopTimer();
+    this.pollSub?.unsubscribe();
+    this.pollSub = null;
   }
 }
 

@@ -14,12 +14,13 @@ import { DUPLICATE_LOGIN, ENV_ACCOUNT, ROLE_QA, ROLE_TL, Role, UserRow } from '.
     } @else if (loadError()) {
       <p class="alert error" role="alert">{{ loadError() }}</p>
     } @else if (users(); as list) {
+      <div class="table-scroll">
       <table class="data" aria-label="Пользователи">
         <thead>
           <tr>
             <th>Логин</th>
             <th>Роль</th>
-            <th></th>
+            <th>Источник</th>
           </tr>
         </thead>
         <tbody>
@@ -36,6 +37,7 @@ import { DUPLICATE_LOGIN, ENV_ACCOUNT, ROLE_QA, ROLE_TL, Role, UserRow } from '.
           }
         </tbody>
       </table>
+      </div>
       <form class="card user-form" (submit)="create($event)">
         <label for="new-login">Логин</label>
         <input id="new-login" autocomplete="off" [value]="login()" (input)="login.set(inputValue($event))" />
@@ -87,11 +89,22 @@ export class UsersComponent {
 
   create(event: Event): void {
     event.preventDefault();
-    const login = this.login();
+    const login = this.login().trim();
     const password = this.password();
     const role = this.role();
     this.createError.set('');
-    if (!login || !password) return;
+    if (!login && !password) {
+      this.createError.set('Введите логин и пароль.');
+      return;
+    }
+    if (!login) {
+      this.createError.set('Введите логин.');
+      return;
+    }
+    if (!password) {
+      this.createError.set('Введите пароль.');
+      return;
+    }
     this.creating.set(true);
     this.api.createUser({ login, password, role }).subscribe({
       next: () => {

@@ -9,6 +9,7 @@ function config(): AppConfig {
     databaseUrl: '',
     aioToken: 'test-aio-token-value',
     aioBaseUrl: 'https://app.aio.tech',
+    aioStorageHosts: ['files.aio.tech'],
     tlLogin: 'env-tl',
     tlPassword: 'env-tl-pass',
     workDir: '.',
@@ -27,7 +28,9 @@ function config(): AppConfig {
     aiModel: 'deepseek-flash',
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
+    lighthouseNoSandbox: false,
     bcryptRounds: 4,
+    poolMax: 10,
   };
 }
 
@@ -220,6 +223,37 @@ describe('AIO client', () => {
       expect(text).not.toContain('%2F');
     }
     expect(calls.filter((href) => href === fileUrl)).toHaveLength(2);
+  });
+
+  it('does not attach the token or follow a foreign download url', async () => {
+    const calls: string[] = [];
+    const fetchImpl = async (url: string) => {
+      calls.push(String(url));
+      if (String(url).includes('/notifications')) {
+        return jsonResponse({
+          data: {
+            data: [
+              {
+                notification: {
+                  type: 'lander.download',
+                  payload: {
+                    status: 'done',
+                    lander_uuid: 'uuid-1',
+                    files: [{ kind: 'original', url: 'https://evil.test/land.zip' }],
+                  },
+                },
+              },
+            ],
+          },
+        });
+      }
+      return new Response('should-not-download', { status: 200 });
+    };
+    const client = new HttpAioClient(config(), fetchImpl);
+    const file = await client.findOriginal('uuid-1');
+    await expect(file.read()).rejects.toMatchObject({ permanent: true });
+    expect(calls.some((href) => href.includes('evil.test'))).toBe(false);
+    expect(calls.some((href) => href.includes('token=test-aio-token-value') && href.includes('evil.test'))).toBe(false);
   });
 });
 

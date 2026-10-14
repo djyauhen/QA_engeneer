@@ -3,9 +3,13 @@ import path from 'path';
 import { Inject, Injectable } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { AppConfig } from '../config';
-import { APP_CONFIG } from '../tokens';
+import { ACTIVE_CHECKS_REPO, APP_CONFIG, CHECK_ARCHIVES_REPO } from '../tokens';
 import { CheckStore } from '../checks/check.store';
-import { ISOLATED_CSP, transformHtml } from './transform';
+import { unpackZip } from '../files/unpack';
+import { WorkdirService } from '../files/workdir.service';
+import { resolveLandingFolder } from '../static/landing-utils';
+import { CheckArchivesRepo, ActiveChecksRepo } from '../storage/repos';
+import { ISOLATED_CSP, liveCsp, transformHtml } from './transform';
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -28,6 +32,9 @@ export class PreviewService {
   constructor(
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly checks: CheckStore,
+    private readonly workdir: WorkdirService,
+    @Inject(CHECK_ARCHIVES_REPO) private readonly archives: CheckArchivesRepo,
+    @Inject(ACTIVE_CHECKS_REPO) private readonly active: ActiveChecksRepo,
   ) {}
 
   cdnBaseFor(checkId: string): string {
@@ -35,8 +42,10 @@ export class PreviewService {
     return `${this.config.publicBaseUrl}/preview/${checkId}`;
   }
 
-  standUrl(checkId: string, indexName: string): string {
-    return `${this.config.publicBaseUrl}/preview/${checkId}/${indexName}`;
+  standUrl(checkId: string, indexName: string, previewToken: string): string {
+    const url = new URL(`${this.config.publicBaseUrl}/preview/${checkId}/${indexName}`);
+    url.searchParams.set('t', previewToken);
+    return url.toString();
   }
 
   async handle(req: Request, res: Response): Promise<void> {
@@ -46,20 +55,63 @@ export class PreviewService {
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    const check = this.checks.get(parts[1]);
-    if (!check || !check.standReady || !check.landingFolder) {
+    const checkId = parts[1];
+    const token = typeof req.query.t === 'string' ? req.query.t : '';
+    const relative = parts.slice(2).join('/') || 'index.html';
+    const local = this.checks.get(checkId);
+    if (local) {
+      if (!token || token !== local.previewToken || !local.standReady) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const folder = await this.folderFor(checkId, local.landingFolder);
+      if (!folder) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      local.landingFolder = folder;
+      this.send(res, checkId, folder, relative, local.actionsAllowed);
+      return;
+    }
+    const row = await this.active.get(checkId);
+    if (!row || !token || token !== row.payload.previewToken || !row.payload.standReady) {
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    const relative = parts.slice(2).join('/') || 'index.html';
-    const target = path.resolve(check.landingFolder, relative);
-    const root = path.resolve(check.landingFolder);
+    const folder = await this.folderFor(checkId, null);
+    if (!folder) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    this.send(res, checkId, folder, relative, row.payload.actionsAllowed);
+  }
+
+  private async folderFor(checkId: string, known: string | null): Promise<string | null> {
+    if (known && fs.existsSync(known)) return known;
+    const dir = this.workdir.directory(checkId);
+    const ready = existingLanding(dir);
+    if (ready) return ready;
+    const zip = await this.archives.get(checkId);
+    if (!zip) return null;
+    try {
+      return unpackZip(zip, dir).landingFolder;
+    } catch {
+      return null;
+    }
+  }
+
+  private send(res: Response, checkId: string, landingFolder: string, relative: string, actionsAllowed: boolean): void {
+    const target = path.resolve(landingFolder, relative);
+    const root = path.resolve(landingFolder);
     const rel = path.relative(root, target);
     if (rel.startsWith('..') || path.isAbsolute(rel) || !fs.existsSync(target) || !fs.statSync(target).isFile()) {
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    if (!check.actionsAllowed) res.setHeader('Content-Security-Policy', ISOLATED_CSP);
+    const policy = actionsAllowed ? liveCsp(this.config.frontendOrigin) : ISOLATED_CSP;
+    res.setHeader('Content-Security-Policy', policy);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
     const ext = path.extname(target).toLowerCase();
     res.setHeader('Content-Type', TYPES[ext] ?? 'application/octet-stream');
     if (ext === '.html' || ext === '.php') {
@@ -68,12 +120,21 @@ export class PreviewService {
         transformHtml(html, {
           formHtml: this.config.standFormHtml,
           brandName: this.config.standBrandName,
-          cdnBase: this.cdnBaseFor(check.id),
-          isolated: !check.actionsAllowed,
+          cdnBase: this.cdnBaseFor(checkId),
+          isolated: !actionsAllowed,
         }),
       );
       return;
     }
     res.send(fs.readFileSync(target));
   }
+}
+
+function existingLanding(dir: string): string | null {
+  for (const candidate of [path.join(dir, 'project'), path.join(dir, 'raw')]) {
+    if (!fs.existsSync(candidate)) continue;
+    const resolved = resolveLandingFolder(candidate);
+    if (resolved.ok && fs.existsSync(resolved.landingFolder)) return resolved.landingFolder;
+  }
+  return null;
 }

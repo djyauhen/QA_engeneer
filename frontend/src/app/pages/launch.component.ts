@@ -45,12 +45,12 @@ import { SessionStore } from '../core/session.store';
         <input
           id="human-id"
           [value]="humanId()"
-          placeholder="359226"
+          placeholder="human_id"
           aria-describedby="human-hint"
           autocomplete="off"
-          (input)="humanId.set(inputValue($event))"
+          (input)="onHumanId($event)"
         />
-        <p id="human-hint" class="hint">Например, 359226</p>
+        <p id="human-hint" class="hint">Идентификатор ленда из каталога</p>
       </div>
       <button type="button" class="primary" (click)="launch()" [disabled]="launching()">Запустить проверку</button>
     </div>
@@ -76,11 +76,12 @@ import { SessionStore } from '../core/session.store';
 
     @if (loading()) {
       <p>Загрузка…</p>
-    } @else if (items().length === 0) {
+    } @else if (catalogLoaded() && items().length === 0) {
       <p class="empty">{{ emptyCatalog }}</p>
-    } @else if (filtered().length === 0) {
+    } @else if (catalogLoaded() && filtered().length === 0) {
       <p class="empty">{{ emptySearch }}</p>
-    } @else {
+    } @else if (catalogLoaded()) {
+      <div class="table-scroll">
       <table class="data" aria-label="Каталог лендингов">
         <thead>
           <tr>
@@ -92,6 +93,7 @@ import { SessionStore } from '../core/session.store';
         <tbody>
           @for (row of filtered(); track row.uuid; let index = $index) {
             <tr
+              class="clickable"
               [id]="'catalog-row-' + row.uuid"
               tabindex="0"
               [class.selected]="selected()?.uuid === row.uuid"
@@ -106,6 +108,7 @@ import { SessionStore } from '../core/session.store';
           }
         </tbody>
       </table>
+      </div>
     }
 
     @if (card(); as current) {
@@ -175,6 +178,7 @@ export class LaunchComponent {
   readonly humanId = signal('');
   readonly selected = signal<CatalogItem | null>(null);
   readonly loading = signal(true);
+  readonly catalogLoaded = signal(false);
   readonly refreshing = signal(false);
   readonly launching = signal(false);
   readonly refreshError = signal('');
@@ -207,12 +211,15 @@ export class LaunchComponent {
   });
 
   readonly card = computed(() => {
-    const selected = this.selected();
-    if (selected) return selected;
     const typed = this.humanId();
     if (!typed) return null;
     const matches = this.items().filter((row) => row.human_id === typed);
-    return matches.length === 1 ? matches[0] : null;
+    if (matches.length === 1) return matches[0];
+    const selected = this.selected();
+    if (selected && selected.human_id === typed) {
+      return matches.find((row) => row.uuid === selected.uuid) ?? null;
+    }
+    return null;
   });
 
   constructor() {
@@ -250,7 +257,15 @@ export class LaunchComponent {
 
   select(row: CatalogItem): void {
     this.selected.set(row);
+    this.humanId.set(row.human_id);
     this.notice.set('');
+  }
+
+  onHumanId(event: Event): void {
+    const value = inputValue(event);
+    this.humanId.set(value);
+    const selected = this.selected();
+    if (selected && selected.human_id !== value) this.selected.set(null);
   }
 
   onRowKey(event: KeyboardEvent, row: CatalogItem, index: number): void {
@@ -274,8 +289,9 @@ export class LaunchComponent {
     const selected = this.selected();
     this.launchError.set('');
     this.notice.set('');
-    if (typed.length > 0 && selected && typed === selected.human_id) {
-      this.post({ human_id: selected.human_id, uuid: selected.uuid });
+    const current = this.card();
+    if (typed.length > 0 && current && current.human_id === typed) {
+      this.post({ human_id: current.human_id, uuid: current.uuid });
       return;
     }
     if (typed.length > 0) {
@@ -286,7 +302,7 @@ export class LaunchComponent {
         return;
       }
       if (matches.length === 1) {
-        this.post({ human_id: typed });
+        this.post({ human_id: matches[0].human_id, uuid: matches[0].uuid });
         return;
       }
       if (this.blockedHumanId() === typed) {
@@ -312,7 +328,20 @@ export class LaunchComponent {
   }
 
   private applyCatalog(response: Partial<CatalogPayload>): void {
-    this.items.set(response.items ?? []);
+    const items = response.items ?? [];
+    this.items.set(items);
+    const selected = this.selected();
+    const fresh = selected ? (items.find((row) => row.uuid === selected.uuid) ?? null) : null;
+    if (fresh) {
+      this.selected.set(fresh);
+      this.humanId.set(fresh.human_id);
+    } else if (this.humanId()) {
+      const matches = items.filter((row) => row.human_id === this.humanId());
+      this.selected.set(matches.length === 1 ? matches[0] : null);
+    } else {
+      this.selected.set(null);
+    }
+    this.catalogLoaded.set(true);
     this.catalogQuery.set(normalizeCatalogQuery(response.query));
     const refreshed = response.refreshed_at;
     this.refreshedAt.set(typeof refreshed === 'string' && refreshed.length > 0 ? refreshed : null);

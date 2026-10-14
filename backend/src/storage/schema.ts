@@ -22,6 +22,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     payload JSONB NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_reports_human_created ON reports (human_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_reports_created ON reports (created_at)`,
   `CREATE TABLE IF NOT EXISTS admin_rules (
     id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     rules JSONB NOT NULL
@@ -38,10 +39,24 @@ export const SCHEMA_STATEMENTS: string[] = [
     source TEXT NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL
   )`,
+  `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS absolute_expires_at TIMESTAMPTZ`,
+  `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS password_fingerprint TEXT`,
+  `CREATE TABLE IF NOT EXISTS login_attempts (
+    subject TEXT PRIMARY KEY,
+    failures INT NOT NULL,
+    window_started TIMESTAMPTZ NOT NULL,
+    locked_until TIMESTAMPTZ
+  )`,
   `CREATE TABLE IF NOT EXISTS active_checks (
     id UUID PRIMARY KEY,
     owner_login TEXT NOT NULL,
     payload JSONB NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL
+  )`,
+  `ALTER TABLE active_checks ADD COLUMN IF NOT EXISTS lease_owner TEXT`,
+  `ALTER TABLE active_checks ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ`,
+  `CREATE TABLE IF NOT EXISTS check_archives (
+    id UUID PRIMARY KEY,
+    body BYTEA NOT NULL
   )`,
 ];

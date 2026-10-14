@@ -27,7 +27,9 @@ import { SessionStore } from '../core/session.store';
         @if (error()) {
           <p class="alert error" role="alert">{{ error() }}</p>
         }
-        <button type="submit" class="primary" [disabled]="busy()">Войти</button>
+        <button type="submit" class="primary" [disabled]="busy()" [attr.aria-busy]="busy()">
+          {{ busy() ? 'Вход…' : 'Войти' }}
+        </button>
       </form>
     </main>
   `,
@@ -46,28 +48,32 @@ export class LoginComponent {
   submit(event: Event): void {
     event.preventDefault();
     this.error.set('');
-    const login = this.login();
+    const login = this.login().trim();
     const password = this.password();
     if (!login || !password) {
-      this.error.set(LOGIN_ERROR);
+      this.error.set('Введите логин и пароль.');
       return;
     }
     this.busy.set(true);
     this.api.login(login, password).subscribe({
       next: (response) => {
+        this.busy.set(false);
         this.password.set('');
         this.session.establish(response.session_id, response.role, login);
         this.applyRoutes(response.role);
         void this.router.navigateByUrl('/launch');
       },
       error: (error: unknown) => {
-        this.password.set('');
         this.busy.set(false);
         if (error instanceof HttpErrorResponse && (error.status === 400 || error.status === 401)) {
+          this.password.set('');
           this.error.set(LOGIN_ERROR);
           return;
         }
         this.error.set('Не удалось выполнить запрос.');
+      },
+      complete: () => {
+        this.busy.set(false);
       },
     });
   }

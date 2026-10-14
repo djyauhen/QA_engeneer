@@ -131,6 +131,9 @@ export function mergeRules(current: AdminRules, body: unknown): AdminRules {
       next.expectFormMacro = value;
     }
   }
+  if (next.image_warning_kb >= next.image_failed_kb || next.css_ok_kb >= next.css_failed_kb) {
+    throw new RulesValidationError('Порог warning должен быть меньше порога failed');
+  }
   return next;
 }
 
@@ -143,8 +146,8 @@ export function effectiveLanguages(cardLanguages: string[], rules: AdminRules): 
   return [...cardLanguages];
 }
 
+const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
 export function retentionCutoff(now: Date): Date {
-  const cutoff = new Date(now.getTime());
-  cutoff.setMonth(cutoff.getMonth() - 3);
-  return cutoff;
+  return new Date(now.getTime() - RETENTION_MS);
 }

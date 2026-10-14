@@ -8,28 +8,34 @@ export interface AioPage {
 }
 
 export interface OriginalFile {
-  read(): Promise<Buffer>;
+  read(signal?: AbortSignal): Promise<Buffer>;
 }
 
 export class AioDownloadError extends Error {
   readonly status: number | null;
   readonly permanent: boolean;
 
-  constructor(kind: 'http' | 'network' | 'body', status: number | null = null) {
+  constructor(kind: 'http' | 'network' | 'body' | 'rejected', status: number | null = null) {
     const message =
       kind === 'http' && status !== null
         ? `Сбой скачивания файла: HTTP ${status}`
         : kind === 'body'
           ? 'Сбой скачивания файла: обрыв тела'
-          : 'Сбой скачивания файла: сеть';
+          : kind === 'rejected'
+            ? 'Сбой скачивания файла: адрес отклонён'
+            : 'Сбой скачивания файла: сеть';
     super(message);
     this.name = 'AioDownloadError';
     this.status = status;
     this.permanent =
       kind === 'body' ||
+      kind === 'rejected' ||
       (kind === 'http' && status !== null && status >= 400 && status < 500 && status !== 408 && status !== 429);
   }
 }
+
+const MAX_DOWNLOAD_BYTES = 80 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS = 60_000;
 
 export abstract class AioClient {
   abstract loadCatalogRows(query?: CatalogQuery): Promise<unknown[]>;
@@ -138,7 +144,7 @@ export class HttpAioClient extends AioClient {
   async findOriginal(uuid: string): Promise<OriginalFile> {
     const fileUrl = await this.pollOriginalUrl(uuid);
     return {
-      read: () => this.downloadFile(fileUrl),
+      read: (signal?: AbortSignal) => this.downloadFile(fileUrl, signal),
     };
   }
 
@@ -169,9 +175,18 @@ export class HttpAioClient extends AioClient {
   }
 
   private async scanNotifications(uuid: string): Promise<string | null> {
+    for (let page = 1; page <= 10; page += 1) {
+      const pageResult = await this.scanNotificationPage(uuid, page);
+      if (pageResult.url) return pageResult.url;
+      if (!pageResult.more) return null;
+    }
+    return null;
+  }
+
+  private async scanNotificationPage(uuid: string, page: number): Promise<{ url: string | null; more: boolean }> {
     const url = this.withToken('/api/v1/notifications');
     url.searchParams.set('limit', '25');
-    url.searchParams.set('page', '1');
+    url.searchParams.set('page', String(page));
     url.searchParams.set('unread_only', 'false');
     const response = await this.call(url.toString(), {
       method: 'GET',
@@ -190,25 +205,31 @@ export class HttpAioClient extends AioClient {
         const row = file as Record<string, unknown>;
         return row.kind === 'original' && typeof row.url === 'string' && row.url.length > 0;
       }) as Record<string, unknown> | undefined;
-      if (original && typeof original.url === 'string') return original.url;
+      if (original && typeof original.url === 'string') return { url: original.url, more: false };
     }
-    return null;
+    return { url: null, more: items.length >= 25 };
   }
 
-  private async downloadFile(fileUrl: string): Promise<Buffer> {
+  private async downloadFile(fileUrl: string, signal?: AbortSignal): Promise<Buffer> {
+    if (!downloadHostAllowed(fileUrl, this.config)) throw new AioDownloadError('rejected');
     const headers = { accept: 'application/octet-stream' };
     assertAioHeaders(headers);
-    const href = signedStorageUrl(fileUrl) ? fileUrl : withDownloadToken(fileUrl, this.config.aioToken);
+    const href = downloadHref(fileUrl, this.config);
+    const timeout = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
+    const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     let response: Response;
     try {
-      response = await this.fetchImpl(href, { method: 'GET', headers });
-    } catch {
+      response = await this.fetchImpl(href, { method: 'GET', headers, signal: combined, redirect: 'manual' });
+    } catch (error) {
+      if (signal?.aborted || combined.aborted) throw error;
       throw new AioDownloadError('network');
     }
+    if (response.status >= 300 && response.status < 400) throw new AioDownloadError('rejected');
     if (!response.ok) throw new AioDownloadError('http', response.status);
     try {
-      return Buffer.from(await response.arrayBuffer());
-    } catch {
+      return await readLimitedBody(response, MAX_DOWNLOAD_BYTES);
+    } catch (error) {
+      if (error instanceof AioDownloadError) throw error;
       throw new AioDownloadError('body');
     }
   }
@@ -259,6 +280,54 @@ function signedStorageUrl(fileUrl: string): boolean {
   } catch {
     return false;
   }
+}
+
+function downloadHostAllowed(fileUrl: string, config: AppConfig): boolean {
+  let url: URL;
+  try {
+    url = new URL(fileUrl);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  let apiHost = '';
+  try {
+    apiHost = new URL(config.aioBaseUrl).host;
+  } catch {
+    return false;
+  }
+  if (url.host === apiHost) return true;
+  return config.aioStorageHosts.includes(url.host);
+}
+
+function downloadHref(fileUrl: string, config: AppConfig): string {
+  if (signedStorageUrl(fileUrl)) return fileUrl;
+  const fileHost = new URL(fileUrl).host;
+  const apiHost = new URL(config.aioBaseUrl).host;
+  if (fileHost !== apiHost) return fileUrl;
+  return withDownloadToken(fileUrl, config.aioToken);
+}
+
+async function readLimitedBody(response: Response, maxBytes: number): Promise<Buffer> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const body = Buffer.from(await response.arrayBuffer());
+    if (body.length > maxBytes) throw new AioDownloadError('rejected');
+    return body;
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const step = await reader.read();
+    if (step.done) break;
+    total += step.value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new AioDownloadError('rejected');
+    }
+    chunks.push(Buffer.from(step.value));
+  }
+  return Buffer.concat(chunks);
 }
 
 function withDownloadToken(fileUrl: string, token: string): string {

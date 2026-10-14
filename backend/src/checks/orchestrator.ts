@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AiCallError, AiClient, completeFindings } from '../ai/ai.client';
 import { AioClient, AioDownloadError } from '../aio/aio.client';
 import { CostsService } from '../admin/admin.services';
@@ -11,16 +11,18 @@ import { LighthouseRunner } from '../lighthouse/lighthouse';
 import { effectiveLanguages } from '../rules/rules';
 import { sanitizeReport } from '../redact';
 import { ReportPayload } from '../reports/report.types';
-import { REPORTS_REPO } from '../tokens';
+import { CHECK_ARCHIVES_REPO, REPORTS_REPO } from '../tokens';
 import {
   AI_STATUS_ERROR,
   AI_STATUS_READY,
+  AI_STATUS_SKIPPED,
   AI_STATUS_WAITING,
   LH_STATUS_DONE,
   LH_STATUS_ERROR,
+  LH_STATUS_SKIPPED,
   STATIC_SUMMARY_INCOMPLETE,
 } from '../tokens';
-import { ReportsRepo } from '../storage/repos';
+import { CheckArchivesRepo, ReportsRepo } from '../storage/repos';
 import { getAllFilesByExtensions, relFromLanding } from '../static/landing-utils';
 import { StaticChecks, summarizeStatic } from '../static/static-checks';
 import { PreviewService } from '../stand/preview.service';
@@ -29,6 +31,8 @@ import { ATTEMPTS, HaltAttempts, withAttempts } from './retry';
 
 @Injectable()
 export class CheckOrchestrator {
+  private readonly logger = new Logger(CheckOrchestrator.name);
+
   constructor(
     @Inject(AioClient) private readonly aio: AioClient,
     @Inject(StaticChecks) private readonly staticChecks: StaticChecks,
@@ -39,39 +43,73 @@ export class CheckOrchestrator {
     private readonly workdir: WorkdirService,
     private readonly preview: PreviewService,
     @Inject(REPORTS_REPO) private readonly reports: ReportsRepo,
+    @Inject(CHECK_ARCHIVES_REPO) private readonly archives: CheckArchivesRepo,
   ) {}
 
   async run(check: CheckRecord): Promise<void> {
+    if (check.detached || (check.aborted && check.resumeArmed)) return;
+    if (check.running) {
+      check.rerun = true;
+      return;
+    }
+    check.running = true;
     try {
       await this.execute(check);
     } catch (error) {
-      if (!check.reportSaved) {
+      if (!check.reportSaved && !check.detached) {
         this.skipPending(check);
         try {
           await this.saveReport(check);
-        } catch {
+        } catch (second) {
           if (!isAbort(error)) {
-            /* The stored report is the durable result. A second failure leaves the check steps. */
+            const detail = second instanceof Error ? second.message : 'save failed';
+            this.logger.error(`report save failed: ${detail}`);
+            check.step('report', 'failed', 'Не удалось записать отчёт');
           }
         }
+      }
+    } finally {
+      check.running = false;
+      if (check.rerun && !check.detached) {
+        check.rerun = false;
+        await this.run(check);
       }
     }
   }
 
   private async execute(check: CheckRecord): Promise<void> {
+    if (check.detached || check.reportSaved) return;
     this.throwIfAborted(check);
-    await this.download(check);
+    if (this.failedStep(check)) {
+      await this.saveReport(check);
+      return;
+    }
+    if (this.needs(check, 'download_file')) await this.download(check);
     this.throwIfAborted(check);
-    await this.unpack(check);
+    if (check.state('download_file') === 'done') await this.ensureFiles(check);
     this.throwIfAborted(check);
-    await this.staticPhase(check);
+    if (this.needs(check, 'static')) await this.staticPhase(check);
     this.throwIfAborted(check);
-    const failed = check.staticBlock?.items.some((entry) => entry.status === 'failed') ?? false;
-    if (failed) {
-      check.aiBlock = { status: AI_STATUS_WAITING, findings: [], decision: null };
-      check.step('ai_gate', 'waiting_user');
-      const decision = await check.waitDecision();
-      this.throwIfAborted(check);
+    if (this.failedStep(check)) {
+      await this.saveReport(check);
+      return;
+    }
+    if (check.state('ai_gate') === 'pending') {
+      const failed = check.staticBlock?.items.some((entry) => entry.status === 'failed') ?? false;
+      if (failed) {
+        check.aiBlock = { status: AI_STATUS_WAITING, findings: [], decision: null, mode: 'real' };
+        check.step('ai_gate', 'waiting_user');
+      } else {
+        check.step('ai_gate', 'done');
+      }
+    }
+    if (check.state('ai_gate') === 'waiting_user') {
+      const decision = check.takeQueuedDecision();
+      if (!decision) {
+        check.resumeArmed = true;
+        return;
+      }
+      check.resumeArmed = false;
       if (check.aiBlock) check.aiBlock.decision = decision;
       check.step('ai_gate', 'done');
       if (decision === 'deny') {
@@ -81,18 +119,28 @@ export class CheckOrchestrator {
         await this.saveReport(check);
         return;
       }
-    } else {
-      check.step('ai_gate', 'done');
     }
-    const standOk = await this.raiseStand(check);
+    let standOk = check.standReady;
+    if (this.needs(check, 'stand')) standOk = await this.raiseStand(check);
     this.throwIfAborted(check);
     if (standOk) {
       await Promise.all([this.runAi(check), this.runLighthouse(check)]);
-    } else {
+    } else if (this.needs(check, 'lighthouse') || check.state('lighthouse') === 'pending') {
       check.step('lighthouse', 'skipped', 'Стенд не поднят, прогон Lighthouse невозможен');
       await this.runAi(check);
+    } else if (this.needs(check, 'ai')) {
+      await this.runAi(check);
     }
-    await this.saveReport(check);
+    if (!check.reportSaved) await this.saveReport(check);
+  }
+
+  private needs(check: CheckRecord, name: Parameters<CheckRecord['state']>[0]): boolean {
+    const state = check.state(name);
+    return state === 'pending' || state === 'running' || state === 'retrying';
+  }
+
+  private failedStep(check: CheckRecord): boolean {
+    return check.steps.some((step) => step.state === 'failed');
   }
 
   private async download(check: CheckRecord): Promise<void> {
@@ -111,7 +159,7 @@ export class CheckOrchestrator {
       );
       throw new Error('download-request-failed');
     }
-    let original: { read(): Promise<Buffer> } | null = null;
+    let original: { read(signal?: AbortSignal): Promise<Buffer> } | null = null;
     try {
       await withAttempts(ATTEMPTS, async (attempt) => {
         check.step('notifications', attempt === 1 ? 'running' : 'retrying');
@@ -127,8 +175,11 @@ export class CheckOrchestrator {
         check.step('download_file', attempt === 1 ? 'running' : 'retrying');
         if (!original) throw new HaltAttempts(new Error('no-file'));
         try {
-          check.zip = await original.read();
+          if (check.aborted) throw new HaltAttempts(abortError());
+          check.zip = await original.read(check.signal);
+          await this.archives.put(check.id, check.zip);
         } catch (error) {
+          if (check.aborted || isAbort(error)) throw new HaltAttempts(abortError());
           if (error instanceof AioDownloadError && error.permanent) throw new HaltAttempts(error);
           throw error;
         }
@@ -144,11 +195,10 @@ export class CheckOrchestrator {
     try {
       await withAttempts(ATTEMPTS, async (attempt) => {
         check.step('unpack', attempt === 1 ? 'running' : 'retrying');
+        if (!check.zip) check.zip = await this.archives.get(check.id);
         if (!check.zip) throw new HaltAttempts(new Error('no-zip'));
         try {
-          const prepared = this.workdir.prepare(check.ownerLogin);
-          check.replaced_previous_stand = check.replaced_previous_stand || prepared.replaced;
-          const unpacked = unpackZip(check.zip, prepared.dir);
+          const unpacked = unpackZip(check.zip, this.workdir.directory(check.id));
           check.projectPath = unpacked.projectPath;
           check.landingFolder = unpacked.landingFolder;
         } catch (error) {
@@ -182,6 +232,22 @@ export class CheckOrchestrator {
     }
   }
 
+  private async ensureFiles(check: CheckRecord): Promise<void> {
+    if (check.landingFolder && fs.existsSync(check.landingFolder)) {
+      if (check.state('unpack') === 'pending') check.step('unpack', 'done');
+      return;
+    }
+    if (!check.zip) check.zip = await this.archives.get(check.id);
+    if (!check.zip) return;
+    const unpacked = unpackZip(check.zip, this.workdir.directory(check.id));
+    check.projectPath = unpacked.projectPath;
+    check.landingFolder = unpacked.landingFolder;
+    check.zip = null;
+    if (check.state('unpack') === 'pending' || check.state('unpack') === 'running' || check.state('unpack') === 'retrying') {
+      check.step('unpack', 'done');
+    }
+  }
+
   private async raiseStand(check: CheckRecord): Promise<boolean> {
     try {
       await withAttempts(ATTEMPTS, async (attempt) => {
@@ -189,7 +255,7 @@ export class CheckOrchestrator {
         if (!check.landingFolder) throw new Error('no-landing');
         const indexName = fs.existsSync(path.join(check.landingFolder, 'index.html')) ? 'index.html' : 'index.php';
         if (!fs.existsSync(path.join(check.landingFolder, indexName))) throw new Error('no-index');
-        check.standUrl = this.preview.standUrl(check.id, indexName);
+        check.standUrl = this.preview.standUrl(check.id, indexName, check.previewToken);
         check.standReady = true;
       });
       check.step('stand', 'done');
@@ -203,9 +269,12 @@ export class CheckOrchestrator {
   }
 
   private async runAi(check: CheckRecord): Promise<void> {
+    if (check.state('ai') === 'done' || check.state('ai') === 'skipped' || check.state('ai') === 'failed') return;
+    this.throwIfAborted(check);
     check.step('ai', 'running');
     try {
       const result = await withAttempts(ATTEMPTS, async (attempt) => {
+        if (check.aborted) throw new HaltAttempts(abortError());
         if (attempt > 1) check.step('ai', 'retrying');
         const rules = await this.rules.current();
         const languages = effectiveLanguages(check.card.languages, rules);
@@ -218,6 +287,16 @@ export class CheckOrchestrator {
           files: check.landingFolder ? readTexts(check.landingFolder) : [],
         });
       });
+      if (result.skipped) {
+        check.aiBlock = {
+          status: AI_STATUS_SKIPPED,
+          findings: [],
+          decision: check.aiBlock?.decision ?? null,
+          mode: 'stub',
+        };
+        check.step('ai', 'skipped');
+        return;
+      }
       if (result.usage && typeof result.usage === 'object') {
         await this.costs.record(result.usage);
       }
@@ -225,13 +304,16 @@ export class CheckOrchestrator {
         status: AI_STATUS_READY,
         findings: completeFindings(result.findings),
         decision: check.aiBlock?.decision ?? null,
+        mode: 'real',
       };
       check.step('ai', 'done');
     } catch (error) {
+      if (isAbort(error) || check.aborted) throw error instanceof Error ? error : abortError();
       check.aiBlock = {
         status: AI_STATUS_ERROR,
         findings: [],
         decision: check.aiBlock?.decision ?? null,
+        mode: 'real',
       };
       const detail = error instanceof AiCallError ? error.detail : '';
       check.step('ai', 'failed', detail ? `Ошибка ИИ после повторов: ${detail}` : 'Ошибка ИИ после повторов');
@@ -239,6 +321,15 @@ export class CheckOrchestrator {
   }
 
   private async runLighthouse(check: CheckRecord): Promise<void> {
+    if (check.state('lighthouse') === 'done' || check.state('lighthouse') === 'skipped' || check.state('lighthouse') === 'failed') {
+      return;
+    }
+    this.throwIfAborted(check);
+    if (this.lighthouse.mode() === 'stub') {
+      check.lighthouseBlock = { status: LH_STATUS_SKIPPED, mobile: null, desktop: null, mode: 'stub' };
+      check.step('lighthouse', 'skipped');
+      return;
+    }
     if (!check.standUrl) {
       check.lighthouseBlock = { status: LH_STATUS_ERROR, mobile: null, desktop: null };
       check.step('lighthouse', 'failed', 'Ошибка Lighthouse после повторов');
@@ -248,17 +339,20 @@ export class CheckOrchestrator {
     check.step('lighthouse', 'running');
     try {
       const mobile = await withAttempts(ATTEMPTS, async (attempt) => {
+        if (check.aborted) throw new HaltAttempts(abortError());
         if (attempt > 1) check.step('lighthouse', 'retrying');
         return this.lighthouse.run(url, 'mobile');
       });
       const desktop = await withAttempts(ATTEMPTS, async (attempt) => {
+        if (check.aborted) throw new HaltAttempts(abortError());
         if (attempt > 1) check.step('lighthouse', 'retrying');
         return this.lighthouse.run(url, 'desktop');
       });
-      check.lighthouseBlock = { status: LH_STATUS_DONE, mobile, desktop };
+      check.lighthouseBlock = { status: LH_STATUS_DONE, mobile, desktop, mode: 'real' };
       check.step('lighthouse', 'done');
-    } catch {
-      check.lighthouseBlock = { status: LH_STATUS_ERROR, mobile: null, desktop: null };
+    } catch (error) {
+      if (isAbort(error) || check.aborted) throw error instanceof Error ? error : abortError();
+      check.lighthouseBlock = { status: LH_STATUS_ERROR, mobile: null, desktop: null, mode: 'real' };
       check.step('lighthouse', 'failed', 'Ошибка Lighthouse после повторов');
     }
   }
@@ -348,6 +442,7 @@ function downloadFailureText(error: unknown): string {
   if (error instanceof AioDownloadError) {
     if (error.status !== null) return `${base}: HTTP ${error.status}`;
     if (error.message.includes('обрыв тела')) return `${base}: обрыв тела`;
+    if (error.message.includes('адрес отклонён')) return `${base}: адрес отклонён`;
     return `${base}: сеть`;
   }
   if (error instanceof Error && error.message === 'no-file') return `${base}: нет файла`;

@@ -166,7 +166,7 @@ input { min-height: var(--control-height); }
   padding: var(--space-6);
 }
 
-.login-card { width: 400px; }
+.login-card { width: min(400px, 100%); }
 
 .card {
   background: var(--color-surface);
@@ -232,8 +232,13 @@ table.data th {
   font-weight: 700;
 }
 
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
 table.data tr.selected { background: var(--color-row-selected); }
-table.data tbody tr { cursor: pointer; }
+table.data tbody tr.clickable { cursor: pointer; }
 
 .preview-card { margin-top: var(--space-4); }
 .preview-layout { display: flex; gap: var(--space-4); align-items: flex-start; }
@@ -263,8 +268,17 @@ table.data tbody tr { cursor: pointer; }
   color: var(--color-text-muted);
 }
 .step-done, .step-running, .step-retrying, .step-failed, .step-waiting_user { color: var(--color-text); }
+.step-pending { color: var(--color-text-muted); }
+.step-skipped { color: var(--color-text-muted); font-style: italic; }
 .step-running { font-weight: 600; }
 .step-failed .extra { color: var(--color-failed-fg); }
+.step-status {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+}
+.step-pending .step-status { font-weight: 400; }
+.step-skipped .step-status { text-decoration: line-through; }
 .mark { width: 1em; }
 
 .actions { display: flex; gap: var(--space-3); margin: var(--space-3) 0; }
@@ -326,8 +340,9 @@ blockquote { margin-left: 0; color: var(--color-text); }
 fieldset { border: 0; margin: var(--space-3) 0; padding: 0; }
 
 @media (max-width: 900px) {
-  .shell { flex-direction: column; }
-  .nav { width: auto; }
+  .shell { flex-direction: column; max-width: 100%; }
+  .nav { width: auto; max-width: 100%; }
+  .login-card { width: min(400px, 100%); }
   .compare, .lh-groups, .preview-layout, .facts div { grid-template-columns: 1fr; }
   .field input { width: 100%; }
 }

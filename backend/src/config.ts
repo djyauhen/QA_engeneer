@@ -7,6 +7,7 @@ export interface AppConfig {
   databaseUrl: string;
   aioToken: string;
   aioBaseUrl: string;
+  aioStorageHosts: string[];
   tlLogin: string;
   tlPassword: string;
   workDir: string;
@@ -25,7 +26,9 @@ export interface AppConfig {
   aiModel: string;
   lighthouseMode: 'stub' | 'real';
   lighthouseChromePath: string;
+  lighthouseNoSandbox: boolean;
   bcryptRounds: number;
+  poolMax: number;
 }
 
 export interface SessionUser {
@@ -55,12 +58,16 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   if (storage === 'neon' && !databaseUrl) {
     throw new Error('DATABASE_URL is required');
   }
+  if (env.VERCEL === '1' && storage === 'neon' && parseFrontendOrigin(env.FRONTEND_ORIGIN).length === 0) {
+    throw new Error('FRONTEND_ORIGIN is required');
+  }
   const port = Number(env.PORT ?? 3000);
   return {
     storage,
     databaseUrl,
     aioToken,
     aioBaseUrl: (unwrapEnv(env.AIO_BASE_URL) || 'https://app.aio.tech').replace(/\/$/, ''),
+    aioStorageHosts: parseFrontendOrigin(env.AIO_STORAGE_HOSTS),
     tlLogin,
     tlPassword,
     workDir: resolveWorkDir(env),
@@ -82,7 +89,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     aiModel: unwrapEnv(env.AI_MODEL) || 'deepseek-flash',
     lighthouseMode: env.LIGHTHOUSE_MODE === 'real' ? 'real' : 'stub',
     lighthouseChromePath: env.LIGHTHOUSE_CHROME_PATH ?? '',
+    lighthouseNoSandbox: env.LIGHTHOUSE_NO_SANDBOX === '1',
     bcryptRounds: positiveInt(env.BCRYPT_ROUNDS, 10),
+    poolMax: env.VERCEL === '1' ? 1 : 10,
   };
 }
 

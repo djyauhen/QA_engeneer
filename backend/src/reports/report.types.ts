@@ -26,6 +26,7 @@ export interface AiBlock {
   status: string;
   findings: AiFinding[];
   decision: 'allow' | 'deny' | null;
+  mode?: 'stub' | 'real';
 }
 
 export interface LighthouseMetrics {
@@ -42,6 +43,7 @@ export interface LighthouseBlock {
   status: string;
   mobile: LighthouseMetrics | null;
   desktop: LighthouseMetrics | null;
+  mode?: 'stub' | 'real';
 }
 
 export interface StepSnapshot {

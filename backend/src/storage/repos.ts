@@ -32,6 +32,26 @@ export interface ReportListItem {
   name: string;
   created_at: string;
   owner_login: string;
+  static_summary: string;
+  ai_status: string;
+  lighthouse_status: string;
+}
+
+export function reportListStatuses(
+  payload:
+    | {
+        static?: { summary?: string | null } | null;
+        ai?: { status?: string | null } | null;
+        lighthouse?: { status?: string | null } | null;
+      }
+    | null
+    | undefined,
+): Pick<ReportListItem, 'static_summary' | 'ai_status' | 'lighthouse_status'> {
+  return {
+    static_summary: payload?.static?.summary ?? '',
+    ai_status: payload?.ai?.status ?? '',
+    lighthouse_status: payload?.lighthouse?.status ?? '',
+  };
 }
 
 export interface ReportsRepo {
@@ -68,6 +88,8 @@ export interface SessionInsert {
   role: string;
   source: 'environment' | 'neon';
   expires_at: string;
+  absolute_expires_at: string;
+  password_fingerprint: string | null;
 }
 
 export interface SessionRecord {
@@ -75,6 +97,8 @@ export interface SessionRecord {
   role: string;
   source: 'environment' | 'neon';
   expires_at: string;
+  absolute_expires_at: string | null;
+  password_fingerprint: string | null;
 }
 
 export interface SessionsRepo {
@@ -82,6 +106,14 @@ export interface SessionsRepo {
   get(id: string): Promise<SessionRecord | null>;
   touch(id: string, expiresAt: string): Promise<void>;
   delete(id: string): Promise<void>;
+  deleteByLogin(login: string): Promise<void>;
+  purgeExpired(now: Date): Promise<void>;
+}
+
+export interface LoginAttemptsRepo {
+  blocked(subject: string, now: number): Promise<boolean>;
+  fail(subject: string, now: number): Promise<void>;
+  clear(subject: string): Promise<void>;
 }
 
 export interface ActiveCheckSnapshot {
@@ -101,11 +133,34 @@ export interface ActiveCheckSnapshot {
   reportSaved: boolean;
   aborted: boolean;
   pendingDecision: 'allow' | 'deny' | null;
+  uuid?: string;
+  countries?: string[];
+  languages?: string[];
+  lander_type_name?: string;
+  catalog_status?: string;
+  previewToken?: string;
 }
 
 export interface ActiveChecksRepo {
-  upsert(id: string, ownerLogin: string, payload: ActiveCheckSnapshot): Promise<void>;
+  upsert(
+    id: string,
+    ownerLogin: string,
+    payload: ActiveCheckSnapshot,
+    claim?: { owner: string; until: string },
+  ): Promise<boolean>;
   get(id: string): Promise<{ owner_login: string; payload: ActiveCheckSnapshot } | null>;
+  listByOwner(ownerLogin: string): Promise<Array<{ id: string; payload: ActiveCheckSnapshot }>>;
+  tryClaim(id: string, ownerToken: string, leaseUntil: string): Promise<boolean>;
+  releaseLease(id: string, ownerToken: string): Promise<void>;
+  patchDecision(id: string, decision: 'allow' | 'deny'): Promise<void>;
+  patchActionsAllowed(id: string): Promise<void>;
+  delete(id: string): Promise<void>;
+}
+
+export interface CheckArchivesRepo {
+  put(id: string, body: Buffer): Promise<void>;
+  get(id: string): Promise<Buffer | null>;
+  delete(id: string): Promise<void>;
 }
 
 export interface Repos {
@@ -117,5 +172,7 @@ export interface Repos {
   rules: RulesRepo;
   costs: CostsRepo;
   activeChecks: ActiveChecksRepo;
+  archives: CheckArchivesRepo;
+  loginAttempts: LoginAttemptsRepo;
   close(): Promise<void>;
 }

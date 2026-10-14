@@ -4,6 +4,7 @@ import path from 'path';
 import request from 'supertest';
 import { INestApplication } from '@nestjs/common';
 import { AppConfig } from '../src/config';
+import { CheckStore } from '../src/checks/check.store';
 import { WorkdirService } from '../src/files/workdir.service';
 import { StaticChecks } from '../src/static/static-checks';
 import { StaticItem } from '../src/reports/report.types';
@@ -13,6 +14,12 @@ import { aioRow, structureFailZip, structurePassZip } from './fakes';
 class PassedStatic extends StaticChecks {
   async run(): Promise<StaticItem[]> {
     return [{ name: 'Проверка структуры', status: 'passed', findings: [] }];
+  }
+}
+
+class FailedStatic extends StaticChecks {
+  async run(): Promise<StaticItem[]> {
+    return [{ name: 'Проверка структуры', status: 'failed', findings: [{ text: 'вложенный каталог' }] }];
   }
 }
 
@@ -185,7 +192,12 @@ describe('checks, stand, AI and lighthouse', () => {
       body.steps.some((step) => step.name === 'stand' && step.state === 'done'),
     );
     expect(String(live.stand_url)).toContain(`/preview/${id}/`);
-    const isolated = await request(http.getHttpServer()).get(`/preview/${id}/index.html`);
+    expect(live.actions_allowed).toBe(false);
+    expect(String(live.stand_url)).toContain('t=');
+    const previewPath = previewPathOf(String(live.stand_url));
+    const hidden = await request(http.getHttpServer()).get(`/preview/${id}/index.html`);
+    expect(hidden.status).toBe(404);
+    const isolated = await request(http.getHttpServer()).get(previewPath);
     expect(isolated.status).toBe(200);
     expect(isolated.headers['content-security-policy']).toContain("form-action 'none'");
     expect(isolated.text).toContain('FORM');
@@ -196,9 +208,54 @@ describe('checks, stand, AI and lighthouse', () => {
       .post(`/checks/${id}/stand-actions`)
       .set('x-session-id', session)
       .send({ decision: 'allow' });
-    const open = await request(http.getHttpServer()).get(`/preview/${id}/index.html`);
-    expect(open.headers['content-security-policy']).toBeUndefined();
+    const allowedView = await request(http.getHttpServer()).get(`/checks/${id}`).set('x-session-id', session);
+    expect(allowedView.body.actions_allowed).toBe(true);
+    const open = await request(http.getHttpServer()).get(previewPath);
+    expect(open.headers['content-security-policy']).toContain('frame-ancestors');
+    expect(open.headers['x-content-type-options']).toBe('nosniff');
     expect(open.text).toContain('evil.test/pixel.js');
+  });
+
+  it('resumes a waiting check on another instance after the runner is gone', async () => {
+    await ctx.close();
+    const staticChecks = new FailedStatic();
+    ctx = await createTestApp({ staticChecks });
+    http = ctx.app;
+    const login = await request(http.getHttpServer()).post('/session').send({ login: 'env-tl', password: 'env-tl-pass' });
+    session = login.body.session_id;
+    ctx.aio.rows = [aioRow({ human_id: '359226', uuid: 'dddddddd-dddd-4ddd-8ddd-ddddddddddd1', name: 'Demo' })];
+    await request(http.getHttpServer()).post('/catalog/refresh').set('x-session-id', session);
+    ctx.aio.zip = structurePassZip();
+    const started = await request(http.getHttpServer())
+      .post('/checks')
+      .set('x-session-id', session)
+      .send({ human_id: '359226' });
+    const id = started.body.check_id as string;
+    await waitFor(http, session, id, (body) =>
+      body.steps.some((step) => step.name === 'ai_gate' && step.state === 'waiting_user'),
+    );
+    const second = await createTestApp({
+      repos: ctx.repos,
+      aio: ctx.aio,
+      ai: ctx.ai,
+      lighthouse: ctx.lighthouse,
+      staticChecks,
+    });
+    await ctx.app.get(CheckStore).forgetLocal(id);
+    const decision = await request(second.app.getHttpServer())
+      .post(`/checks/${id}/ai-decision`)
+      .set('x-session-id', session)
+      .send({ decision: 'allow' });
+    expect(decision.status).toBe(200);
+    const done = await waitFor(second.app, session, id, (body) =>
+      body.steps.some((step) => step.name === 'report' && step.state === 'done'),
+    );
+    expect(done.steps.find((step: { name: string }) => step.name === 'stand').state).toBe('done');
+    const preview = new URL(String(done.stand_url));
+    const page = await request(second.app.getHttpServer()).get(`${preview.pathname}${preview.search}`);
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('FORM');
+    await second.close();
   });
 
   it('replaces only the same user unpacked directory', async () => {
@@ -238,19 +295,23 @@ describe('checks, stand, AI and lighthouse', () => {
   });
 });
 
+function previewPathOf(standUrl: string): string {
+  const url = new URL(standUrl);
+  return `${url.pathname}${url.search}`;
+}
+
 describe('workdir isolation', () => {
-  it('deletes the previous directory of one user and leaves the other', () => {
+  it('keeps each check directory and removes only the requested one', () => {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-work-'));
     const config = { workDir } as AppConfig;
     const work = new WorkdirService(config);
-    const first = work.prepare('alice');
-    fs.writeFileSync(path.join(first.dir, 'old.txt'), 'x');
-    const bob = work.prepare('bob');
-    fs.writeFileSync(path.join(bob.dir, 'keep.txt'), 'y');
-    const second = work.prepare('alice');
-    expect(second.replaced).toBe(true);
-    expect(fs.existsSync(path.join(first.dir, 'old.txt'))).toBe(false);
-    expect(fs.existsSync(path.join(bob.dir, 'keep.txt'))).toBe(true);
+    const first = work.directory('check-a');
+    fs.writeFileSync(path.join(first, 'old.txt'), 'x');
+    const second = work.directory('check-b');
+    fs.writeFileSync(path.join(second, 'keep.txt'), 'y');
+    work.remove('check-a');
+    expect(fs.existsSync(path.join(first, 'old.txt'))).toBe(false);
+    expect(fs.existsSync(path.join(second, 'keep.txt'))).toBe(true);
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 });

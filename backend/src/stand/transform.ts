@@ -26,3 +26,20 @@ function isolate(html: string): string {
 
 export const ISOLATED_CSP =
   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'";
+
+export function liveCsp(frameAncestors: string[]): string {
+  const ancestors =
+    frameAncestors.length > 0 ? frameAncestors.join(' ') : 'http://localhost:4200 http://127.0.0.1:4200';
+  return [
+    "default-src 'self' https: data: blob:",
+    "script-src 'self' 'unsafe-inline' https:",
+    "style-src 'self' 'unsafe-inline' https:",
+    "img-src 'self' data: blob: https:",
+    "connect-src https:",
+    "form-action https:",
+    "frame-src https:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    `frame-ancestors ${ancestors}`,
+  ].join('; ');
+}

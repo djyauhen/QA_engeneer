@@ -11,15 +11,14 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
   selector: 'app-report',
   imports: [ReportBlocksComponent, RouterLink],
   template: `
+    <h1>Отчёт</h1>
     @if (loading()) {
-      <h1>Отчёт</h1>
       <p>Загрузка…</p>
     } @else if (error()) {
-      <h1>Отчёт</h1>
       <p class="alert error" role="alert">{{ error() }}</p>
     } @else if (body(); as report) {
       <p class="actions"><a class="secondary link" [routerLink]="['/reports', reportId(), 'compare']">Сравнение</a></p>
-      <app-report-blocks [data]="report" heading="Отчёт" [showDate]="true" [showRecommendation]="true" />
+      <app-report-blocks [data]="report" idPrefix="report" [showDate]="true" [showRecommendation]="true" />
     }
   `,
 })
@@ -37,7 +36,6 @@ export class ReportComponent {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       const id = params.get('reportId') ?? '';
       this.reportId.set(id);
-      this.session.rememberCheck(id);
       this.load(id);
     });
   }

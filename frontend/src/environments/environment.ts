@@ -1,4 +1,4 @@
 export const environment = {
-  /** Dev builds call this API directly. An absolute URL bypasses the dev-server proxy. */
-  apiBaseUrl: 'https://backend-chi-six-58.vercel.app/',
+  /** Empty so `ng serve` sends API calls through proxy.conf.json to the local Nest backend. */
+  apiBaseUrl: '',
 };

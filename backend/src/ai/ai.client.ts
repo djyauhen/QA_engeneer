@@ -19,6 +19,7 @@ export interface AiInput {
 export interface AiResult {
   findings: Array<Partial<AiFinding>>;
   usage?: Record<string, unknown> | null;
+  skipped?: boolean;
 }
 
 export abstract class AiClient {
@@ -61,7 +62,7 @@ export class AiCallError extends Error {
 
 export class StubAiClient extends AiClient {
   async review(): Promise<AiResult> {
-    return { findings: [], usage: null };
+    return { findings: [], usage: null, skipped: true };
   }
 }
 

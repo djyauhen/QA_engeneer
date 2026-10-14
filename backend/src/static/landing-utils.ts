@@ -94,8 +94,12 @@ export function walkFilesByExtensions(dir: string, extensions: string[], onFile:
   }
 }
 
+const MAX_TEXT_BYTES = 2 * 1024 * 1024;
+
 export function readFileUtf8Safe(filePath: string): { ok: true; content: string } | { ok: false; error: string } {
   try {
+    const size = fs.statSync(filePath).size;
+    if (size > MAX_TEXT_BYTES) return { ok: false, error: 'too-large' };
     return { ok: true, content: fs.readFileSync(filePath, 'utf-8') };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : 'read-failed' };

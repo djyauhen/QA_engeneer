@@ -1,4 +1,5 @@
 import { Component, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 import { APPLY_ROUTES } from '../core/apply-routes';
@@ -11,21 +12,33 @@ import { ApiService } from '../core/api.service';
   imports: [RouterOutlet, RouterLink, RouterLinkActive],
   template: `
     <div class="shell">
-      <aside class="nav" [attr.aria-label]="roleLabel()">
+      <nav class="nav" aria-label="Разделы">
         <p class="brand">Помощник QA</p>
         <p class="role">{{ roleLabel() }}</p>
-        <a routerLink="/launch" routerLinkActive="active">Запуск проверки</a>
-        <a routerLink="/progress" [class.active]="progressActive()">Ход проверки</a>
-        <a routerLink="/reports" routerLinkActive="active">Отчёты</a>
-        <a routerLink="/stand" [class.active]="standActive()">Стенд</a>
+        <a routerLink="/launch" routerLinkActive="active" ariaCurrentWhenActive="page">Запуск проверки</a>
+        <a
+          routerLink="/progress"
+          routerLinkActive="active"
+          [class.active]="progressActive()"
+          [attr.aria-current]="progressActive() ? 'page' : null"
+          >Ход проверки</a
+        >
+        <a routerLink="/reports" routerLinkActive="active" ariaCurrentWhenActive="page">Отчёты</a>
+        <a
+          routerLink="/stand"
+          routerLinkActive="active"
+          [class.active]="standActive()"
+          [attr.aria-current]="standActive() ? 'page' : null"
+          >Стенд</a
+        >
         @if (session.role() === tl) {
-          <a routerLink="/costs" routerLinkActive="active">Затраты</a>
-          <a routerLink="/config" routerLinkActive="active">Конфиг</a>
-          <a routerLink="/users" routerLinkActive="active">Пользователи</a>
-          <a routerLink="/catalog-query" routerLinkActive="active">Каталог AIO</a>
+          <a routerLink="/costs" routerLinkActive="active" ariaCurrentWhenActive="page">Затраты</a>
+          <a routerLink="/config" routerLinkActive="active" ariaCurrentWhenActive="page">Конфиг</a>
+          <a routerLink="/users" routerLinkActive="active" ariaCurrentWhenActive="page">Пользователи</a>
+          <a routerLink="/catalog-query" routerLinkActive="active" ariaCurrentWhenActive="page">Каталог AIO</a>
         }
         <button type="button" class="secondary logout" (click)="logout()">Выйти</button>
-      </aside>
+      </nav>
       <main class="main">
         <router-outlet />
       </main>
@@ -42,9 +55,14 @@ export class ShellComponent {
   private readonly url = signal(this.router.url);
 
   constructor() {
-    this.router.events.pipe(filter((event) => event instanceof NavigationEnd)).subscribe(() => {
-      this.url.set(this.router.url);
-    });
+    this.router.events
+      .pipe(
+        filter((event) => event instanceof NavigationEnd),
+        takeUntilDestroyed(),
+      )
+      .subscribe(() => {
+        this.url.set(this.router.url);
+      });
   }
 
   roleLabel(): string {

@@ -1,30 +1,67 @@
+import { randomUUID } from 'crypto';
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { ACTIVE_CHECKS_REPO } from '../tokens';
+import { ACTIVE_CHECKS_REPO, LEASE_MS } from '../tokens';
 import { ActiveChecksRepo } from '../storage/repos';
 import { CheckRecord } from './check.record';
 import { toSnapshot } from './snapshot';
+
+export function leaseDeadline(now = Date.now()): string {
+  return new Date(now + LEASE_MS).toISOString();
+}
 
 const ACTIONS_POLL_MS = 400;
 
 @Injectable()
 export class CheckStore implements OnModuleDestroy {
   private readonly logger = new Logger(CheckStore.name);
+  readonly leaseOwner = randomUUID();
   private readonly byId = new Map<string, CheckRecord>();
   private readonly tails = new Map<string, Promise<void>>();
   private readonly actionTimers = new Map<string, ReturnType<typeof setInterval>>();
+  private continueListener: ((check: CheckRecord) => void) | null = null;
 
   constructor(@Inject(ACTIVE_CHECKS_REPO) private readonly active: ActiveChecksRepo) {}
 
+  setContinueListener(listener: (check: CheckRecord) => void): void {
+    this.continueListener = listener;
+  }
+
   add(check: CheckRecord): void {
+    let replaced = false;
     for (const existing of this.byId.values()) {
-      if (existing.ownerLogin === check.ownerLogin && !existing.reportSaved) {
-        existing.markAborted();
+      if (existing.ownerLogin === check.ownerLogin && existing.id !== check.id) {
+        if (!existing.reportSaved && !existing.aborted) {
+          existing.markAborted();
+          existing.resumeArmed = false;
+        }
+        replaced = true;
       }
     }
+    if (replaced) check.replaced_previous_stand = true;
+    this.attachAdopted(check);
+  }
+
+  attachAdopted(check: CheckRecord): void {
     this.bind(check);
     this.byId.set(check.id, check);
     this.armActionsPoll(check);
     this.schedulePersist(check);
+  }
+
+  requestContinue(check: CheckRecord): void {
+    this.continueListener?.(check);
+  }
+
+  async forgetLocal(id: string): Promise<void> {
+    const check = this.byId.get(id);
+    if (check) {
+      check.detached = true;
+      check.resumeArmed = false;
+      check.dispose();
+    }
+    this.byId.delete(id);
+    this.clearActions(id);
+    await this.active.releaseLease(id, this.leaseOwner);
   }
 
   get(id: string): CheckRecord | null {
@@ -74,6 +111,13 @@ export class CheckStore implements OnModuleDestroy {
         check.adoptActionsAllowed();
         this.clearActions(check.id);
       }
+      if (!check.resumeArmed || check.running || check.detached) return;
+      const pending = row?.payload.pendingDecision;
+      if (pending !== 'allow' && pending !== 'deny') return;
+      check.armClearPending();
+      check.queueDecision(pending);
+      check.resumeArmed = false;
+      this.requestContinue(check);
     } catch (error) {
       this.logger.error(`active check flag read failed: ${messageOf(error)}`);
     }
@@ -110,7 +154,13 @@ export class CheckStore implements OnModuleDestroy {
   }
 
   private async writeSnapshot(check: CheckRecord): Promise<void> {
-    await this.active.upsert(check.id, check.ownerLogin, toSnapshot(check));
+    if (check.detached) return;
+    await this.active.upsert(
+      check.id,
+      check.ownerLogin,
+      toSnapshot(check),
+      check.reportSaved || check.aborted ? undefined : { owner: this.leaseOwner, until: leaseDeadline() },
+    );
     if (!check.actionsAllowed) {
       const stored = await this.active.get(check.id);
       if (stored?.payload.actionsAllowed) check.adoptActionsAllowed();

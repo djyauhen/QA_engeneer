@@ -13,16 +13,34 @@ import { toBody } from './report.component';
   imports: [ReportBlocksComponent],
   template: `
     <h1>Сравнение</h1>
-    @if (loading()) {
+    @if (loading() && !current()) {
       <p>Загрузка…</p>
-    } @else if (error()) {
+    } @else if (error() && !current()) {
       <p class="alert error" role="alert">{{ error() }}</p>
     } @else if (current(); as report) {
       <div class="compare">
-        <app-report-blocks [data]="report" heading="Текущий отчёт" [showDate]="true" [showRecommendation]="true" />
+        <app-report-blocks
+          [data]="report"
+          heading="Текущий отчёт"
+          idPrefix="current"
+          [showDate]="true"
+          [showRecommendation]="true"
+        />
         <div>
-          @if (previous(); as past) {
-            <app-report-blocks [data]="past" heading="Прошлый отчёт" [showDate]="true" [showRecommendation]="true" />
+          @if (pastError()) {
+            <h2>Прошлый отчёт</h2>
+            <p class="alert error" role="alert">{{ pastError() }}</p>
+          } @else if (previous(); as past) {
+            <app-report-blocks
+              [data]="past"
+              heading="Прошлый отчёт"
+              idPrefix="past"
+              [showDate]="true"
+              [showRecommendation]="true"
+            />
+          } @else if (loading()) {
+            <h2>Прошлый отчёт</h2>
+            <p>Загрузка…</p>
           } @else {
             <h2>Прошлый отчёт</h2>
             <p class="alert neutral">{{ noPrevious }}</p>
@@ -39,6 +57,7 @@ export class CompareComponent {
   private readonly destroyRef = inject(DestroyRef);
   readonly loading = signal(true);
   readonly error = signal('');
+  readonly pastError = signal('');
   readonly current = signal<ReportBody | null>(null);
   readonly previous = signal<ReportBody | null>(null);
   readonly noPrevious = NO_PREVIOUS;
@@ -52,6 +71,7 @@ export class CompareComponent {
   private load(id: string): void {
     this.loading.set(true);
     this.error.set('');
+    this.pastError.set('');
     this.current.set(null);
     this.previous.set(null);
     this.api.report(id).subscribe({
@@ -69,8 +89,7 @@ export class CompareComponent {
           },
           error: (error: unknown) => {
             this.loading.set(false);
-            this.current.set(null);
-            this.error.set(errorText(error, 'Не удалось открыть прошлый отчёт.'));
+            this.pastError.set(errorText(error, 'Не удалось открыть прошлый отчёт.'));
           },
         });
       },

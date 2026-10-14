@@ -20,6 +20,9 @@ export class ReportsService {
         name: report.name,
         created_at: report.created_at,
         owner_login: report.owner_login,
+        static_summary: report.static_summary,
+        ai_status: report.ai_status,
+        lighthouse_status: report.lighthouse_status,
       })),
     };
   }

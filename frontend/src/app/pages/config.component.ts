@@ -35,12 +35,12 @@ interface RulesForm {
         <textarea id="macros" rows="4" [value]="current.forbidden_macros" (input)="patch('forbidden_macros', inputValue($event))"></textarea>
 
         <fieldset>
-          <legend>expectFormMacro</legend>
+          <legend>Макрос формы</legend>
           <label class="check">
             <input type="checkbox" [checked]="current.expectFormMacro" (change)="patchFlag($event)" />
-            expectFormMacro
+            В index ожидается макрос формы
           </label>
-          <p class="hint">Не вычисляется из типа ленда.</p>
+          <p class="hint">expectFormMacro. Не вычисляется из типа ленда.</p>
           <p class="hint">{{ formHint }}</p>
         </fieldset>
 
@@ -49,22 +49,27 @@ interface RulesForm {
 
         <fieldset>
           <legend>Порог изображений</legend>
-          <label for="image-warning">image_warning_kb</label>
+          <label for="image-warning">Предупреждение по изображению, КБ</label>
           <input id="image-warning" inputmode="decimal" [value]="current.image_warning_kb" (input)="patch('image_warning_kb', inputValue($event))" />
-          <label for="image-failed">image_failed_kb</label>
+          <p class="hint">image_warning_kb</p>
+          <label for="image-failed">Ошибка по изображению, КБ</label>
           <input id="image-failed" inputmode="decimal" [value]="current.image_failed_kb" (input)="patch('image_failed_kb', inputValue($event))" />
+          <p class="hint">image_failed_kb</p>
         </fieldset>
 
         <fieldset>
           <legend>Порог CSS</legend>
-          <label for="css-ok">css_ok_kb</label>
+          <label for="css-ok">Норма CSS, КБ</label>
           <input id="css-ok" inputmode="decimal" [value]="current.css_ok_kb" (input)="patch('css_ok_kb', inputValue($event))" />
-          <label for="css-failed">css_failed_kb</label>
+          <p class="hint">css_ok_kb</p>
+          <label for="css-failed">Ошибка CSS, КБ</label>
           <input id="css-failed" inputmode="decimal" [value]="current.css_failed_kb" (input)="patch('css_failed_kb', inputValue($event))" />
+          <p class="hint">css_failed_kb</p>
         </fieldset>
 
         <label for="inline">Порог встроенного скрипта</label>
         <input id="inline" inputmode="numeric" [value]="current.inline_script_max_nonempty_lines" (input)="patch('inline_script_max_nonempty_lines', inputValue($event))" />
+        <p class="hint">inline_script_max_nonempty_lines</p>
 
         <label for="languages">Ожидаемые языки поверх метаданных ленда</label>
         <textarea id="languages" rows="3" [value]="current.languages_override" (input)="patch('languages_override', inputValue($event))"></textarea>
@@ -92,7 +97,7 @@ export class ConfigComponent {
   readonly inputValue = inputValue;
   readonly noHistory = NO_HISTORY;
   readonly formHint =
-    'Рядом с флагом, не одним плоским запретом. При включённом expectFormMacro в index обязателен {{form}}, запрещены {{link}} и {offer}. При выключенном флаге {{form}} запрещён, {{link}} обязателен хотя бы раз. В одном html вместе: {{aio:macros:tracker_protection_1}}, {{aio:macros:tracker_protection_2}}, {{aio:macros:tracker_protection_3}}. В index обязателен {{aio.visit.fields.offer_name.for_visitors}}.';
+    'Рядом с флагом, не одним плоским запретом. При включённом флаге в index обязателен {{form}}, запрещены {{link}} и {offer}. При выключенном флаге {{form}} запрещён, {{link}} обязателен хотя бы раз. В одном html вместе: {{aio:macros:tracker_protection_1}}, {{aio:macros:tracker_protection_2}}, {{aio:macros:tracker_protection_3}}. В index обязателен {{aio.visit.fields.offer_name.for_visitors}}.';
 
   constructor() {
     this.api.rules().subscribe({
@@ -127,11 +132,12 @@ export class ConfigComponent {
     event.preventDefault();
     const current = this.form();
     if (!current) return;
-    const body = fromForm(current);
-    if (!body) {
-      this.saveError.set('Некорректный параметр конфигурации');
+    const parsed = fromForm(current);
+    if (!parsed.ok) {
+      this.saveError.set(parsed.error);
       return;
     }
+    const body = parsed.rules;
     this.saving.set(true);
     this.saveError.set('');
     this.api.saveRules(body).subscribe({
@@ -163,31 +169,38 @@ function toForm(rules: AdminRules): RulesForm {
   };
 }
 
-function fromForm(form: RulesForm): AdminRules | null {
-  const imageWarning = numberValue(form.image_warning_kb);
-  const imageFailed = numberValue(form.image_failed_kb);
-  const cssOk = numberValue(form.css_ok_kb);
-  const cssFailed = numberValue(form.css_failed_kb);
-  const lines = numberValue(form.inline_script_max_nonempty_lines);
-  if (imageWarning === null || imageFailed === null || cssOk === null || cssFailed === null || lines === null) return null;
-  if (!Number.isInteger(lines)) return null;
+function fromForm(form: RulesForm): { ok: true; rules: AdminRules } | { ok: false; error: string } {
+  const imageWarning = numberField(form.image_warning_kb, 'Предупреждение по изображению, КБ');
+  if (!imageWarning.ok) return imageWarning;
+  const imageFailed = numberField(form.image_failed_kb, 'Ошибка по изображению, КБ');
+  if (!imageFailed.ok) return imageFailed;
+  const cssOk = numberField(form.css_ok_kb, 'Норма CSS, КБ');
+  if (!cssOk.ok) return cssOk;
+  const cssFailed = numberField(form.css_failed_kb, 'Ошибка CSS, КБ');
+  if (!cssFailed.ok) return cssFailed;
+  const lines = numberField(form.inline_script_max_nonempty_lines, 'Порог встроенного скрипта');
+  if (!lines.ok) return lines;
+  if (!Number.isInteger(lines.value)) return { ok: false, error: 'Некорректное поле «Порог встроенного скрипта».' };
   return {
-    allowed_external_prefixes: linesToList(form.allowed_external_prefixes),
-    forbidden_macros: linesToList(form.forbidden_macros),
-    forbidden_script_markers: linesToList(form.forbidden_script_markers),
-    image_warning_kb: imageWarning,
-    image_failed_kb: imageFailed,
-    css_ok_kb: cssOk,
-    css_failed_kb: cssFailed,
-    inline_script_max_nonempty_lines: lines,
-    expectFormMacro: form.expectFormMacro,
-    languages_override: linesToList(form.languages_override),
+    ok: true,
+    rules: {
+      allowed_external_prefixes: linesToList(form.allowed_external_prefixes),
+      forbidden_macros: linesToList(form.forbidden_macros),
+      forbidden_script_markers: linesToList(form.forbidden_script_markers),
+      image_warning_kb: imageWarning.value,
+      image_failed_kb: imageFailed.value,
+      css_ok_kb: cssOk.value,
+      css_failed_kb: cssFailed.value,
+      inline_script_max_nonempty_lines: lines.value,
+      expectFormMacro: form.expectFormMacro,
+      languages_override: linesToList(form.languages_override),
+    },
   };
 }
 
-function numberValue(value: string): number | null {
-  if (value.trim() === '') return null;
+function numberField(value: string, label: string): { ok: true; value: number } | { ok: false; error: string } {
+  if (value.trim() === '') return { ok: false, error: `Некорректное поле «${label}».` };
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return parsed;
+  if (!Number.isFinite(parsed) || parsed < 0) return { ok: false, error: `Некорректное поле «${label}».` };
+  return { ok: true, value: parsed };
 }

@@ -40,6 +40,7 @@ export async function createTestApp(options?: {
     databaseUrl: '',
     aioToken: 'test-aio-token-value',
     aioBaseUrl: 'https://app.aio.tech',
+    aioStorageHosts: ['files.aio.tech'],
     tlLogin: 'env-tl',
     tlPassword: 'env-tl-pass',
     workDir,
@@ -58,7 +59,9 @@ export async function createTestApp(options?: {
     aiModel: 'deepseek-flash',
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
+    lighthouseNoSandbox: false,
     bcryptRounds: 4,
+    poolMax: 10,
   };
   const repos = options?.repos ?? createMemoryRepos();
   const aio = (options?.aio as FakeAio) ?? new FakeAio();

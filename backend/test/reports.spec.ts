@@ -121,6 +121,9 @@ describe('rules, costs and reports', () => {
     ]);
     expect(own.body.reports[0].verdict).toBeUndefined();
     expect(own.body.reports[0].created_at).toEqual(expect.any(String));
+    expect(own.body.reports[0].static_summary).toBe('все passed');
+    expect(own.body.reports[0].ai_status).toBe('Список готов');
+    expect(own.body.reports[0].lighthouse_status).toBe('выполнен');
     const foreign = await request(http.getHttpServer())
       .get('/reports/33333333-3333-4333-8333-333333333333')
       .set('x-session-id', qaA.body.session_id);

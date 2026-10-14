@@ -5,11 +5,9 @@ import { RedactingFilter } from './http.filter';
 import { PreviewService } from './stand/preview.service';
 import { APP_CONFIG } from './tokens';
 
-const DEPLOYED_FRONTEND_ORIGIN = 'https://qa-engeneer.vercel.app';
-
 export function corsOrigin(frontendOrigin: string[]): true | string[] {
   if (frontendOrigin.length === 0) return true;
-  return [...new Set([...frontendOrigin, DEPLOYED_FRONTEND_ORIGIN])];
+  return [...new Set(frontendOrigin)];
 }
 
 export function configureApp(app: INestApplication): void {

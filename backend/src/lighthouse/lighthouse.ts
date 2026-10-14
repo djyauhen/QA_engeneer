@@ -4,19 +4,27 @@ import { LighthouseMetrics } from '../reports/report.types';
 
 export abstract class LighthouseRunner {
   abstract run(url: string, formFactor: 'mobile' | 'desktop'): Promise<LighthouseMetrics>;
+
+  mode(): 'stub' | 'real' {
+    return 'real';
+  }
 }
 
 export class StubLighthouseRunner extends LighthouseRunner {
+  override mode(): 'stub' | 'real' {
+    return 'stub';
+  }
+
   async run(_url: string, formFactor: 'mobile' | 'desktop'): Promise<LighthouseMetrics> {
     const desktop = formFactor === 'desktop';
     return {
       performance_score: desktop ? 0.62 : 0.48,
-      first_contentful_paint: desktop ? 1.1 : 1.8,
-      largest_contentful_paint: desktop ? 2.0 : 3.1,
+      first_contentful_paint: desktop ? 1100 : 1800,
+      largest_contentful_paint: desktop ? 2000 : 3100,
       total_blocking_time: desktop ? 40 : 180,
       cumulative_layout_shift: desktop ? 0.02 : 0.08,
-      speed_index: desktop ? 1.6 : 2.7,
-      time_to_interactive: desktop ? 2.2 : 3.6,
+      speed_index: desktop ? 1600 : 2700,
+      time_to_interactive: desktop ? 2200 : 3600,
     };
   }
 }
@@ -31,7 +39,7 @@ export class CliLighthouseRunner extends LighthouseRunner {
       'lighthouse',
       url,
       '--quiet',
-      '--chrome-flags=--headless --no-sandbox',
+      `--chrome-flags=--headless${this.config.lighthouseNoSandbox ? ' --no-sandbox' : ''}`,
       '--only-categories=performance',
       `--form-factor=${formFactor}`,
       '--output=json',
@@ -70,13 +78,24 @@ export function parseLighthouse(stdout: string): LighthouseMetrics {
 
 function exec(command: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { shell: process.platform === 'win32' });
-    const chunks: Buffer[] = [];
-    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
-    child.on('error', () => reject(new Error('Сбой Lighthouse')));
+    const child = spawn(command, args, { shell: false });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('Сбой Lighthouse'));
+    }, 90_000);
+    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+    child.on('error', () => {
+      clearTimeout(timer);
+      reject(new Error('Сбой Lighthouse'));
+    });
     child.on('close', (code) => {
+      clearTimeout(timer);
+      void stderr;
       if (code !== 0) reject(new Error('Сбой Lighthouse'));
-      else resolve(Buffer.concat(chunks).toString('utf8'));
+      else resolve(Buffer.concat(stdout).toString('utf8'));
     });
   });
 }

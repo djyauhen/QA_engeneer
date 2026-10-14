@@ -4,18 +4,22 @@ import { CatalogCard } from '../catalog/map-row';
 import { ReportPayload } from '../reports/report.types';
 import { AdminRules } from '../rules/rules';
 import { retentionCutoff } from '../rules/rules';
+import { LOGIN_MAX_FAILURES, LOGIN_WINDOW_MS } from '../tokens';
 import { cloneSnapshot, mergeActiveSnapshot } from './active-snapshot';
 import {
   ActiveCheckSnapshot,
   ActiveChecksRepo,
   CatalogQueryRepo,
   CatalogRepo,
+  CheckArchivesRepo,
   CostEntry,
   CostsRepo,
   ReportListItem,
+  reportListStatuses,
   ReportsRepo,
   Repos,
   RulesRepo,
+  LoginAttemptsRepo,
   SessionInsert,
   SessionRecord,
   SessionsRepo,
@@ -47,7 +51,7 @@ export class MemoryCatalogRepo implements CatalogRepo {
   refreshedAtValue: string | null = null;
 
   async save(rows: CatalogCard[]): Promise<void> {
-    this.rows = rows.map((row) => ({ ...row }));
+    this.rows = rows.map((row) => ({ ...row, preview_image: '' }));
     this.refreshedAtValue = new Date().toISOString();
   }
 
@@ -76,6 +80,7 @@ export class MemoryReportsRepo implements ReportsRepo {
     created_at: string;
     payload: ReportPayload;
   }): Promise<void> {
+    if (this.rows.some((existing) => existing.id === row.id)) return;
     this.rows.push(row);
   }
 
@@ -96,6 +101,7 @@ export class MemoryReportsRepo implements ReportsRepo {
         name: row.payload.name,
         created_at: row.created_at,
         owner_login: row.owner_login,
+        ...reportListStatuses(row.payload),
       }));
   }
 
@@ -166,6 +172,8 @@ export class MemorySessionsRepo implements SessionsRepo {
       role: row.role,
       source: row.source,
       expires_at: row.expires_at,
+      absolute_expires_at: row.absolute_expires_at,
+      password_fingerprint: row.password_fingerprint,
     });
   }
 
@@ -183,20 +191,142 @@ export class MemorySessionsRepo implements SessionsRepo {
   async delete(id: string): Promise<void> {
     this.rows.delete(id);
   }
+
+  async deleteByLogin(login: string): Promise<void> {
+    for (const [id, row] of this.rows) {
+      if (row.login === login) this.rows.delete(id);
+    }
+  }
+
+  async purgeExpired(now: Date): Promise<void> {
+    const stamp = now.getTime();
+    for (const [id, row] of this.rows) {
+      const idle = new Date(row.expires_at).getTime();
+      const absolute = row.absolute_expires_at ? new Date(row.absolute_expires_at).getTime() : Number.POSITIVE_INFINITY;
+      if (idle <= stamp || absolute <= stamp) this.rows.delete(id);
+    }
+  }
+}
+
+export class MemoryLoginAttemptsRepo implements LoginAttemptsRepo {
+  private readonly attempts = new Map<string, { failures: number; windowStarted: number; lockedUntil: number | null }>();
+
+  async blocked(subject: string, now: number): Promise<boolean> {
+    const row = this.attempts.get(subject);
+    return !!row?.lockedUntil && row.lockedUntil > now;
+  }
+
+  async fail(subject: string, now: number): Promise<void> {
+    const current = this.attempts.get(subject);
+    if (!current || now - current.windowStarted > LOGIN_WINDOW_MS) {
+      this.attempts.set(subject, { failures: 1, windowStarted: now, lockedUntil: null });
+      return;
+    }
+    current.failures += 1;
+    if (current.failures >= LOGIN_MAX_FAILURES) current.lockedUntil = now + LOGIN_WINDOW_MS;
+  }
+
+  async clear(subject: string): Promise<void> {
+    this.attempts.delete(subject);
+  }
+}
+
+interface MemoryActiveRow {
+  owner_login: string;
+  payload: ActiveCheckSnapshot;
+  leaseOwner: string | null;
+  leaseUntil: number | null;
 }
 
 export class MemoryActiveChecksRepo implements ActiveChecksRepo {
-  readonly rows = new Map<string, { owner_login: string; payload: ActiveCheckSnapshot }>();
+  readonly rows = new Map<string, MemoryActiveRow>();
 
-  async upsert(id: string, ownerLogin: string, payload: ActiveCheckSnapshot): Promise<void> {
-    const current = this.rows.get(id)?.payload ?? null;
-    this.rows.set(id, { owner_login: ownerLogin, payload: mergeActiveSnapshot(current, payload) });
+  async upsert(
+    id: string,
+    ownerLogin: string,
+    payload: ActiveCheckSnapshot,
+    claim?: { owner: string; until: string },
+  ): Promise<boolean> {
+    const current = this.rows.get(id);
+    const merged = mergeActiveSnapshot(current?.payload ?? null, payload);
+    let leaseOwner = current?.leaseOwner ?? null;
+    let leaseUntil = current?.leaseUntil ?? null;
+    let held = false;
+    if (claim) {
+      const now = Date.now();
+      if (!leaseOwner || leaseOwner === claim.owner || (leaseUntil ?? 0) <= now) {
+        leaseOwner = claim.owner;
+        leaseUntil = new Date(claim.until).getTime();
+        held = true;
+      }
+    }
+    this.rows.set(id, { owner_login: ownerLogin, payload: merged, leaseOwner, leaseUntil });
+    return held;
   }
 
   async get(id: string): Promise<{ owner_login: string; payload: ActiveCheckSnapshot } | null> {
     const row = this.rows.get(id);
     if (!row) return null;
     return { owner_login: row.owner_login, payload: cloneSnapshot(row.payload) };
+  }
+
+  async listByOwner(ownerLogin: string): Promise<Array<{ id: string; payload: ActiveCheckSnapshot }>> {
+    const rows: Array<{ id: string; payload: ActiveCheckSnapshot }> = [];
+    for (const [id, row] of this.rows) {
+      if (row.owner_login !== ownerLogin) continue;
+      rows.push({ id, payload: cloneSnapshot(row.payload) });
+    }
+    return rows;
+  }
+
+  async tryClaim(id: string, ownerToken: string, leaseUntil: string): Promise<boolean> {
+    const row = this.rows.get(id);
+    if (!row) return false;
+    const now = Date.now();
+    if (row.leaseOwner && row.leaseOwner !== ownerToken && (row.leaseUntil ?? 0) > now) return false;
+    row.leaseOwner = ownerToken;
+    row.leaseUntil = new Date(leaseUntil).getTime();
+    return true;
+  }
+
+  async releaseLease(id: string, ownerToken: string): Promise<void> {
+    const row = this.rows.get(id);
+    if (!row || row.leaseOwner !== ownerToken) return;
+    row.leaseOwner = null;
+    row.leaseUntil = null;
+  }
+
+  async patchDecision(id: string, decision: 'allow' | 'deny'): Promise<void> {
+    const row = this.rows.get(id);
+    if (!row) return;
+    row.payload = { ...row.payload, pendingDecision: decision };
+  }
+
+  async patchActionsAllowed(id: string): Promise<void> {
+    const row = this.rows.get(id);
+    if (!row) return;
+    row.payload = { ...row.payload, actionsAllowed: true };
+  }
+
+  async delete(id: string): Promise<void> {
+    this.rows.delete(id);
+  }
+}
+
+export class MemoryArchivesRepo implements CheckArchivesRepo {
+  readonly files = new Map<string, Buffer>();
+
+  async put(id: string, body: Buffer): Promise<void> {
+    this.files.set(id, Buffer.from(body));
+  }
+
+  async get(id: string): Promise<Buffer | null> {
+    const body = this.files.get(id);
+    return body ? Buffer.from(body) : null;
+  }
+
+  async delete(id: string): Promise<void> {
+    this.files.delete(id);
   }
 }
 
@@ -222,6 +352,8 @@ export function createMemoryRepos(): Repos {
     rules: new MemoryRulesRepo(),
     costs: new MemoryCostsRepo(),
     activeChecks: new MemoryActiveChecksRepo(),
+    archives: new MemoryArchivesRepo(),
+    loginAttempts: new MemoryLoginAttemptsRepo(),
     close: async () => undefined,
   };
 }

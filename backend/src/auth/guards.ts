@@ -45,7 +45,8 @@ export class TlGuard implements CanActivate {
   }
 }
 
-export function sessionCookie(id: string, clear = false): string {
-  if (clear) return 'qa_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0';
-  return `qa_session=${encodeURIComponent(id)}; HttpOnly; Path=/; SameSite=Lax`;
+export function sessionCookie(id: string, clear = false, secure = false): string {
+  const secureFlag = secure ? '; Secure' : '';
+  if (clear) return `qa_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`;
+  return `qa_session=${encodeURIComponent(id)}; HttpOnly; Path=/; SameSite=Lax${secureFlag}`;
 }

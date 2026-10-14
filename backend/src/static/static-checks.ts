@@ -120,6 +120,35 @@ const ALLOWED_EXT: Record<string, string[]> = {
   favicon: ['.ico', '.png', '.svg', '.jpg', '.jpeg', '.webp'],
 };
 
+function listAssetFiles(folderPath: string, label: string): { files: string[]; error: string | null } {
+  const files: string[] = [];
+  const walk = (dir: string, prefix: string): string | null => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOTDIR' || code === 'ENOENT' || code === 'EPERM') {
+        return `В папке ${label} ожидался каталог`;
+      }
+      return `Не удалось прочитать папку ${label}`;
+    }
+    for (const entry of entries) {
+      if (IGNORED.includes(entry.name)) continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const nested = walk(full, rel);
+        if (nested) return nested;
+      } else if (entry.isFile()) {
+        files.push(rel);
+      }
+    }
+    return null;
+  };
+  return { files, error: walk(folderPath, '') };
+}
+
 function checkStructure(projectPath: string): StaticItem {
   const errors: string[] = [];
   const resolved = resolveLandingFolder(projectPath);
@@ -135,7 +164,12 @@ function checkStructure(projectPath: string): StaticItem {
   for (const folder of [...REQUIRED_FOLDERS, ...OPTIONAL_FOLDERS]) {
     if (!filtered.includes(folder)) continue;
     const folderPath = path.join(resolved.landingFolder, folder);
-    const validFiles = fs.readdirSync(folderPath).filter((file) => !IGNORED.includes(file));
+    const listed = listAssetFiles(folderPath, folder);
+    if (listed.error) {
+      errors.push(listed.error);
+      continue;
+    }
+    const validFiles = listed.files;
     let validExtensions = ALLOWED_EXT[folder] ?? [];
     if (folder === 'img' || folder === 'images') {
       validExtensions = [...new Set([...validExtensions, ...ALLOWED_EXT.favicon])];

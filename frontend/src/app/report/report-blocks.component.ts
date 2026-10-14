@@ -12,28 +12,36 @@ import { completeAiCard, findingPath, formatTimestamp, isImageSource, isSignedUr
   selector: 'app-report-blocks',
   template: `
     @if (heading()) {
-      <h1>{{ heading() }}</h1>
+      <h2>{{ heading() }}</h2>
     }
     @if (showRecommendation()) {
       <p class="recommendation">{{ recommendation }}</p>
     }
     <dl class="facts">
-      <div>
-        <dt>Название</dt>
-        <dd>{{ data().name }}</dd>
-      </div>
-      <div>
-        <dt>human_id</dt>
-        <dd class="mono">{{ data().human_id }}</dd>
-      </div>
-      <div>
-        <dt>Страны</dt>
-        <dd>{{ joinList(data().countries) }}</dd>
-      </div>
-      <div>
-        <dt>Языки</dt>
-        <dd>{{ joinList(data().languages) }}</dd>
-      </div>
+      @if (data().name) {
+        <div>
+          <dt>Название</dt>
+          <dd>{{ data().name }}</dd>
+        </div>
+      }
+      @if (data().human_id) {
+        <div>
+          <dt>human_id</dt>
+          <dd class="mono">{{ data().human_id }}</dd>
+        </div>
+      }
+      @if (joinList(data().countries)) {
+        <div>
+          <dt>Страны</dt>
+          <dd>{{ joinList(data().countries) }}</dd>
+        </div>
+      }
+      @if (joinList(data().languages)) {
+        <div>
+          <dt>Языки</dt>
+          <dd>{{ joinList(data().languages) }}</dd>
+        </div>
+      }
       @if (data().lander_type_name) {
         <div>
           <dt>Тип</dt>
@@ -54,9 +62,9 @@ import { completeAiCard, findingPath, formatTimestamp, isImageSource, isSignedUr
       }
     </dl>
 
-    <section class="block" aria-labelledby="static-title">
+    <section class="block" [attr.aria-labelledby]="sectionId('static-title')">
       <header class="block-head">
-        <h2 id="static-title">Статика</h2>
+        <h2 [id]="sectionId('static-title')">Статика</h2>
         @if (data().static?.summary) {
           <span class="chip">{{ data().static?.summary }}</span>
         }
@@ -69,7 +77,7 @@ import { completeAiCard, findingPath, formatTimestamp, isImageSource, isSignedUr
         <article class="static-item">
           <div class="static-head">
             <h3>{{ item.name }}</h3>
-            <span class="badge" [attr.data-status]="item.status">{{ item.status }}</span>
+            <span class="badge" [attr.data-status]="item.status">{{ statusText(item.status) }}</span>
           </div>
           @for (finding of item.findings; track $index) {
             <p>{{ finding.text }}</p>
@@ -81,9 +89,9 @@ import { completeAiCard, findingPath, formatTimestamp, isImageSource, isSignedUr
       }
     </section>
 
-    <section class="block" aria-labelledby="ai-title">
+    <section class="block" [attr.aria-labelledby]="sectionId('ai-title')">
       <header class="block-head">
-        <h2 id="ai-title">ИИ</h2>
+        <h2 [id]="sectionId('ai-title')">ИИ</h2>
         @if (data().ai?.status) {
           <span class="chip">{{ data().ai?.status }}</span>
         }
@@ -106,16 +114,16 @@ import { completeAiCard, findingPath, formatTimestamp, isImageSource, isSignedUr
       }
     </section>
 
-    <section class="block" aria-labelledby="lh-title">
+    <section class="block" [attr.aria-labelledby]="sectionId('lh-title')">
       <header class="block-head">
-        <h2 id="lh-title">Lighthouse</h2>
+        <h2 [id]="sectionId('lh-title')">Lighthouse</h2>
         @if (data().lighthouse?.status) {
           <span class="chip">{{ data().lighthouse?.status }}</span>
         }
       </header>
       <div class="lh-groups">
-        <section aria-label="mobile">
-          <h3>mobile</h3>
+        <section aria-label="Мобильная">
+          <h3>Мобильная</h3>
           @for (metric of metrics; track metric.key) {
             <div class="metric">
               <span>{{ metric.label }}</span>
@@ -123,8 +131,8 @@ import { completeAiCard, findingPath, formatTimestamp, isImageSource, isSignedUr
             </div>
           }
         </section>
-        <section aria-label="desktop">
-          <h3>desktop</h3>
+        <section aria-label="Компьютер">
+          <h3>Компьютер</h3>
           @for (metric of metrics; track metric.key) {
             <div class="metric">
               <span>{{ metric.label }}</span>
@@ -139,6 +147,7 @@ import { completeAiCard, findingPath, formatTimestamp, isImageSource, isSignedUr
 export class ReportBlocksComponent {
   readonly data = input.required<ReportBody>();
   readonly heading = input('');
+  readonly idPrefix = input('report');
   readonly showDate = input(false);
   readonly showRecommendation = input(false);
   readonly recommendation = RECOMMENDATION;
@@ -148,6 +157,17 @@ export class ReportBlocksComponent {
   readonly joinList = joinList;
   readonly findingPath = findingPath;
   readonly metricValue = metricValue;
+
+  sectionId(part: string): string {
+    return `${this.idPrefix()}-${part}`;
+  }
+
+  statusText(status: string): string {
+    if (status === 'passed') return 'пройдено';
+    if (status === 'warning') return 'предупреждение';
+    if (status === 'failed') return 'ошибка';
+    return status;
+  }
 
   structureFailed(): boolean {
     const items = this.data().static?.items ?? [];
