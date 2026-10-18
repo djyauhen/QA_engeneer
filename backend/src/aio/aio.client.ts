@@ -1,5 +1,5 @@
 import { CatalogQuery, defaultCatalogQuery } from '../catalog/catalog-query';
-import { AIO_PAGE_LIMIT, CATALOG_LIMIT, METRIC_STUB } from '../tokens';
+import { AIO_PAGE_LIMIT, CATALOG_LIMIT } from '../tokens';
 import { AppConfig } from '../config';
 
 export interface AioPage {
@@ -63,18 +63,10 @@ export function buildTablesBody(page: number, query: CatalogQuery = defaultCatal
         analytics_position: 1,
         filters,
         ...(query.dates === null ? {} : { dates: [query.dates[0], query.dates[1], query.dates[2]] }),
-        hide_empty_metrics: false,
-        show_empty_fields: false,
-        hide_bots: true,
-        unwrap_tree: false,
-        hide_trash: true,
-        event_time_attribution: false,
-        back_fix_attribution: false,
         metric_filters: [],
         metric_definition: null,
         metric_definitions: [],
         meta_spend_attribution_engine_level: 'campaign',
-        metrics: [METRIC_STUB],
       },
     },
   };

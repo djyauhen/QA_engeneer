@@ -21,9 +21,6 @@ export const PART_ATTEMPTS = 3;
 export const CATALOG_LIMIT = 300;
 export const AIO_PAGE_LIMIT = 50;
 
-/** Stub metric id. Not a live metric uuid from an AIO capture. */
-export const METRIC_STUB = '00000000-0000-4000-8000-000000000000';
-
 export const STEP_NAMES = [
   'catalog',
   'download_request',

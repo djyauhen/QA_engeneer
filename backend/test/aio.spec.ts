@@ -1,7 +1,6 @@
 import { AioDownloadError, HttpAioClient, buildTablesBody, collectCatalogRows } from '../src/aio/aio.client';
-import { CatalogQuery } from '../src/catalog/catalog-query';
+import { CatalogQuery, defaultCatalogQuery } from '../src/catalog/catalog-query';
 import { AppConfig } from '../src/config';
-import { METRIC_STUB } from '../src/tokens';
 
 function config(): AppConfig {
   return {
@@ -62,13 +61,14 @@ describe('AIO client', () => {
       expect(headers.get('x-tenant-id')).toBeNull();
     }
     const table = landerTable(buildTablesBody(1));
-    expect(table.metrics).toEqual([METRIC_STUB]);
     expect(table.sort_key).toBe('_identity');
     expect(table.sort_direction).toBe('desc');
-    expect(table.filters).toEqual([]);
+    expect(table.filters).toEqual(defaultCatalogQuery().filters);
+    expect(table.dates).toEqual(defaultCatalogQuery().dates);
     expect(table.search).toBe('');
     expect(table.limit).toBe(50);
-    expect(table).not.toHaveProperty('dates');
+    expect(table).not.toHaveProperty('metrics');
+    expect(table).not.toHaveProperty('hide_bots');
     expect(JSON.parse(String(calls[0].init?.body))).toEqual(buildTablesBody(1));
   });
 
@@ -100,7 +100,8 @@ describe('AIO client', () => {
     expect(table.sort_key).toBe('_identity');
     expect(table.sort_direction).toBe('desc');
     expect(table.limit).toBe(50);
-    expect(table.metrics).toEqual([METRIC_STUB]);
+    expect(table).not.toHaveProperty('metrics');
+    expect(table).not.toHaveProperty('hide_bots');
   });
 
   it('stops when next is false and never echoes the token from a transport error', async () => {

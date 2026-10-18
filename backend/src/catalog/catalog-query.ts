@@ -23,7 +23,11 @@ export class CatalogQueryValidationError extends Error {
 }
 
 export function defaultCatalogQuery(): CatalogQuery {
-  return { search: '', filters: [], dates: null };
+  return {
+    search: '',
+    filters: [{ key: 'mode', operator: 'in', value: ['Editor'] }],
+    dates: ['2026-10-01 00:00:00', '2026-10-31 23:59:59', 'Europe/Minsk'],
+  };
 }
 
 export function cloneCatalogQuery(query: CatalogQuery): CatalogQuery {

@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { INestApplication } from '@nestjs/common';
 import { buildTablesBody } from '../src/aio/aio.client';
-import { CatalogQuery } from '../src/catalog/catalog-query';
+import { CatalogQuery, defaultCatalogQuery } from '../src/catalog/catalog-query';
 import { mapAioRow, sortByHumanIdDesc } from '../src/catalog/map-row';
 import { MemoryCatalogRepo } from '../src/storage/memory-repos';
 import { CATALOG_REPO } from '../src/tokens';
@@ -57,7 +57,7 @@ describe('catalog', () => {
     expect(ctx.aio.catalogCalls).toBe(1);
     expect(refreshed.body.items.map((item: { human_id: string }) => item.human_id)).toEqual(['100', '30', '9']);
     expect(refreshed.body.refreshed_at).toEqual(expect.any(String));
-    expect(refreshed.body.query).toEqual({ search: '', filters: [], dates: null });
+    expect(refreshed.body.query).toEqual(defaultCatalogQuery());
     expect(Object.keys(refreshed.body.items[0]).sort()).toEqual(['created_at', 'human_id', 'name', 'uuid']);
     const again = await request(http.getHttpServer()).get('/catalog').set('x-session-id', session);
     expect(again.body.items[0].human_id).toBe('100');
@@ -116,7 +116,7 @@ describe('catalog', () => {
   it('uses an empty saved query as the previous AIO body', async () => {
     const saved = await request(http.getHttpServer()).get('/admin/catalog-query').set('x-session-id', session);
     expect(saved.status).toBe(200);
-    expect(saved.body).toEqual({ search: '', filters: [], dates: null });
+    expect(saved.body).toEqual(defaultCatalogQuery());
     const screen = await request(http.getHttpServer()).get('/catalog').set('x-session-id', session);
     expect(screen.status).toBe(200);
     expect(screen.body.items).toEqual([]);
@@ -130,8 +130,10 @@ describe('catalog', () => {
     expect(ctx.aio.catalogQueries).toEqual([saved.body]);
     const table = landerTable(buildTablesBody(1, ctx.aio.catalogQueries[0]));
     expect(table.search).toBe('');
-    expect(table.filters).toEqual([]);
-    expect(table).not.toHaveProperty('dates');
+    expect(table.filters).toEqual(defaultCatalogQuery().filters);
+    expect(table.dates).toEqual(defaultCatalogQuery().dates);
+    expect(table).not.toHaveProperty('metrics');
+    expect(table).not.toHaveProperty('hide_bots');
     expect(table.sort_key).toBe('_identity');
     expect(table.sort_direction).toBe('desc');
     expect(table.limit).toBe(50);
@@ -249,7 +251,7 @@ describe('catalog', () => {
     expect(deniedPut.body).toEqual(deniedGet.body);
     expect(ctx.aio.catalogCalls).toBe(0);
     const still = await request(http.getHttpServer()).get('/admin/catalog-query').set('x-session-id', session);
-    expect(still.body).toEqual({ search: '', filters: [], dates: null });
+    expect(still.body).toEqual(defaultCatalogQuery());
     const screen = await request(http.getHttpServer()).get('/catalog').set('x-session-id', qa);
     expect(screen.status).toBe(200);
     expect(screen.body.query).toEqual(still.body);
