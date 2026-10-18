@@ -86,6 +86,19 @@ export function cloneRules(rules: AdminRules): AdminRules {
   };
 }
 
+const PRELAND_WITH_FORM = 'Preland w/ Form';
+const PRELAND = 'Preland';
+
+/**
+ * Exact lander-type override for the form-macro check.
+ * Other types, empty, and missing names keep the stored admin fallback.
+ */
+export function expectFormMacroForLander(landerTypeName: string | undefined | null, fallback: boolean): boolean {
+  if (landerTypeName === PRELAND_WITH_FORM) return true;
+  if (landerTypeName === PRELAND) return false;
+  return fallback;
+}
+
 export class RulesValidationError extends Error {
   constructor(message: string) {
     super(message);

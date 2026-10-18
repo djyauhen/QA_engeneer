@@ -8,7 +8,7 @@ import { RulesService } from '../admin/admin.services';
 import { unpackZip } from '../files/unpack';
 import { WorkdirService } from '../files/workdir.service';
 import { LighthouseRunner } from '../lighthouse/lighthouse';
-import { effectiveLanguages } from '../rules/rules';
+import { cloneRules, effectiveLanguages, expectFormMacroForLander } from '../rules/rules';
 import { sanitizeReport } from '../redact';
 import { ReportPayload } from '../reports/report.types';
 import { CHECK_ARCHIVES_REPO, REPORTS_REPO } from '../tokens';
@@ -216,7 +216,9 @@ export class CheckOrchestrator {
   }
 
   private async staticPhase(check: CheckRecord): Promise<void> {
-    const rules = await this.rules.current();
+    const stored = await this.rules.current();
+    const rules = cloneRules(stored);
+    rules.expectFormMacro = expectFormMacroForLander(check.card.lander_type_name, stored.expectFormMacro);
     try {
       const items = await withAttempts(ATTEMPTS, async (attempt) => {
         check.step('static', attempt === 1 ? 'running' : 'retrying');
