@@ -60,6 +60,8 @@ export async function createTestApp(options?: {
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
     lighthouseNoSandbox: false,
+    visualMode: 'stub',
+    visualChromePath: '',
     bcryptRounds: 4,
     poolMax: 10,
   };

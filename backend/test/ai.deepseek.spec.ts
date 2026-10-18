@@ -2,13 +2,16 @@ import {
   AiCallError,
   DeepSeekAiClient,
   StubAiClient,
+  applyDesktopShot,
   completeFindings,
   createAiClient,
+  desktopShotDataUrl,
   DEFAULT_DEEPSEEK_API_BASE,
   DEFAULT_DEEPSEEK_MODEL,
   DEEPSEEK_MAX_OUTPUT_TOKENS,
   DEEPSEEK_REASONING_EFFORT,
 } from '../src/ai/ai.client';
+import { captureStandJpeg, wantsVisualCapture } from '../src/stand/capture';
 import { AppConfig, loadConfig } from '../src/config';
 
 function deepseekConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -37,6 +40,8 @@ function deepseekConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
     lighthouseNoSandbox: false,
+    visualMode: 'stub',
+    visualChromePath: '',
     bcryptRounds: 4,
     poolMax: 10,
     ...overrides,
@@ -125,6 +130,36 @@ describe('DeepSeek chat completions client', () => {
     expect(result.usage).toEqual({ prompt_tokens: 9, completion_tokens: 3, total_tokens: 12 });
   });
 
+  it('attaches a jpeg as image_url and replaces the desktop label', async () => {
+    const calls: Array<{ init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      calls.push({ init });
+      return jsonResponse(
+        completionBody(
+          JSON.stringify({
+            findings: [{ file: 'index.html', quote: 'Hello', screenshot: 'desktop' }],
+          }),
+        ),
+      );
+    };
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const client = new DeepSeekAiClient(deepseekConfig(), fetchImpl);
+    const result = await client.review({ ...sampleInput, screenshot: jpeg });
+    const body = JSON.parse(String(calls[0].init?.body)) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(typeof body.messages[0].content).toBe('string');
+    const parts = body.messages[1].content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+    expect(parts.map((part) => part.type)).toEqual(['text', 'image_url']);
+    expect(parts[0].text).toContain('"shot":"desktop"');
+    expect(parts[0].text).toContain('поставь ровно desktop');
+    expect(parts[1].image_url?.url).toBe(desktopShotDataUrl(jpeg));
+    expect(result.findings).toEqual([{ file: 'index.html', quote: 'Hello', screenshot: desktopShotDataUrl(jpeg) }]);
+    expect(applyDesktopShot([{ file: 'a.html', quote: 'q', screenshot: 'hero' }], desktopShotDataUrl(jpeg))).toEqual([
+      { file: 'a.html', quote: 'q', screenshot: 'hero' },
+    ]);
+  });
+
   it('strips markdown fences from model text', async () => {
     const fetchImpl: typeof fetch = async () =>
       jsonResponse(
@@ -195,6 +230,30 @@ describe('AI config defaults', () => {
     expect(config.aiModel).toBe('deepseek-flash');
     expect(config.aiBaseUrl).toBe(DEFAULT_DEEPSEEK_API_BASE);
     expect(config.aiApiKey).toBe('');
+    expect(config.visualMode).toBe('stub');
+    expect(config.visualChromePath).toBe('');
+    expect(config.lighthouseMode).toBe('stub');
+  });
+
+  it('enables visual capture only for VISUAL_MODE=real and falls back to the lighthouse chrome path', () => {
+    expect(loadConfig({ ...required, VISUAL_MODE: 'yes' }).visualMode).toBe('stub');
+    const real = loadConfig({
+      ...required,
+      VISUAL_MODE: 'real',
+      LIGHTHOUSE_CHROME_PATH: 'C:\\chrome\\chrome.exe',
+    });
+    expect(real.visualMode).toBe('real');
+    expect(real.visualChromePath).toBe('C:\\chrome\\chrome.exe');
+    const own = loadConfig({
+      ...required,
+      VISUAL_MODE: 'real',
+      VISUAL_CHROME_PATH: 'D:\\browser\\chrome.exe',
+      LIGHTHOUSE_CHROME_PATH: 'C:\\chrome\\chrome.exe',
+    });
+    expect(own.visualChromePath).toBe('D:\\browser\\chrome.exe');
+    expect(wantsVisualCapture('stub', 'http://127.0.0.1/preview')).toBe(false);
+    expect(wantsVisualCapture('real', null)).toBe(false);
+    expect(wantsVisualCapture('real', 'http://127.0.0.1/preview')).toBe(true);
   });
 
   it('unwraps quotes and spaces around the DeepSeek key and the AIO token', () => {
@@ -238,5 +297,11 @@ describe('AI config defaults', () => {
     expect(fallback.aiApiKey).toBe('test-openai-style-fallback');
     expect(fallback.aiBaseUrl).toBe('https://api.deepseek.com');
     expect(fallback.aiModel).toBe('deepseek-flash');
+  });
+});
+
+describe('stand screenshot capture', () => {
+  it('does not launch a browser when the chrome path is empty', async () => {
+    await expect(captureStandJpeg('http://127.0.0.1/preview/1/index.html?t=secret', '  ')).rejects.toThrow('no-chrome');
   });
 });

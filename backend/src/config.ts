@@ -27,6 +27,8 @@ export interface AppConfig {
   lighthouseMode: 'stub' | 'real';
   lighthouseChromePath: string;
   lighthouseNoSandbox: boolean;
+  visualMode: 'stub' | 'real';
+  visualChromePath: string;
   bcryptRounds: number;
   poolMax: number;
 }
@@ -90,6 +92,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     lighthouseMode: env.LIGHTHOUSE_MODE === 'real' ? 'real' : 'stub',
     lighthouseChromePath: env.LIGHTHOUSE_CHROME_PATH ?? '',
     lighthouseNoSandbox: env.LIGHTHOUSE_NO_SANDBOX === '1',
+    visualMode: env.VISUAL_MODE === 'real' ? 'real' : 'stub',
+    visualChromePath: unwrapEnv(env.VISUAL_CHROME_PATH) || (env.LIGHTHOUSE_CHROME_PATH ?? '').trim(),
     bcryptRounds: positiveInt(env.BCRYPT_ROUNDS, 10),
     poolMax: env.VERCEL === '1' ? 1 : 10,
   };

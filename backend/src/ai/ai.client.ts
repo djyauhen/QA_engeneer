@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { AppConfig } from '../config';
 import { AiFinding } from '../reports/report.types';
+import { DESKTOP_SHOT } from '../stand/capture';
 
 export const DEFAULT_DEEPSEEK_API_BASE = 'https://api.deepseek.com';
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
@@ -14,6 +15,7 @@ export interface AiInput {
   countries: string[];
   standUrl: string | null;
   name: string;
+  screenshot?: Buffer | null;
 }
 
 export interface AiResult {
@@ -39,6 +41,17 @@ export function completeFindings(raw: Array<Partial<AiFinding>>): AiFinding[] {
         finding.screenshot.length > 0,
     )
     .map((finding) => ({ file: finding.file, quote: finding.quote, screenshot: finding.screenshot }));
+}
+
+export function applyDesktopShot(raw: Array<Partial<AiFinding>>, dataUrl: string): Array<Partial<AiFinding>> {
+  return raw.map((finding) => {
+    if (!finding || finding.screenshot?.trim() !== DESKTOP_SHOT) return finding;
+    return { ...finding, screenshot: dataUrl };
+  });
+}
+
+export function desktopShotDataUrl(jpeg: Buffer): string {
+  return `data:image/jpeg;base64,${jpeg.toString('base64')}`;
 }
 
 const SYSTEM_PROMPT = [
@@ -92,13 +105,18 @@ export class DeepSeekAiClient extends AiClient {
   async review(input: AiInput): Promise<AiResult> {
     try {
       const model = this.config.aiModel || DEFAULT_DEEPSEEK_MODEL;
+      const shot = input.screenshot?.length ? input.screenshot : null;
       const userPayload = {
         name: input.name,
         languages: input.languages,
         countries: input.countries,
         stand_url: input.standUrl,
         files: input.files,
+        ...(shot ? { shot: DESKTOP_SHOT } : {}),
       };
+      const userText = shot
+        ? `${JSON.stringify(userPayload)} Кадр стенда приложен как изображение shot desktop. В поле screenshot поставь ровно desktop, не base64 и не описание.`
+        : JSON.stringify(userPayload);
       const request: DeepSeekChatRequest = {
         model,
         stream: false,
@@ -108,14 +126,26 @@ export class DeepSeekAiClient extends AiClient {
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: JSON.stringify(userPayload) },
+          {
+            role: 'user',
+            content: shot
+              ? [
+                  { type: 'text', text: userText },
+                  { type: 'image_url', image_url: { url: desktopShotDataUrl(shot) } },
+                ]
+              : userText,
+          },
         ],
       };
       const completion = await this.openai.chat.completions.create(request);
       const content = completion.choices[0]?.message?.content;
       if (typeof content !== 'string' || !content.trim()) throw new AiCallError('empty');
       try {
-        return { findings: parseFindings(content), usage: plainUsage(completion.usage) };
+        const findings = parseFindings(content);
+        return {
+          findings: shot ? applyDesktopShot(findings, desktopShotDataUrl(shot)) : findings,
+          usage: plainUsage(completion.usage),
+        };
       } catch {
         throw new AiCallError('invalid_json');
       }

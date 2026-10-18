@@ -5,13 +5,14 @@ import { AiCallError, AiClient, completeFindings } from '../ai/ai.client';
 import { AioClient, AioDownloadError } from '../aio/aio.client';
 import { CostsService } from '../admin/admin.services';
 import { RulesService } from '../admin/admin.services';
+import { AppConfig } from '../config';
 import { unpackZip } from '../files/unpack';
 import { WorkdirService } from '../files/workdir.service';
 import { LighthouseRunner } from '../lighthouse/lighthouse';
 import { cloneRules, effectiveLanguages, expectFormMacroForLander } from '../rules/rules';
 import { sanitizeReport } from '../redact';
 import { ReportPayload } from '../reports/report.types';
-import { CHECK_ARCHIVES_REPO, REPORTS_REPO } from '../tokens';
+import { APP_CONFIG, CHECK_ARCHIVES_REPO, REPORTS_REPO } from '../tokens';
 import {
   AI_STATUS_ERROR,
   AI_STATUS_READY,
@@ -25,6 +26,7 @@ import {
 import { CheckArchivesRepo, ReportsRepo } from '../storage/repos';
 import { getAllFilesByExtensions, relFromLanding } from '../static/landing-utils';
 import { StaticChecks, summarizeStatic } from '../static/static-checks';
+import { captureStandJpeg, wantsVisualCapture } from '../stand/capture';
 import { PreviewService } from '../stand/preview.service';
 import { abortError, CheckRecord, isAbort } from './check.record';
 import { ATTEMPTS, HaltAttempts, withAttempts } from './retry';
@@ -38,6 +40,7 @@ export class CheckOrchestrator {
     @Inject(StaticChecks) private readonly staticChecks: StaticChecks,
     @Inject(AiClient) private readonly ai: AiClient,
     @Inject(LighthouseRunner) private readonly lighthouse: LighthouseRunner,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly rules: RulesService,
     private readonly costs: CostsService,
     private readonly workdir: WorkdirService,
@@ -123,13 +126,14 @@ export class CheckOrchestrator {
     let standOk = check.standReady;
     if (this.needs(check, 'stand')) standOk = await this.raiseStand(check);
     this.throwIfAborted(check);
+    const screenshot = await this.captureVisual(check, standOk);
     if (standOk) {
-      await Promise.all([this.runAi(check), this.runLighthouse(check)]);
+      await Promise.all([this.runAi(check, screenshot), this.runLighthouse(check)]);
     } else if (this.needs(check, 'lighthouse') || check.state('lighthouse') === 'pending') {
       check.step('lighthouse', 'skipped', 'Стенд не поднят, прогон Lighthouse невозможен');
-      await this.runAi(check);
+      await this.runAi(check, null);
     } else if (this.needs(check, 'ai')) {
-      await this.runAi(check);
+      await this.runAi(check, null);
     }
     if (!check.reportSaved) await this.saveReport(check);
   }
@@ -270,7 +274,18 @@ export class CheckOrchestrator {
     }
   }
 
-  private async runAi(check: CheckRecord): Promise<void> {
+  private async captureVisual(check: CheckRecord, standOk: boolean): Promise<Buffer | null> {
+    if (!standOk || !wantsVisualCapture(this.config.visualMode, check.standUrl)) return null;
+    try {
+      return await captureStandJpeg(check.standUrl as string, this.config.visualChromePath);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message.replace(/https?:\/\/\S+/g, '[url]') : 'capture failed';
+      this.logger.error(`visual capture failed: ${detail}`);
+      return null;
+    }
+  }
+
+  private async runAi(check: CheckRecord, screenshot: Buffer | null): Promise<void> {
     if (check.state('ai') === 'done' || check.state('ai') === 'skipped' || check.state('ai') === 'failed') return;
     this.throwIfAborted(check);
     check.step('ai', 'running');
@@ -287,6 +302,7 @@ export class CheckOrchestrator {
           countries: check.card.countries,
           standUrl: check.standUrl,
           files: check.landingFolder ? readTexts(check.landingFolder) : [],
+          screenshot,
         });
       });
       if (result.skipped) {
