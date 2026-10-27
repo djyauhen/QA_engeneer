@@ -1,10 +1,15 @@
+/** Replaces the archive macro. CSS and JS are not HTML, but they use the same token in url() and strings. */
+export function applyCdnMacro(source: string, cdnBase: string): string {
+  return source.split('{{cdn}}').join(cdnBase);
+}
+
 export function transformHtml(
   html: string,
   options: { formHtml: string; brandName: string; cdnBase: string; isolated: boolean },
 ): string {
   let out = html.split('{{form}}').join(options.formHtml);
   out = out.split('{{aio.visit.fields.offer_name.for_visitors}}').join(options.brandName);
-  out = out.split('{{cdn}}').join(options.cdnBase);
+  out = applyCdnMacro(out, options.cdnBase);
   const injection = `<script>window.__CDN_BASE__=${JSON.stringify(options.cdnBase)};</script>`;
   if (/<head[^>]*>/i.test(out)) out = out.replace(/<head[^>]*>/i, (match) => `${match}${injection}`);
   else out = injection + out;

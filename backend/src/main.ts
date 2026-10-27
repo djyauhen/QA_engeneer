@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import fs from 'fs';
+import path from 'path';
 import { Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { Request, Response } from 'express';
@@ -31,7 +33,30 @@ async function buildRuntime(): Promise<Runtime> {
   };
 }
 
+function loadLocalEnv(): void {
+  const candidates = [path.resolve(process.cwd(), '.env'), path.resolve(__dirname, '../.env')];
+  const file = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!file) return;
+  const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (process.env[key]) continue;
+    let value = trimmed.slice(eq + 1).trim();
+    if (value.length >= 2) {
+      const quote = value[0];
+      if ((quote === '"' || quote === "'") && value.endsWith(quote)) value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
 async function bootstrap(): Promise<void> {
+  loadLocalEnv();
   try {
     const runtime = await buildRuntime();
     const app = await NestFactory.create(AppModule.register(runtime), { logger: nestLogger(runtime.config) });

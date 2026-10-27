@@ -20,6 +20,38 @@ export interface AiFinding {
   file: string;
   quote: string;
   screenshot: string;
+  category?: number;
+  priority?: 'critical' | 'major' | 'minor';
+  where?: string;
+  problem?: string;
+  expected?: string;
+}
+
+export interface AiGeneral {
+  geo?: string;
+  language?: string;
+  outlet?: string;
+  main_person?: string;
+  offer?: string;
+  currency?: string;
+  min_deposit?: string;
+}
+
+export interface AiCheck {
+  category: number;
+  status: 'PASS' | 'FAIL' | 'N/A';
+  note?: string;
+}
+
+export interface AiMeta {
+  instruction_sha?: string;
+  images_sent?: number;
+  text_truncated?: boolean;
+  vision?: boolean;
+  outlet_url?: string | null;
+  person_from_name?: string | null;
+  person_from_text?: string | null;
+  person_conflict?: boolean;
 }
 
 export interface AiBlock {
@@ -27,6 +59,12 @@ export interface AiBlock {
   findings: AiFinding[];
   decision: 'allow' | 'deny' | null;
   mode?: 'stub' | 'real';
+  schema_version?: 2;
+  report_markdown?: string;
+  general?: AiGeneral;
+  checks?: AiCheck[];
+  clarifications?: string[];
+  meta?: AiMeta;
 }
 
 export interface LighthouseMetrics {

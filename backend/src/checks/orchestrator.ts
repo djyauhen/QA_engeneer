@@ -1,7 +1,12 @@
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AiCallError, AiClient, completeFindings } from '../ai/ai.client';
+import { AiMaterials, buildAiMaterials } from '../ai/materials';
+import { captureOutletReference } from '../ai/outlet-capture';
+import { matchOutlet } from '../ai/outlets';
+import { QA_INSTRUCTION } from '../ai/qa-instruction';
 import { AioClient, AioDownloadError } from '../aio/aio.client';
 import { CostsService } from '../admin/admin.services';
 import { RulesService } from '../admin/admin.services';
@@ -24,7 +29,6 @@ import {
   STATIC_SUMMARY_INCOMPLETE,
 } from '../tokens';
 import { CheckArchivesRepo, ReportsRepo } from '../storage/repos';
-import { getAllFilesByExtensions, relFromLanding } from '../static/landing-utils';
 import { StaticChecks, summarizeStatic } from '../static/static-checks';
 import { captureStandJpeg, wantsVisualCapture } from '../stand/capture';
 import { PreviewService } from '../stand/preview.service';
@@ -289,6 +293,32 @@ export class CheckOrchestrator {
     if (check.state('ai') === 'done' || check.state('ai') === 'skipped' || check.state('ai') === 'failed') return;
     this.throwIfAborted(check);
     check.step('ai', 'running');
+    const checkDate = new Date().toISOString().slice(0, 10);
+    let materials: AiMaterials | null = null;
+    try {
+      if (check.landingFolder && fs.existsSync(check.landingFolder)) {
+        materials = buildAiMaterials(check.landingFolder, check.card.name, checkDate);
+      }
+    } catch (error) {
+      this.logger.error(`ai materials failed: ${error instanceof Error ? error.name : 'error'}`);
+    }
+    const outlet = materials ? matchOutlet(`${check.card.name}\n${materials.pageText}`) : null;
+    const chromePath = this.config.aiMode === 'real' ? this.config.visualChromePath.trim() : '';
+    const reference =
+      outlet && chromePath
+        ? await captureOutletReference({
+            chromePath,
+            outletUrl: outlet.url,
+            standUrl: check.standUrl,
+          })
+        : null;
+    if (outlet && chromePath && !reference) {
+      this.logger.error(`outlet capture failed: ${outlet.name}`);
+    }
+    const outletRef =
+      outlet && reference
+        ? { name: outlet.name, url: outlet.url, header: reference.header, footer: reference.footer }
+        : null;
     try {
       const result = await withAttempts(ATTEMPTS, async (attempt) => {
         if (check.aborted) throw new HaltAttempts(abortError());
@@ -301,8 +331,14 @@ export class CheckOrchestrator {
           languages,
           countries: check.card.countries,
           standUrl: check.standUrl,
-          files: check.landingFolder ? readTexts(check.landingFolder) : [],
+          files: [],
           screenshot,
+          checkDate,
+          outlet: outletRef,
+          landingFooter: reference?.landingFooter ?? null,
+          ...(materials
+            ? { pageText: materials.pageText, person: materials.person, images: materials.images }
+            : {}),
         });
       });
       if (result.skipped) {
@@ -324,6 +360,28 @@ export class CheckOrchestrator {
         decision: check.aiBlock?.decision ?? null,
         mode: 'real',
       };
+      if (result.report) {
+        const { report_markdown, general, checks, clarifications } = result.report;
+        const images = materials?.images ?? [];
+        check.aiBlock = {
+          ...check.aiBlock,
+          schema_version: 2,
+          report_markdown,
+          general,
+          checks,
+          clarifications,
+          meta: {
+            instruction_sha: createHash('sha256').update(QA_INSTRUCTION).digest('hex'),
+            images_sent: images.length,
+            text_truncated: materials?.textTruncated ?? false,
+            vision: images.length > 0 || !!screenshot || !!outletRef,
+            outlet_url: outletRef?.url ?? null,
+            person_from_name: materials?.person.from_land_name ?? null,
+            person_from_text: materials?.person.from_page_text ?? null,
+            person_conflict: materials?.person.conflict ?? false,
+          },
+        };
+      }
       check.step('ai', 'done');
     } catch (error) {
       if (isAbort(error) || check.aborted) throw error instanceof Error ? error : abortError();
@@ -465,13 +523,4 @@ function downloadFailureText(error: unknown): string {
   }
   if (error instanceof Error && error.message === 'no-file') return `${base}: нет файла`;
   return base;
-}
-
-function readTexts(landingFolder: string): Array<{ path: string; text: string }> {
-  return getAllFilesByExtensions(landingFolder, ['.html', '.php', '.css', '.js'])
-    .slice(0, 40)
-    .map((filePath) => ({
-      path: relFromLanding(landingFolder, filePath),
-      text: fs.readFileSync(filePath, 'utf8').slice(0, 100_000),
-    }));
 }

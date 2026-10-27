@@ -9,7 +9,9 @@ import { unpackZip } from '../files/unpack';
 import { WorkdirService } from '../files/workdir.service';
 import { resolveLandingFolder } from '../static/landing-utils';
 import { CheckArchivesRepo, ActiveChecksRepo } from '../storage/repos';
-import { ISOLATED_CSP, liveCsp, transformHtml } from './transform';
+import { applyCdnMacro, ISOLATED_CSP, liveCsp, transformHtml } from './transform';
+
+const CDN_TEXT_EXT = new Set(['.css', '.js', '.mjs']);
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -124,6 +126,10 @@ export class PreviewService {
           isolated: !actionsAllowed,
         }),
       );
+      return;
+    }
+    if (CDN_TEXT_EXT.has(ext)) {
+      res.send(applyCdnMacro(fs.readFileSync(target, 'utf8'), this.cdnBaseFor(checkId)));
       return;
     }
     res.send(fs.readFileSync(target));

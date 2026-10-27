@@ -1,5 +1,5 @@
 import AdmZip from 'adm-zip';
-import { AiClient, AiResult } from '../src/ai/ai.client';
+import { AiClient, AiInput, AiResult } from '../src/ai/ai.client';
 import { AioClient, OriginalFile } from '../src/aio/aio.client';
 import { CatalogQuery, cloneCatalogQuery, defaultCatalogQuery } from '../src/catalog/catalog-query';
 import { LighthouseRunner, StubLighthouseRunner } from '../src/lighthouse/lighthouse';
@@ -110,12 +110,15 @@ export class ScriptedAi extends AiClient {
   findings: Array<Partial<AiFinding>> = [];
   usage: Record<string, unknown> | null = null;
   lastLanguages: string[] = [];
+  lastInput: AiInput | null = null;
+  report: AiResult['report'] | null = null;
 
-  async review(input: { languages: string[] }): Promise<AiResult> {
+  async review(input: AiInput): Promise<AiResult> {
     this.calls += 1;
     this.lastLanguages = input.languages;
+    this.lastInput = input;
     if (this.calls <= this.failTimes) throw new Error('Сбой вызова ИИ');
-    return { findings: this.findings, usage: this.usage };
+    return { findings: this.findings, usage: this.usage, ...(this.report ? { report: this.report } : {}) };
   }
 }
 

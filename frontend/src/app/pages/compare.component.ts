@@ -36,7 +36,7 @@ import { toBody } from './report.component';
               heading="Прошлый отчёт"
               idPrefix="past"
               [showDate]="true"
-              [showRecommendation]="true"
+              [showRecommendation]="false"
             />
           } @else if (loading()) {
             <h2>Прошлый отчёт</h2>

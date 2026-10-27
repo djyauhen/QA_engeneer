@@ -84,6 +84,45 @@ export function completeAiCard(finding: AiFinding): { path: string; quote: strin
   return { path, quote, screenshot };
 }
 
+const QA_CATEGORY_LABELS: Record<number, string> = {
+  1: 'GEO и локализация',
+  2: 'Соответствие шапки и футера оригиналу',
+  3: 'Данные главного персонажа',
+  4: 'Соответствие персонажа GEO',
+  5: 'Валюта минимального депозита',
+  6: 'Размер минимального депозита',
+  7: 'Единство оффера',
+  8: 'Актуальность дат',
+  9: 'Комментарии',
+  10: 'Внутренняя согласованность контента',
+  11: 'Телефонный код формы',
+};
+
+export function qaCategoryLabel(n: number): string {
+  return QA_CATEGORY_LABELS[n] ?? `Критерий ${n}`;
+}
+
+export function qaStatusText(status: string): string {
+  if (status === 'PASS') return 'проверено, ошибок нет';
+  if (status === 'FAIL') return 'подтверждена ошибка';
+  if (status === 'N/A') return 'проверить нельзя';
+  return status;
+}
+
+export function qaStatusKey(status: string): string {
+  if (status === 'PASS') return 'pass';
+  if (status === 'FAIL') return 'fail';
+  if (status === 'N/A') return 'na';
+  return '';
+}
+
+export function qaPriorityText(priority: string): string {
+  if (priority === 'critical') return 'Critical';
+  if (priority === 'major') return 'Major';
+  if (priority === 'minor') return 'Minor';
+  return priority;
+}
+
 export function isSignedUrl(value: string): boolean {
   return /signature=|expires=|[?&]token=/i.test(value);
 }

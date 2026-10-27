@@ -11,6 +11,8 @@ import {
   DEEPSEEK_MAX_OUTPUT_TOKENS,
   DEEPSEEK_REASONING_EFFORT,
 } from '../src/ai/ai.client';
+import { MaterialImage } from '../src/ai/materials';
+import { ADDENDUM, QA_INSTRUCTION } from '../src/ai/qa-instruction';
 import { captureStandJpeg, wantsVisualCapture } from '../src/stand/capture';
 import { AppConfig, loadConfig } from '../src/config';
 
@@ -54,14 +56,39 @@ const sampleInput = {
   countries: ['CA'],
   standUrl: 'https://example.invalid/stand',
   files: [{ path: 'index.html', text: '<html>Hello</html>' }],
+  checkDate: '2026-10-26',
 };
 
 const userPayload = {
-  name: 'Lander',
+  check_date: '2026-10-26',
+  land_name: 'Lander',
   languages: ['en'],
   countries: ['CA'],
   stand_url: 'https://example.invalid/stand',
-  files: [{ path: 'index.html', text: '<html>Hello</html>' }],
+  fx_rates: null,
+  page_text: '',
+  main_person_claim: { from_land_name: null, from_page_text: null, resolved: null, conflict: false },
+  outlet: null,
+  landing_footer_ref: null,
+  images: [],
+  attachments_order: [],
+};
+
+function userJson(text: string): Record<string, unknown> {
+  return JSON.parse(text.split('\n')[0]) as Record<string, unknown>;
+}
+
+const PNG_BYTES = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(16, 1)]);
+const heroImage: MaterialImage = {
+  ref: 'I1',
+  file: 'images/hero.png',
+  alt: 'photo',
+  caption: '',
+  context: 'Andrzej Duda speaks',
+  kind: 'content',
+  claims_person: 'Andrzej Duda',
+  mime: 'image/png',
+  buffer: PNG_BYTES,
 };
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -122,9 +149,17 @@ describe('DeepSeek chat completions client', () => {
     const messages = body.messages as Array<{ role: string; content: string }>;
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe('system');
-    expect(messages[0].content).toContain('Ты проверяешь лендинг и только перечисляешь дефекты.');
-    expect(messages[0].content).toContain('Верни JSON {"findings"');
-    expect(messages[1]).toEqual({ role: 'user', content: JSON.stringify(userPayload) });
+    expect(messages[0].content.startsWith(QA_INSTRUCTION)).toBe(true);
+    expect(messages[0].content).toContain(ADDENDUM);
+    expect(messages[0].content).toBe(`${QA_INSTRUCTION}\n\n${ADDENDUM}`);
+    expect(ADDENDUM).toContain('"report_markdown","general","checks","findings","clarifications","image_checks"');
+    expect(ADDENDUM).toContain('screenshot_ref');
+    expect(QA_INSTRUCTION).not.toContain(ADDENDUM);
+    expect(messages[1].role).toBe('user');
+    expect(typeof messages[1].content).toBe('string');
+    expect(userJson(messages[1].content)).toEqual(userPayload);
+    expect(messages[1].content.trimEnd().split('\n').pop()).toBe('ПРОВЕРЯЙ');
+    expect(messages[1].content).not.toContain('<html>Hello</html>');
     expect(String(calls[0].init?.body)).not.toContain('test-deepseek-placeholder');
     expect(result.findings).toEqual([{ file: 'index.html', quote: 'Hello', screenshot: 'hero' }]);
     expect(result.usage).toEqual({ prompt_tokens: 9, completion_tokens: 3, total_tokens: 12 });
@@ -151,12 +186,204 @@ describe('DeepSeek chat completions client', () => {
     expect(typeof body.messages[0].content).toBe('string');
     const parts = body.messages[1].content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
     expect(parts.map((part) => part.type)).toEqual(['text', 'image_url']);
-    expect(parts[0].text).toContain('"shot":"desktop"');
-    expect(parts[0].text).toContain('поставь ровно desktop');
+    expect(userJson(parts[0].text as string).attachments_order).toEqual(['desktop']);
+    expect(parts[0].text).toContain('никогда не base64');
+    expect((parts[0].text as string).trimEnd().endsWith('ПРОВЕРЯЙ')).toBe(true);
     expect(parts[1].image_url?.url).toBe(desktopShotDataUrl(jpeg));
     expect(result.findings).toEqual([{ file: 'index.html', quote: 'Hello', screenshot: desktopShotDataUrl(jpeg) }]);
     expect(applyDesktopShot([{ file: 'a.html', quote: 'q', screenshot: 'hero' }], desktopShotDataUrl(jpeg))).toEqual([
       { file: 'a.html', quote: 'q', screenshot: 'hero' },
+    ]);
+  });
+
+  it('sends page_text, the person claim and landing images after the desktop shot, and maps I-refs to data URLs', async () => {
+    const calls: Array<{ init?: RequestInit }> = [];
+    const answer = {
+      report_markdown: 'ОБЩАЯ ИНФОРМАЦИЯ\nGEO: Польша\n\nИТОГ\nОбщий результат: FAIL',
+      general: { geo: 'Польша', main_person: 'Andrzej Duda' },
+      checks: [
+        { category: 10, status: 'FAIL', note: 'фото другого человека' },
+        { category: 5, status: 'FAIL' },
+        { category: 1, status: 'PASS' },
+      ],
+      findings: [
+        {
+          file: 'index.html',
+          quote: 'Andrzej Duda speaks',
+          screenshot_ref: 'I1',
+          category: 10,
+          priority: 'major',
+          where: 'hero',
+          problem: 'На фото другой человек',
+          expected: 'Фото Andrzej Duda',
+        },
+        { file: 'index.html', quote: 'invented quote', screenshot_ref: 'desktop', category: 5 },
+      ],
+      clarifications: ['Возраст не проверен'],
+    };
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      calls.push({ init });
+      return jsonResponse(completionBody(JSON.stringify(answer)));
+    };
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const person = { from_land_name: 'Andrzej Duda', from_page_text: 'Andrzej Duda', resolved: 'Andrzej Duda', conflict: false };
+    const result = await new DeepSeekAiClient(deepseekConfig(), fetchImpl).review({
+      ...sampleInput,
+      screenshot: jpeg,
+      pageText: 'Andrzej Duda speaks today',
+      person,
+      images: [heroImage],
+    });
+    const body = JSON.parse(String(calls[0].init?.body)) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    const parts = body.messages[1].content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+    expect(parts.map((part) => part.type)).toEqual(['text', 'image_url', 'image_url']);
+    const payload = userJson(parts[0].text as string);
+    expect(payload.page_text).toBe('Andrzej Duda speaks today');
+    expect(payload.main_person_claim).toEqual(person);
+    expect(payload.attachments_order).toEqual(['desktop', 'I1']);
+    expect(payload.images).toEqual([
+      {
+        ref: 'I1',
+        file: 'images/hero.png',
+        alt: 'photo',
+        caption: '',
+        context: 'Andrzej Duda speaks',
+        kind: 'content',
+        claims_person: 'Andrzej Duda',
+      },
+    ]);
+    expect(parts[0].text).not.toContain(PNG_BYTES.toString('base64'));
+    expect(parts[1].image_url?.url).toBe(desktopShotDataUrl(jpeg));
+    const heroUrl = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
+    expect(parts[2].image_url?.url).toBe(heroUrl);
+    expect(result.findings).toEqual([
+      {
+        file: 'index.html',
+        quote: 'Andrzej Duda speaks',
+        screenshot: heroUrl,
+        category: 10,
+        priority: 'major',
+        where: 'hero',
+        problem: 'На фото другой человек',
+        expected: 'Фото Andrzej Duda',
+      },
+    ]);
+    expect(result.report?.report_markdown).not.toMatch(/Общий результат/);
+    expect(result.report?.general).toEqual({ geo: 'Польша', main_person: 'Andrzej Duda' });
+    expect(result.report?.checks?.map((check) => [check.category, check.status])).toEqual([
+      [1, 'PASS'],
+      [5, 'N/A'],
+      [10, 'FAIL'],
+    ]);
+    expect(result.report?.clarifications).toEqual(['Возраст не проверен']);
+    expect(JSON.stringify(result)).not.toMatch(/verdict|overall_status/);
+    expect(parts[0].text).toContain('Проверь соответствие изображений I1');
+    expect(String(calls[0].init?.body)).not.toContain('test-deepseek-placeholder');
+  });
+
+  it('builds a category 10 finding from image_checks mismatch', async () => {
+    const answer = {
+      report_markdown: 'ИТОГ',
+      checks: [{ category: 10, status: 'PASS' }],
+      findings: [],
+      image_checks: [{ ref: 'I1', match: 'mismatch', note: 'На фото другой человек' }],
+    };
+    const fetchImpl: typeof fetch = async () => jsonResponse(completionBody(JSON.stringify(answer)));
+    const result = await new DeepSeekAiClient(deepseekConfig(), fetchImpl).review({
+      ...sampleInput,
+      pageText: 'Andrzej Duda speaks today',
+      images: [heroImage],
+    });
+    const heroUrl = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
+    expect(result.findings).toEqual([
+      {
+        file: 'index.html',
+        quote: 'Andrzej Duda',
+        screenshot: heroUrl,
+        category: 10,
+        priority: 'major',
+        where: 'images/hero.png',
+        problem: 'На фото другой человек',
+        expected: 'Изображение Andrzej Duda',
+      },
+    ]);
+    expect(result.report?.checks).toEqual([
+      { category: 10, status: 'FAIL', note: 'Изображение I1 не соответствует «Andrzej Duda»' },
+    ]);
+  });
+
+  it('attaches only landing images when there is no desktop shot', async () => {
+    const calls: Array<{ init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      calls.push({ init });
+      return jsonResponse(completionBody('{"findings":[]}'));
+    };
+    await new DeepSeekAiClient(deepseekConfig(), fetchImpl).review({ ...sampleInput, images: [heroImage] });
+    const body = JSON.parse(String(calls[0].init?.body)) as { messages: Array<{ content: unknown }> };
+    const parts = body.messages[1].content as Array<{ type: string; text?: string }>;
+    expect(parts.map((part) => part.type)).toEqual(['text', 'image_url']);
+    expect(userJson(parts[0].text as string).attachments_order).toEqual(['I1']);
+  });
+
+  it('attaches the official header and footer and refuses them as finding screenshots', async () => {
+    const calls: Array<{ init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      calls.push({ init });
+      return jsonResponse(
+        completionBody(
+          JSON.stringify({
+            findings: [
+              { file: 'index.html', quote: 'NOS', screenshot_ref: 'outlet_header', category: 2 },
+              { file: 'index.html', quote: 'NOS', screenshot_ref: 'landing_footer', category: 2 },
+            ],
+          }),
+        ),
+      );
+    };
+    const header = Buffer.from([0xff, 0xd8, 0xff, 0x01]);
+    const footer = Buffer.from([0xff, 0xd8, 0xff, 0x02]);
+    const landingFooter = Buffer.from([0xff, 0xd8, 0xff, 0x03]);
+    const result = await new DeepSeekAiClient(deepseekConfig(), fetchImpl).review({
+      ...sampleInput,
+      pageText: 'NOS Nieuws Sport',
+      outlet: { name: 'NOS', url: 'https://nos.nl', header, footer },
+      landingFooter,
+    });
+    const body = JSON.parse(String(calls[0].init?.body)) as { messages: Array<{ content: unknown }> };
+    const parts = body.messages[1].content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+    expect(parts.map((part) => part.type)).toEqual(['text', 'image_url', 'image_url', 'image_url']);
+    const payload = userJson(parts[0].text as string);
+    expect(payload.attachments_order).toEqual(['landing_footer', 'outlet_header', 'outlet_footer']);
+    expect(payload.outlet).toEqual({
+      name: 'NOS',
+      url: 'https://nos.nl',
+      header_ref: 'outlet_header',
+      footer_ref: 'outlet_footer',
+    });
+    expect(payload.landing_footer_ref).toBe('landing_footer');
+    expect(parts[0].text).toContain('Категория 2');
+    expect(parts[1].image_url?.url).toBe(desktopShotDataUrl(landingFooter));
+    expect(parts[2].image_url?.url).toBe(desktopShotDataUrl(header));
+    expect(result.findings).toEqual([
+      { file: 'index.html', quote: 'NOS', screenshot: desktopShotDataUrl(landingFooter), category: 2 },
+    ]);
+  });
+
+  it('exposes the raised output token budget', () => {
+    expect(DEEPSEEK_MAX_OUTPUT_TOKENS).toBe(12288);
+  });
+
+  it('keeps optional finding fields and drops invalid ones in completeFindings', () => {
+    expect(
+      completeFindings([
+        { file: 'a.html', quote: 'q', screenshot: 's', category: 3, priority: 'minor', where: 'w', problem: 'p', expected: 'e' },
+        { file: 'b.html', quote: 'q', screenshot: 's', category: 99, priority: 'urgent' as never, where: '  ' },
+      ]),
+    ).toEqual([
+      { file: 'a.html', quote: 'q', screenshot: 's', category: 3, priority: 'minor', where: 'w', problem: 'p', expected: 'e' },
+      { file: 'b.html', quote: 'q', screenshot: 's' },
     ]);
   });
 

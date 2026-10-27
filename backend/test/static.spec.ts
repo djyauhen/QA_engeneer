@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { defaultRules } from '../src/rules/rules';
 import { EXPECTED_SVG_SCRIPT_SHA256, runStaticChecks, STATIC_CHECK_NAMES } from '../src/static/static-checks';
-import { transformHtml } from '../src/stand/transform';
+import { applyCdnMacro, transformHtml } from '../src/stand/transform';
 
 describe('static checks', () => {
   it('does not run later checks when structure fails', async () => {
@@ -74,5 +74,12 @@ describe('stand macros', () => {
     });
     expect(open).toContain('evil.test/p.js');
     expect(open).not.toContain('data-stand-isolated');
+  });
+
+  it('rewrites {{cdn}} inside css and js, where the stand serves those files as text', () => {
+    expect(applyCdnMacro('src:url({{cdn}}/fonts/a.woff2)', '/preview/1')).toBe('src:url(/preview/1/fonts/a.woff2)');
+    expect(applyCdnMacro('var src="{{cdn}}/images/a.webp"', 'https://stand.test/preview/1')).toBe(
+      'var src="https://stand.test/preview/1/images/a.webp"',
+    );
   });
 });

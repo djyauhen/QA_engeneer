@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { errorText, formatMetric, isImageSource, shouldPoll } from './format.ts';
+import {
+  completeAiCard,
+  errorText,
+  formatMetric,
+  isImageSource,
+  qaCategoryLabel,
+  qaPriorityText,
+  qaStatusText,
+  shouldPoll,
+} from './format.ts';
 import { ACCESS_DENIED } from './models.ts';
 
 describe('shouldPoll', () => {
@@ -88,6 +97,47 @@ describe('isImageSource', () => {
     assert.equal(isImageSource('https://cdn.example/shot.jpg?x=1'), true);
     assert.equal(isImageSource('https://cdn.example/file?signature=abc'), false);
     assert.equal(isImageSource('https://cdn.example/page'), false);
+  });
+});
+
+describe('qa report labels', () => {
+  it('maps category numbers to Russian labels', () => {
+    assert.equal(qaCategoryLabel(1), 'GEO и локализация');
+    assert.equal(qaCategoryLabel(2), 'Соответствие шапки и футера оригиналу');
+    assert.equal(qaCategoryLabel(3), 'Данные главного персонажа');
+    assert.equal(qaCategoryLabel(4), 'Соответствие персонажа GEO');
+    assert.equal(qaCategoryLabel(5), 'Валюта минимального депозита');
+    assert.equal(qaCategoryLabel(6), 'Размер минимального депозита');
+    assert.equal(qaCategoryLabel(7), 'Единство оффера');
+    assert.equal(qaCategoryLabel(8), 'Актуальность дат');
+    assert.equal(qaCategoryLabel(9), 'Комментарии');
+    assert.equal(qaCategoryLabel(10), 'Внутренняя согласованность контента');
+    assert.equal(qaCategoryLabel(11), 'Телефонный код формы');
+    assert.equal(qaCategoryLabel(99), 'Критерий 99');
+  });
+
+  it('maps statuses and priorities to display text', () => {
+    assert.equal(qaStatusText('PASS'), 'проверено, ошибок нет');
+    assert.equal(qaStatusText('FAIL'), 'подтверждена ошибка');
+    assert.equal(qaStatusText('N/A'), 'проверить нельзя');
+    assert.equal(qaStatusText('other'), 'other');
+    assert.equal(qaPriorityText('critical'), 'Critical');
+    assert.equal(qaPriorityText('major'), 'Major');
+    assert.equal(qaPriorityText('minor'), 'Minor');
+  });
+});
+
+describe('completeAiCard', () => {
+  it('requires path, quote and screenshot', () => {
+    assert.deepEqual(completeAiCard({ path: 'a.html', quote: 'q', screenshot: 'data:image/png;base64,x' }), {
+      path: 'a.html',
+      quote: 'q',
+      screenshot: 'data:image/png;base64,x',
+    });
+    assert.equal(completeAiCard({ path: 'a.html', quote: 'q' }), null);
+    assert.equal(completeAiCard({ path: 'a.html', quote: ' ', screenshot: 's' }), null);
+    assert.equal(completeAiCard({ quote: 'q', screenshot: 's' }), null);
+    assert.equal(completeAiCard({ file: 'a.html', quote: 'q', screenshot: 'plain text' })?.path, 'a.html');
   });
 });
 
