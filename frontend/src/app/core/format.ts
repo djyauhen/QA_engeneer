@@ -1,4 +1,4 @@
-import type { AiFinding, LighthouseMetrics, StaticFinding, StepSnapshot } from './models';
+import type { AiFinding, LighthouseMetricKey, LighthouseMetrics, StaticFinding, StepSnapshot } from './models';
 
 /**
  * Business zone for clocks a person reads (reports, catalog refresh, lists).
@@ -106,6 +106,7 @@ export function qaStatusText(status: string): string {
   if (status === 'PASS') return 'проверено, ошибок нет';
   if (status === 'FAIL') return 'подтверждена ошибка';
   if (status === 'N/A') return 'проверить нельзя';
+  if (status === 'GAP') return 'проверка не выполнена';
   return status;
 }
 
@@ -113,6 +114,7 @@ export function qaStatusKey(status: string): string {
   if (status === 'PASS') return 'pass';
   if (status === 'FAIL') return 'fail';
   if (status === 'N/A') return 'na';
+  if (status === 'GAP') return 'gap';
   return '';
 }
 
@@ -133,13 +135,59 @@ export function isImageSource(value: string): boolean {
   return value.startsWith('data:image/') || IMAGE_EXT.test(value);
 }
 
+/**
+ * Source for a Lighthouse thumb. Accepts a data URL (even when the payload
+ * happens to contain a signed-url marker), raw image base64, an http(s) or
+ * blob URL, and `{ data, width, height }`.
+ */
+export function lighthouseImageSrc(value: unknown): string | null {
+  return readLighthouseImage(value, 0);
+}
+
+function readLighthouseImage(value: unknown, depth: number): string | null {
+  if (depth > 4 || value == null) return null;
+  if (typeof value === 'string') return lighthouseImageFromString(value);
+  if (Array.isArray(value)) {
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      const found = readLighthouseImage(value[index], depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof value === 'object') {
+    const record = value as { data?: unknown; screenshot?: unknown };
+    return readLighthouseImage(record.data, depth + 1) ?? readLighthouseImage(record.screenshot, depth + 1);
+  }
+  return null;
+}
+
+function lighthouseImageFromString(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^data:image\//i.test(trimmed)) return trimmed;
+  if (/^blob:/i.test(trimmed)) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) return isSignedUrl(trimmed) ? null : trimmed;
+  const compact = trimmed.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+  const mime = mimeForImageBase64(compact);
+  if (!mime) return null;
+  return `data:${mime};base64,${compact}`;
+}
+
+function mimeForImageBase64(value: string): string | null {
+  if (value.startsWith('/9j/')) return 'image/jpeg';
+  if (value.startsWith('iVBORw0KGgo')) return 'image/png';
+  if (value.startsWith('R0lGOD')) return 'image/gif';
+  if (value.startsWith('UklGR')) return 'image/webp';
+  return null;
+}
+
 export function scrubSignedUrls(text: string): string {
   return text.replace(/https?:\/\/[^\s]+/gi, (url) => (isSignedUrl(url) ? '[ссылка скрыта]' : url));
 }
 
 const NO_METRIC = 'нет данных';
 
-const TIMING_METRIC = new Set<keyof LighthouseMetrics>([
+const TIMING_METRIC = new Set<LighthouseMetricKey>([
   'first_contentful_paint',
   'largest_contentful_paint',
   'total_blocking_time',
@@ -147,7 +195,7 @@ const TIMING_METRIC = new Set<keyof LighthouseMetrics>([
   'time_to_interactive',
 ]);
 
-export function formatMetric(value: number | null | undefined, key?: keyof LighthouseMetrics): string {
+export function formatMetric(value: number | null | undefined, key?: LighthouseMetricKey): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return NO_METRIC;
   if (key === 'performance_score') {
     const score = value >= 0 && value <= 1 ? value * 100 : value;
@@ -170,7 +218,7 @@ function trimThousandths(value: number): string {
   return String(rounded);
 }
 
-export function metricValue(metrics: LighthouseMetrics | null, key: keyof LighthouseMetrics): string {
+export function metricValue(metrics: LighthouseMetrics | null, key: LighthouseMetricKey): string {
   if (!metrics) return NO_METRIC;
   return formatMetric(metrics[key], key);
 }

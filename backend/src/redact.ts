@@ -1,12 +1,16 @@
 const URL_WITH_SECRET = /https?:\/\/[^\s"'<>]+/gi;
 
+function isSensitiveUrl(url: string): boolean {
+  return /signature=|expires=|[?&]token=|options=new-session|[?&](?:suuid|cuuid|launcher)=/i.test(url);
+}
+
 export function redact(text: string): string {
   return text
     .replace(/([?&]token=)[^&\s]+/gi, '$1<redacted>')
     .replace(/([?&]signature=)[^&\s]+/gi, '$1<redacted>')
     .replace(/("password"\s*:\s*")[^"]*(")/gi, '$1<redacted>$2')
     .replace(URL_WITH_SECRET, (url) => {
-      if (/signature=|expires=|[?&]token=/i.test(url)) return '<redacted-url>';
+      if (isSensitiveUrl(url)) return '<redacted-url>';
       return url;
     });
 }
@@ -23,6 +27,7 @@ export function redactSecrets(text: string, secrets: string[]): string {
 
 const BANNED_KEYS = new Set([
   'stand_url',
+  'landing_preview_url',
   'preview_image',
   'token',
   'password',
@@ -56,7 +61,7 @@ function walk(value: unknown): unknown {
 function scrubString(value: string): string {
   if (!/https?:\/\//i.test(value)) return value;
   return value.replace(URL_WITH_SECRET, (url) => {
-    if (/signature=|expires=|[?&]token=/i.test(url)) return '[ссылка скрыта]';
+    if (isSensitiveUrl(url)) return '[ссылка скрыта]';
     return url;
   });
 }

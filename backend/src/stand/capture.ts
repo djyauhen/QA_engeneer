@@ -1,4 +1,6 @@
 export const DESKTOP_SHOT = 'desktop';
+/** JPEG of the AIO Landing Preview Link. Allowed as screenshot_ref when the image is attached. */
+export const PREVIEW_SHOT = 'preview';
 
 export function wantsVisualCapture(mode: 'stub' | 'real', standUrl: string | null): boolean {
   return mode === 'real' && !!standUrl;

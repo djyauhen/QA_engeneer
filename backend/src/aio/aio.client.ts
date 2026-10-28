@@ -1,6 +1,6 @@
 import { CatalogQuery, defaultCatalogQuery } from '../catalog/catalog-query';
 import { AIO_PAGE_LIMIT, CATALOG_LIMIT } from '../tokens';
-import { AppConfig } from '../config';
+import { AppConfig, previewLinkConfigured } from '../config';
 
 export interface AioPage {
   rows: unknown[];
@@ -41,6 +41,8 @@ export abstract class AioClient {
   abstract loadCatalogRows(query?: CatalogQuery): Promise<unknown[]>;
   abstract requestDownload(uuid: string): Promise<void>;
   abstract findOriginal(uuid: string): Promise<OriginalFile>;
+  /** Readable Landing Preview Link, or null when the three preview UUIDs are not configured. */
+  abstract landingPreviewLink(landerUuid: string): Promise<string | null>;
 }
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -85,7 +87,7 @@ export async function collectCatalogRows(
   return rows.slice(0, CATALOG_LIMIT);
 }
 
-export function assertAioHeaders(headers: HeadersInit | undefined): void {
+export function assertAioHeaders(headers: HeadersInit | undefined, options?: { allowTenant?: boolean }): void {
   const bag = new Map<string, string>();
   if (headers instanceof Headers) {
     headers.forEach((value, key) => bag.set(key.toLowerCase(), value));
@@ -96,8 +98,37 @@ export function assertAioHeaders(headers: HeadersInit | undefined): void {
       if (typeof value === 'string') bag.set(key.toLowerCase(), value);
     }
   }
-  if (bag.has('authorization') || bag.has('cookie') || bag.has('x-tenant-id')) {
+  if (bag.has('authorization') || bag.has('cookie')) {
     throw new Error('Сбой вызова AIO');
+  }
+  if (bag.has('x-tenant-id') && !options?.allowTenant) {
+    throw new Error('Сбой вызова AIO');
+  }
+}
+
+const LANDING_PREVIEW_TITLE = 'Landing Preview Link';
+
+/** Content of the "Landing Preview Link" row. Never content_short or content_slug. */
+export function readLandingPreviewContent(body: unknown): string {
+  if (!Array.isArray(body)) throw new Error('Сбой вызова AIO');
+  for (const item of body) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Record<string, unknown>;
+    const title = typeof row.title === 'string' ? row.title.trim() : '';
+    if (title !== LANDING_PREVIEW_TITLE) continue;
+    const content = typeof row.content === 'string' ? row.content.trim() : '';
+    if (!isHttpUrl(content)) throw new Error('Сбой вызова AIO');
+    return content;
+  }
+  throw new Error('Сбой вызова AIO');
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
   }
 }
 
@@ -138,6 +169,40 @@ export class HttpAioClient extends AioClient {
     return {
       read: (signal?: AbortSignal) => this.downloadFile(fileUrl, signal),
     };
+  }
+
+  async landingPreviewLink(landerUuid: string): Promise<string | null> {
+    if (!previewLinkConfigured(this.config)) return null;
+    const url = this.withToken('/api/v1/campaigns/link-generator/data');
+    const headers: Record<string, string> = {
+      accept: 'application/json',
+      'content-type': 'application/json',
+    };
+    const tenant = this.config.aioTenantId;
+    if (tenant) headers['x-tenant-id'] = tenant;
+    const response = await this.call(
+      url,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          campaign_uuid: this.config.aioPreviewCampaignUuid,
+          source_uuid: this.config.aioPreviewSourceUuid,
+          name: '',
+          domain_uuid: this.config.aioPreviewDomainUuid,
+          replaces: { lp: landerUuid },
+          shuffle_params: true,
+        }),
+      },
+      { allowTenant: tenant.length > 0 },
+    );
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new Error('Сбой вызова AIO');
+    }
+    return readLandingPreviewContent(body);
   }
 
   private async fetchPage(page: number, query: CatalogQuery): Promise<AioPage> {
@@ -232,8 +297,8 @@ export class HttpAioClient extends AioClient {
     return url;
   }
 
-  private async call(url: string | URL, init: RequestInit): Promise<Response> {
-    assertAioHeaders(init.headers);
+  private async call(url: string | URL, init: RequestInit, options?: { allowTenant?: boolean }): Promise<Response> {
+    assertAioHeaders(init.headers, options);
     const href = typeof url === 'string' ? url : url.toString();
     let response: Response;
     try {

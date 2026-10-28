@@ -9,6 +9,7 @@ import { unpackZip } from '../files/unpack';
 import { WorkdirService } from '../files/workdir.service';
 import { resolveLandingFolder } from '../static/landing-utils';
 import { CheckArchivesRepo, ActiveChecksRepo } from '../storage/repos';
+import { resolveStandFormHtml } from './form-html';
 import { applyCdnMacro, ISOLATED_CSP, liveCsp, transformHtml } from './transform';
 
 const CDN_TEXT_EXT = new Set(['.css', '.js', '.mjs']);
@@ -72,7 +73,7 @@ export class PreviewService {
         return;
       }
       local.landingFolder = folder;
-      this.send(res, checkId, folder, relative, local.actionsAllowed);
+      this.send(res, checkId, folder, relative, local.actionsAllowed, local.card.countries);
       return;
     }
     const row = await this.active.get(checkId);
@@ -85,7 +86,7 @@ export class PreviewService {
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    this.send(res, checkId, folder, relative, row.payload.actionsAllowed);
+    this.send(res, checkId, folder, relative, row.payload.actionsAllowed, row.payload.countries ?? []);
   }
 
   private async folderFor(checkId: string, known: string | null): Promise<string | null> {
@@ -102,7 +103,14 @@ export class PreviewService {
     }
   }
 
-  private send(res: Response, checkId: string, landingFolder: string, relative: string, actionsAllowed: boolean): void {
+  private send(
+    res: Response,
+    checkId: string,
+    landingFolder: string,
+    relative: string,
+    actionsAllowed: boolean,
+    countries: readonly string[],
+  ): void {
     const target = path.resolve(landingFolder, relative);
     const root = path.resolve(landingFolder);
     const rel = path.relative(root, target);
@@ -120,7 +128,7 @@ export class PreviewService {
       const html = fs.readFileSync(target, 'utf8');
       res.send(
         transformHtml(html, {
-          formHtml: this.config.standFormHtml,
+          formHtml: resolveStandFormHtml(this.config.standFormHtml, countries),
           brandName: this.config.standBrandName,
           cdnBase: this.cdnBaseFor(checkId),
           isolated: !actionsAllowed,

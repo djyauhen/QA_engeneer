@@ -79,6 +79,9 @@ export class FakeAio extends AioClient {
   rows: unknown[] = [];
   zip: Buffer = structurePassZip();
   failDownloads = 0;
+  previewCalls: string[] = [];
+  previewLink: string | null = null;
+  previewError: Error | null = null;
 
   async loadCatalogRows(query?: CatalogQuery): Promise<unknown[]> {
     this.catalogCalls += 1;
@@ -101,6 +104,12 @@ export class FakeAio extends AioClient {
         return this.zip;
       },
     };
+  }
+
+  async landingPreviewLink(landerUuid: string): Promise<string | null> {
+    this.previewCalls.push(landerUuid);
+    if (this.previewError) throw this.previewError;
+    return this.previewLink;
   }
 }
 

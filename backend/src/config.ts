@@ -1,6 +1,7 @@
 import os from 'os';
 import path from 'path';
 import { Role } from './roles';
+import { configuredStandFormHtml } from './stand/form-html';
 
 export interface AppConfig {
   storage: 'neon' | 'memory';
@@ -8,6 +9,14 @@ export interface AppConfig {
   aioToken: string;
   aioBaseUrl: string;
   aioStorageHosts: string[];
+  /** AIO campaign used only to mint a Landing Preview Link. Empty skips the call. */
+  aioPreviewCampaignUuid: string;
+  /** AIO source used only to mint a Landing Preview Link. Empty skips the call. */
+  aioPreviewSourceUuid: string;
+  /** AIO domain used only to mint a Landing Preview Link. Empty skips the call. */
+  aioPreviewDomainUuid: string;
+  /** Sent as x-tenant-id only on the link-generator call. Empty omits the header. */
+  aioTenantId: string;
   tlLogin: string;
   tlPassword: string;
   workDir: string;
@@ -40,8 +49,17 @@ export interface SessionUser {
 }
 
 export function secretList(config: AppConfig): string[] {
-  return [config.aioToken, config.tlPassword, config.tlLogin, config.aiApiKey, config.databaseUrl].filter(
+  return [config.aioToken, config.tlPassword, config.tlLogin, config.aiApiKey, config.databaseUrl, config.aioTenantId].filter(
     (value) => typeof value === 'string' && value.length >= 8,
+  );
+}
+
+/** False when any of the three preview UUIDs is missing. Link generation must not run. */
+export function previewLinkConfigured(config: AppConfig): boolean {
+  return (
+    config.aioPreviewCampaignUuid.length > 0 &&
+    config.aioPreviewSourceUuid.length > 0 &&
+    config.aioPreviewDomainUuid.length > 0
   );
 }
 
@@ -64,12 +82,18 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     throw new Error('FRONTEND_ORIGIN is required');
   }
   const port = Number(env.PORT ?? 3000);
+  const lighthouseChromePath = unwrapEnv(env.LIGHTHOUSE_CHROME_PATH);
+  const visualChromePath = unwrapEnv(env.VISUAL_CHROME_PATH);
   return {
     storage,
     databaseUrl,
     aioToken,
     aioBaseUrl: (unwrapEnv(env.AIO_BASE_URL) || 'https://app.aio.tech').replace(/\/$/, ''),
     aioStorageHosts: parseFrontendOrigin(env.AIO_STORAGE_HOSTS),
+    aioPreviewCampaignUuid: unwrapEnv(env.AIO_PREVIEW_CAMPAIGN_UUID),
+    aioPreviewSourceUuid: unwrapEnv(env.AIO_PREVIEW_SOURCE_UUID),
+    aioPreviewDomainUuid: unwrapEnv(env.AIO_PREVIEW_DOMAIN_UUID),
+    aioTenantId: unwrapEnv(env.AIO_TENANT_ID),
     tlLogin,
     tlPassword,
     workDir: resolveWorkDir(env),
@@ -79,7 +103,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       '',
     ),
     frontendOrigin: parseFrontendOrigin(env.FRONTEND_ORIGIN),
-    standFormHtml: env.STAND_FORM_HTML ?? '<div data-stand-form="1"></div>',
+    standFormHtml: configuredStandFormHtml(env.STAND_FORM_HTML),
     standBrandName: env.STAND_BRAND_NAME ?? 'Brand',
     standCdnBase: env.STAND_CDN_BASE ?? '',
     catalogAutoRefresh: env.VERCEL === '1' ? false : env.CATALOG_AUTO_REFRESH !== '0',
@@ -90,10 +114,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     aiApiKey: unwrapEnv(env.DEEPSEEK_API_KEY) || unwrapEnv(env.AI_API_KEY),
     aiModel: unwrapEnv(env.AI_MODEL) || 'deepseek-flash',
     lighthouseMode: env.LIGHTHOUSE_MODE === 'real' ? 'real' : 'stub',
-    lighthouseChromePath: env.LIGHTHOUSE_CHROME_PATH ?? '',
+    lighthouseChromePath: lighthouseChromePath || visualChromePath,
     lighthouseNoSandbox: env.LIGHTHOUSE_NO_SANDBOX === '1',
     visualMode: env.VISUAL_MODE === 'real' ? 'real' : 'stub',
-    visualChromePath: unwrapEnv(env.VISUAL_CHROME_PATH) || (env.LIGHTHOUSE_CHROME_PATH ?? '').trim(),
+    visualChromePath: visualChromePath || lighthouseChromePath,
     bcryptRounds: positiveInt(env.BCRYPT_ROUNDS, 10),
     poolMax: env.VERCEL === '1' ? 1 : 10,
   };

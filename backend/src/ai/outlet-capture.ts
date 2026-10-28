@@ -1,4 +1,5 @@
 import type { Browser, Page } from 'puppeteer-core';
+import { previewSliceOffsets } from '../stand/preview-slices';
 import { isAllowedOutletUrl } from './outlets';
 
 const VIEWPORT = { width: 1350, height: 940 };
@@ -44,6 +45,8 @@ export function clipDocumentRegion(
   return { x, y, width, height };
 }
 
+const SETTLE_MS = 500;
+
 export async function captureOutletReference(options: {
   chromePath: string;
   outletUrl: string;
@@ -51,36 +54,158 @@ export async function captureOutletReference(options: {
 }): Promise<OutletReferenceShots | null> {
   const executablePath = options.chromePath.trim();
   if (!executablePath || !isAllowedOutletUrl(options.outletUrl)) return null;
+  const captured = await captureQaSurfaces({
+    chromePath: executablePath,
+    outletUrl: options.outletUrl,
+    standUrl: options.standUrl,
+  });
+  return captured?.outlet ?? null;
+}
+
+/** One browser session: outlet header/footer when the URL is allowlisted, and the stand's visible text. Retries once. */
+export async function captureQaSurfaces(options: {
+  chromePath: string;
+  outletUrl: string | null;
+  standUrl: string | null;
+}): Promise<{ outlet: OutletReferenceShots | null; pageText: string } | null> {
+  const executablePath = options.chromePath.trim();
+  if (!executablePath) return null;
+  const outletUrl = options.outletUrl && isAllowedOutletUrl(options.outletUrl) ? options.outletUrl : null;
+  const standUrl = options.standUrl?.trim() ? options.standUrl.trim() : null;
+  if (!outletUrl && !standUrl) return null;
+  const wantOutlet = !!outletUrl;
+  const wantText = !!standUrl;
+  let result = await captureOnce(executablePath, outletUrl, standUrl);
+  if (!surfacesReady(result, wantOutlet, wantText)) {
+    const second = await captureOnce(executablePath, outletUrl, standUrl);
+    result = {
+      outlet: second.outlet ?? result.outlet,
+      pageText: second.pageText.trim() ? second.pageText : result.pageText,
+    };
+  }
+  return result;
+}
+
+export interface PreviewPageCapture {
+  pageText: string;
+  shots: Buffer[];
+}
+
+/** Opens the AIO preview URL in Chrome and returns its visible text plus viewport JPEGs from top to bottom. */
+export async function capturePreviewPage(url: string, chromePath: string): Promise<PreviewPageCapture> {
+  const executablePath = chromePath.trim();
+  const target = url.trim();
+  if (!executablePath || !target) return { pageText: '', shots: [] };
+  let result = await capturePreviewOnce(executablePath, target);
+  if (!result.pageText.trim() && result.shots.length === 0) {
+    const second = await capturePreviewOnce(executablePath, target);
+    if (second.pageText.trim() || second.shots.length > 0) result = second;
+  }
+  return result;
+}
+
+async function capturePreviewOnce(executablePath: string, url: string): Promise<PreviewPageCapture> {
   let browser: Browser | null = null;
   try {
     const loaded = await import('puppeteer-core');
     const puppeteer = loaded.default ?? loaded;
-    browser = await puppeteer.launch({ executablePath, headless: true, timeout: 15000 });
-    const headerPage = await openPage(browser, options.outletUrl);
-    const header = await shootRegion(headerPage, HEADER_SELECTORS, 'top');
-    const footer = await shootRegion(headerPage, FOOTER_SELECTORS, 'bottom');
-    await headerPage.close().catch(() => undefined);
-    if (!header || !footer) return null;
-    let landingFooter: Buffer | null = null;
-    if (options.standUrl) {
-      const stand = await openPage(browser, options.standUrl);
-      landingFooter = await shootRegion(stand, FOOTER_SELECTORS, 'bottom');
-      await stand.close().catch(() => undefined);
+    browser = await puppeteer.launch({
+      executablePath,
+      headless: true,
+      timeout: 15000,
+      args: ['--disable-blink-features=AutomationControlled'],
+    });
+    const page = await openPage(browser, url, true);
+    try {
+      await page.waitForNetworkIdle({ idleTime: 500, timeout: 8000 }).catch(() => undefined);
+      const text = await page.evaluate(() => (document.body ? document.body.innerText : ''));
+      const pageText = typeof text === 'string' ? text : '';
+      const doc = await page.evaluate(() => ({
+        height: document.documentElement.scrollHeight,
+      }));
+      const scrollHeight = Math.max(VIEWPORT.height, Math.round(doc.height) || 0);
+      const offsets = previewSliceOffsets(scrollHeight, VIEWPORT.height);
+      const shots: Buffer[] = [];
+      for (const y of offsets) {
+        const height = Math.min(VIEWPORT.height, Math.max(24, scrollHeight - y));
+        const shot = await page.screenshot({
+          type: 'jpeg',
+          quality: 60,
+          clip: { x: 0, y, width: VIEWPORT.width, height },
+          captureBeyondViewport: true,
+        });
+        shots.push(Buffer.from(shot));
+      }
+      return { pageText, shots };
+    } finally {
+      await page.close().catch(() => undefined);
     }
-    return { header, footer, landingFooter };
   } catch {
-    return null;
+    return { pageText: '', shots: [] };
   } finally {
     await browser?.close().catch(() => undefined);
   }
 }
 
-async function openPage(browser: Browser, url: string): Promise<Page> {
+async function captureOnce(
+  executablePath: string,
+  outletUrl: string | null,
+  standUrl: string | null,
+): Promise<{ outlet: OutletReferenceShots | null; pageText: string }> {
+  let browser: Browser | null = null;
+  try {
+    const loaded = await import('puppeteer-core');
+    const puppeteer = loaded.default ?? loaded;
+    browser = await puppeteer.launch({ executablePath, headless: true, timeout: 15000 });
+    let header: Buffer | null = null;
+    let footer: Buffer | null = null;
+    let landingFooter: Buffer | null = null;
+    let pageText = '';
+    if (outletUrl) {
+      const headerPage = await openPage(browser, outletUrl, true);
+      try {
+        header = await shootRegion(headerPage, HEADER_SELECTORS, 'top');
+        footer = await shootRegion(headerPage, FOOTER_SELECTORS, 'bottom');
+      } finally {
+        await headerPage.close().catch(() => undefined);
+      }
+    }
+    if (standUrl) {
+      const stand = await openPage(browser, standUrl, false);
+      try {
+        const text = await stand.evaluate(() => (document.body ? document.body.innerText : ''));
+        pageText = typeof text === 'string' ? text : '';
+        landingFooter = await shootRegion(stand, FOOTER_SELECTORS, 'bottom');
+      } finally {
+        await stand.close().catch(() => undefined);
+      }
+    }
+    const outlet = header && footer ? { header, footer, landingFooter } : null;
+    return { outlet, pageText };
+  } catch {
+    return { outlet: null, pageText: '' };
+  } finally {
+    await browser?.close().catch(() => undefined);
+  }
+}
+
+function surfacesReady(
+  result: { outlet: OutletReferenceShots | null; pageText: string },
+  wantOutlet: boolean,
+  wantText: boolean,
+): boolean {
+  if (wantOutlet && !result.outlet) return false;
+  if (wantText && !result.pageText.trim()) return false;
+  return true;
+}
+
+async function openPage(browser: Browser, url: string, dismiss: boolean): Promise<Page> {
   const page = await browser.newPage();
   await page.setViewport(VIEWPORT);
   await page.setUserAgent(USER_AGENT);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-  await dismissConsent(page);
+  if (dismiss) await dismissConsent(page);
+  await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
   return page;
 }
 

@@ -1,0 +1,24 @@
+# Local Postgres for QA Assistant. Not Neon. Dev credentials only; do not point this at production.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: qa-postgres
+    environment:
+      POSTGRES_USER: qa
+      POSTGRES_PASSWORD: qa
+      POSTGRES_DB: qa
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - qa_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qa -d qa"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  qa_postgres_data:

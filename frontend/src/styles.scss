@@ -313,6 +313,7 @@ table.data tbody tr.clickable { cursor: pointer; }
 .badge[data-status='pass'] { color: var(--color-passed-fg); background: var(--color-passed-bg); }
 .badge[data-status='fail'] { color: var(--color-failed-fg); background: var(--color-failed-bg); }
 .badge[data-status='na'] { color: var(--color-text-muted); background: var(--color-surface-muted); border: 1px solid var(--color-border); }
+.badge[data-status='gap'] { color: var(--color-warning-fg); background: var(--color-warning-bg); }
 
 .qa-categories, .qa-clarifications { margin: 0 0 var(--space-3); padding: 0; list-style: none; }
 .qa-clarifications { padding-left: var(--space-4); list-style: disc; }
@@ -377,6 +378,15 @@ blockquote { margin-left: 0; color: var(--color-text); }
 .recommendation { margin-bottom: var(--space-4); }
 
 .lh-groups { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
+.lh-groups .thumb img {
+  display: block;
+  width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
 .metric { display: flex; justify-content: space-between; gap: var(--space-3); padding: var(--space-1) 0; color: var(--color-text); }
 
 .compare { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-5); align-items: start; }

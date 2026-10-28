@@ -131,7 +131,7 @@ export interface AiGeneral {
 
 export interface AiCheck {
   category: number;
-  status: 'PASS' | 'FAIL' | 'N/A';
+  status: 'PASS' | 'FAIL' | 'N/A' | 'GAP';
   note?: string;
 }
 
@@ -141,6 +141,8 @@ export interface AiMeta {
   text_truncated?: boolean;
   vision?: boolean;
   outlet_url?: string | null;
+  fact_source?: string | null;
+  fx_date?: string | null;
   person_from_name?: string | null;
   person_from_text?: string | null;
   person_conflict?: boolean;
@@ -166,7 +168,15 @@ export interface LighthouseMetrics {
   cumulative_layout_shift: number | null;
   speed_index: number | null;
   time_to_interactive: number | null;
+  /**
+   * Page image for this run. A data URL, raw image base64, an http(s)/blob URL,
+   * or `{ data, width, height }`. Null or absent when Lighthouse saved no image.
+   */
+  screenshot?: string | { data?: unknown; width?: number; height?: number } | null;
 }
+
+/** Numeric Lighthouse fields. `screenshot` is an image source and is not a metric. */
+export type LighthouseMetricKey = Exclude<keyof LighthouseMetrics, 'screenshot'>;
 
 export interface LighthouseBlock {
   status: string;
@@ -260,7 +270,7 @@ export interface ReportBody {
   lighthouse: LighthouseBlock | null;
 }
 
-export const LH_METRICS: Array<{ key: keyof LighthouseMetrics; label: string }> = [
+export const LH_METRICS: Array<{ key: LighthouseMetricKey; label: string }> = [
   { key: 'performance_score', label: 'Оценка производительности' },
   { key: 'first_contentful_paint', label: 'Первая отрисовка' },
   { key: 'largest_contentful_paint', label: 'Крупнейшая отрисовка' },

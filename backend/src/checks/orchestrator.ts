@@ -3,20 +3,21 @@ import fs from 'fs';
 import path from 'path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AiCallError, AiClient, completeFindings } from '../ai/ai.client';
-import { AiMaterials, buildAiMaterials } from '../ai/materials';
-import { captureOutletReference } from '../ai/outlet-capture';
+import { AiMaterials, buildAiMaterials, pageTextForAi, readLandingIndexHtml } from '../ai/materials';
+import { loadFactSheet } from '../ai/facts';
+import { capturePreviewPage, captureQaSurfaces, OutletReferenceShots } from '../ai/outlet-capture';
 import { matchOutlet } from '../ai/outlets';
 import { QA_INSTRUCTION } from '../ai/qa-instruction';
 import { AioClient, AioDownloadError } from '../aio/aio.client';
 import { CostsService } from '../admin/admin.services';
 import { RulesService } from '../admin/admin.services';
-import { AppConfig } from '../config';
+import { AppConfig, previewLinkConfigured } from '../config';
 import { unpackZip } from '../files/unpack';
 import { WorkdirService } from '../files/workdir.service';
 import { LighthouseRunner } from '../lighthouse/lighthouse';
 import { cloneRules, effectiveLanguages, expectFormMacroForLander } from '../rules/rules';
 import { sanitizeReport } from '../redact';
-import { ReportPayload } from '../reports/report.types';
+import { AiBlock, ReportPayload } from '../reports/report.types';
 import { APP_CONFIG, CHECK_ARCHIVES_REPO, REPORTS_REPO } from '../tokens';
 import {
   AI_STATUS_ERROR,
@@ -31,6 +32,8 @@ import {
 import { CheckArchivesRepo, ReportsRepo } from '../storage/repos';
 import { StaticChecks, summarizeStatic } from '../static/static-checks';
 import { captureStandJpeg, wantsVisualCapture } from '../stand/capture';
+import { resolveChromeExecutable } from '../stand/chrome-path';
+import { resolveStandFormHtml } from '../stand/form-html';
 import { PreviewService } from '../stand/preview.service';
 import { abortError, CheckRecord, isAbort } from './check.record';
 import { ATTEMPTS, HaltAttempts, withAttempts } from './retry';
@@ -280,11 +283,15 @@ export class CheckOrchestrator {
 
   private async captureVisual(check: CheckRecord, standOk: boolean): Promise<Buffer | null> {
     if (!standOk || !wantsVisualCapture(this.config.visualMode, check.standUrl)) return null;
+    const chromePath = resolveChromeExecutable(this.config.visualChromePath);
+    if (!chromePath) {
+      this.logger.error('visual capture skipped: chrome not found');
+      return null;
+    }
     try {
-      return await captureStandJpeg(check.standUrl as string, this.config.visualChromePath);
+      return await captureStandJpeg(check.standUrl as string, chromePath);
     } catch (error) {
-      const detail = error instanceof Error ? error.message.replace(/https?:\/\/\S+/g, '[url]') : 'capture failed';
-      this.logger.error(`visual capture failed: ${detail}`);
+      this.logger.error(`visual capture failed: ${captureDetail(error)}`);
       return null;
     }
   }
@@ -293,27 +300,73 @@ export class CheckOrchestrator {
     if (check.state('ai') === 'done' || check.state('ai') === 'skipped' || check.state('ai') === 'failed') return;
     this.throwIfAborted(check);
     check.step('ai', 'running');
+    const previewTask = this.resolveLandingPreview(check.card.uuid);
     const checkDate = new Date().toISOString().slice(0, 10);
     let materials: AiMaterials | null = null;
+    let rawHtml: string | null = null;
     try {
       if (check.landingFolder && fs.existsSync(check.landingFolder)) {
         materials = buildAiMaterials(check.landingFolder, check.card.name, checkDate);
+        rawHtml = readLandingIndexHtml(check.landingFolder);
       }
     } catch (error) {
       this.logger.error(`ai materials failed: ${error instanceof Error ? error.name : 'error'}`);
     }
+    const formOptions = {
+      formHtml: resolveStandFormHtml(this.config.standFormHtml, check.card.countries),
+      brandName: this.config.standBrandName,
+      cdnBase: this.preview.cdnBaseFor(check.id),
+      isolated: !check.actionsAllowed,
+    };
+    if (materials && rawHtml != null) {
+      const fallback = pageTextForAi(rawHtml, formOptions, null);
+      materials = { ...materials, pageText: fallback.pageText, textTruncated: fallback.textTruncated };
+    }
     const outlet = materials ? matchOutlet(`${check.card.name}\n${materials.pageText}`) : null;
-    const chromePath = this.config.aiMode === 'real' ? this.config.visualChromePath.trim() : '';
-    const reference =
-      outlet && chromePath
-        ? await captureOutletReference({
-            chromePath,
-            outletUrl: outlet.url,
-            standUrl: check.standUrl,
+    const chromePath = this.config.aiMode === 'real' ? resolveChromeExecutable(this.config.visualChromePath) : '';
+    const factsPromise =
+      this.config.aiMode === 'real'
+        ? loadFactSheet({
+            person: materials?.person.resolved ?? null,
+            checkDate,
+            languages: check.card.languages,
           })
-        : null;
+        : Promise.resolve(null);
+    let reference: OutletReferenceShots | null = null;
+    let pageRendered = false;
+    if (chromePath && (outlet || check.standUrl)) {
+      const captured = await captureQaSurfaces({
+        chromePath,
+        outletUrl: outlet?.url ?? null,
+        standUrl: check.standUrl,
+      });
+      reference = captured?.outlet ?? null;
+      if (materials && rawHtml != null && captured) {
+        const chosen = pageTextForAi(rawHtml, formOptions, captured.pageText);
+        materials = { ...materials, pageText: chosen.pageText, textTruncated: chosen.textTruncated };
+        pageRendered = chosen.source === 'rendered';
+      }
+    }
+    if (this.config.aiMode === 'real' && !chromePath && (outlet || check.standUrl)) {
+      this.logger.error('browser capture skipped: chrome not found');
+    } else if (chromePath && check.standUrl && !pageRendered) {
+      this.logger.error('rendered text capture failed');
+    }
+    const facts = await factsPromise;
     if (outlet && chromePath && !reference) {
       this.logger.error(`outlet capture failed: ${outlet.name}`);
+    }
+    const landingPreviewUrl = await previewTask;
+    this.throwIfAborted(check);
+    const previewPage = await this.captureLandingPreview(landingPreviewUrl, chromePath);
+    const previewText = previewPage.pageText.trim()
+      ? pageTextForAi(rawHtml ?? '', formOptions, previewPage.pageText)
+      : null;
+    if (previewText) {
+      pageRendered = true;
+      if (materials) {
+        materials = { ...materials, pageText: previewText.pageText, textTruncated: previewText.textTruncated };
+      }
     }
     const outletRef =
       outlet && reference
@@ -331,14 +384,27 @@ export class CheckOrchestrator {
           languages,
           countries: check.card.countries,
           standUrl: check.standUrl,
+          landingPreviewUrl,
+          previewShots: previewPage.shots,
+          previewPageText: !!previewText,
           files: [],
           screenshot,
           checkDate,
           outlet: outletRef,
           landingFooter: reference?.landingFooter ?? null,
+          factSheet: facts ? { person: facts.person } : null,
+          fxRates: facts?.fx ?? null,
+          pageTextRendered: pageRendered,
           ...(materials
-            ? { pageText: materials.pageText, person: materials.person, images: materials.images }
-            : {}),
+            ? {
+                pageText: materials.pageText,
+                person: materials.person,
+                images: materials.images,
+                commentAvatars: materials.commentAvatars,
+              }
+            : previewText
+              ? { pageText: previewText.pageText }
+              : {}),
         });
       });
       if (result.skipped) {
@@ -354,17 +420,17 @@ export class CheckOrchestrator {
       if (result.usage && typeof result.usage === 'object') {
         await this.costs.record(result.usage);
       }
-      check.aiBlock = {
+      const ready: AiBlock = {
         status: AI_STATUS_READY,
-        findings: completeFindings(result.findings),
+        findings: sanitizeReport(completeFindings(result.findings)),
         decision: check.aiBlock?.decision ?? null,
         mode: 'real',
       };
       if (result.report) {
         const { report_markdown, general, checks, clarifications } = result.report;
         const images = materials?.images ?? [];
-        check.aiBlock = {
-          ...check.aiBlock,
+        check.aiBlock = sanitizeReport({
+          ...ready,
           schema_version: 2,
           report_markdown,
           general,
@@ -374,13 +440,17 @@ export class CheckOrchestrator {
             instruction_sha: createHash('sha256').update(QA_INSTRUCTION).digest('hex'),
             images_sent: images.length,
             text_truncated: materials?.textTruncated ?? false,
-            vision: images.length > 0 || !!screenshot || !!outletRef,
+            vision: images.length > 0 || !!screenshot || !!outletRef || previewPage.shots.length > 0,
             outlet_url: outletRef?.url ?? null,
+            fact_source: facts?.person?.source ?? null,
+            fx_date: facts?.fx?.date ?? null,
             person_from_name: materials?.person.from_land_name ?? null,
             person_from_text: materials?.person.from_page_text ?? null,
             person_conflict: materials?.person.conflict ?? false,
           },
-        };
+        });
+      } else {
+        check.aiBlock = ready;
       }
       check.step('ai', 'done');
     } catch (error) {
@@ -393,6 +463,49 @@ export class CheckOrchestrator {
       };
       const detail = error instanceof AiCallError ? error.detail : '';
       check.step('ai', 'failed', detail ? `Ошибка ИИ после повторов: ${detail}` : 'Ошибка ИИ после повторов');
+    }
+  }
+
+  private async resolveLandingPreview(landerUuid: string): Promise<string | null> {
+    if (!previewLinkConfigured(this.config)) {
+      this.logger.error('landing preview link skipped: preview uuid is not configured');
+      return null;
+    }
+    try {
+      const url = await this.aio.landingPreviewLink(landerUuid);
+      if (!url || !isHttpUrl(url)) {
+        this.logger.error('landing preview link failed');
+        return null;
+      }
+      return url;
+    } catch {
+      this.logger.error('landing preview link failed');
+      return null;
+    }
+  }
+
+  private async captureLandingPreview(
+    url: string | null,
+    aiChromePath: string,
+  ): Promise<{ pageText: string; shots: Buffer[] }> {
+    const empty = { pageText: '', shots: [] as Buffer[] };
+    if (!url) return empty;
+    const wantsBrowser = this.config.aiMode === 'real' || this.config.visualMode === 'real';
+    if (!wantsBrowser) return empty;
+    const chromePath = this.config.aiMode === 'real' ? aiChromePath : resolveChromeExecutable(this.config.visualChromePath);
+    if (!chromePath) {
+      this.logger.error('landing preview capture skipped: chrome not found');
+      return empty;
+    }
+    try {
+      const captured = await capturePreviewPage(url, chromePath);
+      if (!captured.pageText.trim() && captured.shots.length === 0) {
+        this.logger.error('landing preview capture failed');
+      }
+      return captured;
+    } catch (error) {
+      this.logger.error(`landing preview capture failed: ${captureDetail(error)}`);
+      return empty;
     }
   }
 
@@ -506,6 +619,23 @@ function unpackFailureText(error: unknown): string {
   const code = (error as NodeJS.ErrnoException).code;
   if (code && PERMANENT_UNPACK_CODES.has(code)) return `${base}: ${code}`;
   return base;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function captureDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'capture failed';
+  return message
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/([?&])t=[^&\s]+/gi, '$1t=[redacted]')
+    .slice(0, 200);
 }
 
 function aioFailureDetail(error: unknown): string {

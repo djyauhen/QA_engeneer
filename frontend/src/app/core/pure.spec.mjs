@@ -5,6 +5,7 @@ import {
   errorText,
   formatMetric,
   isImageSource,
+  lighthouseImageSrc,
   qaCategoryLabel,
   qaPriorityText,
   qaStatusText,
@@ -97,6 +98,34 @@ describe('isImageSource', () => {
     assert.equal(isImageSource('https://cdn.example/shot.jpg?x=1'), true);
     assert.equal(isImageSource('https://cdn.example/file?signature=abc'), false);
     assert.equal(isImageSource('https://cdn.example/page'), false);
+  });
+});
+
+describe('lighthouseImageSrc', () => {
+  it('shows a data url even when the payload contains a signed-url marker', () => {
+    const shot = 'data:image/jpeg;base64,signature=expires=';
+    assert.equal(lighthouseImageSrc(shot), shot);
+  });
+
+  it('wraps raw image base64 and unwraps a screenshot object', () => {
+    assert.equal(lighthouseImageSrc('/9j/4AAQ'), 'data:image/jpeg;base64,/9j/4AAQ');
+    assert.equal(lighthouseImageSrc('_9j_4AAQ'), 'data:image/jpeg;base64,/9j/4AAQ');
+    assert.equal(
+      lighthouseImageSrc({ data: 'iVBORw0KGgoAAA', width: 12, height: 20 }),
+      'data:image/png;base64,iVBORw0KGgoAAA',
+    );
+  });
+
+  it('accepts a blob or http url without an image extension and skips a signed url', () => {
+    assert.equal(lighthouseImageSrc('blob:http://localhost/8b1c'), 'blob:http://localhost/8b1c');
+    assert.equal(lighthouseImageSrc('https://stand.local/lighthouse/mobile'), 'https://stand.local/lighthouse/mobile');
+    assert.equal(lighthouseImageSrc('https://cdn.example/file?signature=abc'), null);
+  });
+
+  it('leaves an empty screenshot empty', () => {
+    assert.equal(lighthouseImageSrc(null), null);
+    assert.equal(lighthouseImageSrc(''), null);
+    assert.equal(lighthouseImageSrc('нет снимка'), null);
   });
 });
 

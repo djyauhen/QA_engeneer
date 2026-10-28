@@ -1,8 +1,15 @@
-import { AioDownloadError, HttpAioClient, buildTablesBody, collectCatalogRows } from '../src/aio/aio.client';
+import {
+  AioDownloadError,
+  HttpAioClient,
+  assertAioHeaders,
+  buildTablesBody,
+  collectCatalogRows,
+  readLandingPreviewContent,
+} from '../src/aio/aio.client';
 import { CatalogQuery, defaultCatalogQuery } from '../src/catalog/catalog-query';
 import { AppConfig } from '../src/config';
 
-function config(): AppConfig {
+function config(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
     storage: 'memory',
     databaseUrl: '',
@@ -32,6 +39,11 @@ function config(): AppConfig {
     visualChromePath: '',
     bcryptRounds: 4,
     poolMax: 10,
+    aioPreviewCampaignUuid: '',
+    aioPreviewSourceUuid: '',
+    aioPreviewDomainUuid: '',
+    aioTenantId: '',
+    ...overrides,
   };
 }
 
@@ -257,6 +269,145 @@ describe('AIO client', () => {
     await expect(file.read()).rejects.toMatchObject({ permanent: true });
     expect(calls.some((href) => href.includes('evil.test'))).toBe(false);
     expect(calls.some((href) => href.includes('token=test-aio-token-value') && href.includes('evil.test'))).toBe(false);
+  });
+
+  it('allows x-tenant-id only when the link-generator call asks for it', () => {
+    expect(() => assertAioHeaders({ 'x-tenant-id': 'tenant-1' })).toThrow('Сбой вызова AIO');
+    expect(() => assertAioHeaders({ 'x-tenant-id': 'tenant-1' }, { allowTenant: true })).not.toThrow();
+    expect(() => assertAioHeaders({ 'x-tenant-id': 'tenant-1', authorization: 'Bearer x' }, { allowTenant: true })).toThrow(
+      'Сбой вызова AIO',
+    );
+    expect(() => assertAioHeaders({ 'x-tenant-id': 'tenant-1', cookie: 'sid=1' }, { allowTenant: true })).toThrow(
+      'Сбой вызова AIO',
+    );
+  });
+
+  it('requests a landing preview link for the card uuid and returns that content', async () => {
+    const content = 'https://preview-track.invalid/?options=new-session&lp=card-1&launcher=L&suuid=S&cuuid=C';
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      if (String(url).includes('/tables/data')) {
+        return jsonResponse({ 'Funnel\\Landers': { response: { rows: [{ n: 1 }], next: false } } });
+      }
+      return jsonResponse([
+        { title: 'Other', content: 'https://decoy.invalid/no', content_short: 'https://short.invalid/decoy' },
+        {
+          title: 'Landing Preview Link',
+          description: 'Use for quick previews',
+          content,
+          content_short: 'https://short.invalid/obfuscated',
+          content_slug: 'slug-value',
+          reverse: false,
+          uuid: 'row-uuid',
+        },
+      ]);
+    };
+    const client = new HttpAioClient(
+      config({
+        aioPreviewCampaignUuid: 'camp-uuid',
+        aioPreviewSourceUuid: 'source-uuid',
+        aioPreviewDomainUuid: 'domain-uuid',
+        aioTenantId: 'tenant-header-value',
+      }),
+      fetchImpl,
+    );
+    await client.loadCatalogRows();
+    const link = await client.landingPreviewLink('card-1');
+    expect(link).toBe(content);
+    expect(link).not.toContain('short.invalid');
+    expect(link).not.toContain('slug-value');
+    const catalog = calls.find((call) => call.url.includes('/tables/data'));
+    const preview = calls.find((call) => call.url.includes('/link-generator/data'));
+    expect(catalog).toBeTruthy();
+    expect(preview).toBeTruthy();
+    const catalogHeaders = new Headers(catalog?.init?.headers);
+    expect(catalogHeaders.get('x-tenant-id')).toBeNull();
+    expect(catalogHeaders.get('authorization')).toBeNull();
+    expect(catalogHeaders.get('cookie')).toBeNull();
+    const previewUrl = new URL(preview?.url ?? '');
+    expect(previewUrl.pathname).toBe('/api/v1/campaigns/link-generator/data');
+    expect(previewUrl.searchParams.get('token')).toBe('test-aio-token-value');
+    const previewHeaders = new Headers(preview?.init?.headers);
+    expect(previewHeaders.get('authorization')).toBeNull();
+    expect(previewHeaders.get('cookie')).toBeNull();
+    expect(previewHeaders.get('x-tenant-id')).toBe('tenant-header-value');
+    const body = JSON.parse(String(preview?.init?.body)) as Record<string, unknown>;
+    expect(body).toEqual({
+      campaign_uuid: 'camp-uuid',
+      source_uuid: 'source-uuid',
+      name: '',
+      domain_uuid: 'domain-uuid',
+      replaces: { lp: 'card-1' },
+      shuffle_params: true,
+    });
+    expect(JSON.stringify(body)).not.toContain('test-aio-token-value');
+    expect(JSON.stringify(body)).not.toContain('tenant-header-value');
+  });
+
+  it('omits x-tenant-id on the preview call when the tenant is not configured', async () => {
+    let headers = new Headers();
+    const fetchImpl = async (_url: string, init?: RequestInit) => {
+      headers = new Headers(init?.headers);
+      return jsonResponse([
+        {
+          title: 'Landing Preview Link',
+          content: 'https://preview-track.invalid/?options=new-session&lp=card-1&launcher=L&suuid=S&cuuid=C',
+        },
+      ]);
+    };
+    const client = new HttpAioClient(
+      config({
+        aioPreviewCampaignUuid: 'camp-uuid',
+        aioPreviewSourceUuid: 'source-uuid',
+        aioPreviewDomainUuid: 'domain-uuid',
+      }),
+      fetchImpl,
+    );
+    await expect(client.landingPreviewLink('card-1')).resolves.toContain('options=new-session');
+    expect(headers.get('x-tenant-id')).toBeNull();
+    expect(headers.get('authorization')).toBeNull();
+    expect(headers.get('cookie')).toBeNull();
+  });
+
+  it('picks Landing Preview Link content and ignores content_short', () => {
+    const content = 'https://preview-track.invalid/?options=new-session&lp=card-1&launcher=L&suuid=S&cuuid=C';
+    expect(
+      readLandingPreviewContent([
+        { title: 'Other', content: 'https://decoy.invalid/no' },
+        { title: 'Landing Preview Link', content, content_short: 'https://short.invalid/obfuscated', content_slug: 'slug' },
+      ]),
+    ).toBe(content);
+    expect(() =>
+      readLandingPreviewContent([
+        { title: 'Landing Preview Link', content_short: 'https://short.invalid/obfuscated', content_slug: 'slug' },
+      ]),
+    ).toThrow('Сбой вызова AIO');
+    try {
+      readLandingPreviewContent([
+        { title: 'Landing Preview Link', content_short: 'https://short.invalid/obfuscated' },
+      ]);
+    } catch (error) {
+      expect(String(error)).not.toContain('short.invalid');
+      expect(String(error)).not.toContain('obfuscated');
+    }
+  });
+
+  it('skips the preview call when campaign, source, or domain is missing', async () => {
+    const full = {
+      aioPreviewCampaignUuid: 'camp-uuid',
+      aioPreviewSourceUuid: 'source-uuid',
+      aioPreviewDomainUuid: 'domain-uuid',
+    };
+    for (const key of ['aioPreviewCampaignUuid', 'aioPreviewSourceUuid', 'aioPreviewDomainUuid'] as const) {
+      let called = false;
+      const client = new HttpAioClient(config({ ...full, [key]: '' }), async () => {
+        called = true;
+        return jsonResponse([]);
+      });
+      await expect(client.landingPreviewLink('card-1')).resolves.toBeNull();
+      expect(called).toBe(false);
+    }
   });
 });
 

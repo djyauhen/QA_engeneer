@@ -1,4 +1,5 @@
 import { OUTLET_FOOTER_REF, OUTLET_HEADER_REF } from './outlets';
+import { CommentAvatarOccurrence } from './materials';
 import { AiCheck, AiFinding, AiGeneral } from '../reports/report.types';
 
 export interface QaReportFields {
@@ -142,6 +143,33 @@ export function mapQaResponse(parsed: unknown, options: QaParseOptions = {}): Qa
       .map((item) => item.trim());
   }
   return { findings, report };
+}
+
+/** One checklist item. Status must be top-level: a missing status is not a verdict. */
+export function mapCategoryResponse(
+  category: number,
+  parsed: unknown,
+  options: QaParseOptions = {},
+): { accepted: boolean; result: QaParseResult; imageChecks?: unknown } {
+  const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  const status = normalizeStatus(body.status);
+  if (status === undefined) return { accepted: false, result: { findings: [] } };
+  const rawFindings = Array.isArray(body.findings) ? body.findings : [];
+  const findings = rawFindings.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    return { ...(entry as Record<string, unknown>), category };
+  });
+  const result = mapQaResponse(
+    {
+      checks: [{ category, status, note: body.note }],
+      findings,
+      clarifications: body.clarifications,
+      general: body.general,
+    },
+    options,
+  );
+  const imageChecks = category === 3 ? body.image_checks : undefined;
+  return { accepted: true, result, ...(imageChecks !== undefined ? { imageChecks } : {}) };
 }
 
 /** Image the model was asked to match to a named public person. */
@@ -288,15 +316,156 @@ export function enforceImageCorrespondence(result: QaParseResult, options: Image
       file: 'index.html',
       quote,
       screenshot: dataUrl,
-      category: 10,
+      category: 3,
       priority: 'major',
       where: image.file,
       problem: verdict.note || `На изображении не ${image.claims_person}`,
       expected: `Изображение ${image.claims_person}`,
     });
     if (result.report?.checks) {
-      ensureCategoryFail(result.report, 10, `Изображение ${image.ref} не соответствует «${image.claims_person}»`);
+      ensureCategoryFail(result.report, 3, `Изображение ${image.ref} не соответствует «${image.claims_person}»`);
     }
+  }
+  return result;
+}
+
+export interface CommentAvatarOptions {
+  pageText?: string;
+  avatars?: CommentAvatarOccurrence[];
+}
+
+function distinctNames(group: CommentAvatarOccurrence[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const avatar of group) {
+    if (seen.has(avatar.nameKey)) continue;
+    seen.add(avatar.nameKey);
+    names.push(avatar.name);
+  }
+  return names;
+}
+
+function joinNames(names: string[]): string {
+  const quoted = names.map((name) => `«${name}»`);
+  if (quoted.length <= 1) return quoted[0] ?? '';
+  if (quoted.length === 2) return `${quoted[0]} и ${quoted[1]}`;
+  return `${quoted.slice(0, -1).join(', ')} и ${quoted[quoted.length - 1]}`;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Name as it appears in page text, or null when the page does not contain it. */
+function quoteAppearingInPage(pageText: string, name: string): string | null {
+  const raw = name.trim();
+  if (!raw || !pageText) return null;
+  if (pageText.includes(raw)) return raw;
+  const needle = normalizeWhitespace(raw);
+  if (!needle) return null;
+  const pattern = needle.split(' ').map(escapeRegExp).join('\\s+');
+  const found = new RegExp(pattern).exec(pageText);
+  if (found) return found[0];
+  if (normalizeWhitespace(pageText).includes(needle)) return needle;
+  return null;
+}
+
+function quoteForNames(pageText: string, names: string[]): string {
+  for (const name of names) {
+    const quote = quoteAppearingInPage(pageText, name);
+    if (quote) return quote;
+  }
+  return names[0] ?? '';
+}
+
+function alreadyHasPhotoConflict(findings: Array<Partial<AiFinding>>, names: string[]): boolean {
+  return findings.some((finding) => {
+    if (finding.category !== 9) return false;
+    const problem = (finding.problem ?? '').toLocaleLowerCase();
+    if (!problem.includes('одно и то же фото')) return false;
+    return names.every((name) => problem.includes(name.toLocaleLowerCase()));
+  });
+}
+
+function alreadyHasNameConflict(findings: Array<Partial<AiFinding>>, name: string): boolean {
+  const key = name.toLocaleLowerCase();
+  return findings.some((finding) => {
+    if (finding.category !== 9) return false;
+    const problem = (finding.problem ?? '').toLocaleLowerCase();
+    return problem.includes('разные фото') && problem.includes(key);
+  });
+}
+
+/**
+ * Exact avatar reuse is decided from the HTML occurrences, not from the model.
+ * One finding per shared photo, listing every distinct name. One finding per name
+ * that has two different non-placeholder photos. A photo shared by several names
+ * does not also emit a name finding: each of those names still has a single photo.
+ */
+export function enforceCommentAvatars(result: QaParseResult, options: CommentAvatarOptions = {}): QaParseResult {
+  const avatars = (options.avatars ?? []).filter((avatar) => !avatar.placeholder && avatar.nameKey && avatar.photoKey && avatar.screenshot);
+  if (!avatars.length) return result;
+  const pageText = options.pageText ?? '';
+  let noted = false;
+  const fail = (note: string): void => {
+    if (!result.report || noted) return;
+    ensureCategoryFail(result.report, 9, note);
+    noted = true;
+  };
+
+  const byPhoto = new Map<string, CommentAvatarOccurrence[]>();
+  for (const avatar of avatars) {
+    const list = byPhoto.get(avatar.photoKey) ?? [];
+    list.push(avatar);
+    byPhoto.set(avatar.photoKey, list);
+  }
+  for (const group of byPhoto.values()) {
+    const names = distinctNames(group);
+    if (names.length < 2) continue;
+    if (alreadyHasPhotoConflict(result.findings, names)) {
+      fail(`Одно фото у комментаторов ${joinNames(names)}`);
+      continue;
+    }
+    const sample = group[0];
+    result.findings.push({
+      file: sample.file,
+      quote: quoteForNames(pageText, names),
+      screenshot: sample.screenshot,
+      category: 9,
+      priority: 'major',
+      where: `Комментарии ${joinNames(names)}`,
+      problem: `Одно и то же фото у комментаторов ${joinNames(names)}.`,
+      expected: 'У разных имён разные фото.',
+    });
+    fail(`Одно фото у комментаторов ${joinNames(names)}`);
+  }
+
+  const byName = new Map<string, CommentAvatarOccurrence[]>();
+  for (const avatar of avatars) {
+    const list = byName.get(avatar.nameKey) ?? [];
+    list.push(avatar);
+    byName.set(avatar.nameKey, list);
+  }
+  for (const group of byName.values()) {
+    const photoKeys = new Set(group.map((avatar) => avatar.photoKey));
+    if (photoKeys.size < 2) continue;
+    const name = group[0].name;
+    if (alreadyHasNameConflict(result.findings, name)) {
+      fail(`У комментатора «${name}» разные фото`);
+      continue;
+    }
+    const sample = group[0];
+    result.findings.push({
+      file: sample.file,
+      quote: quoteForNames(pageText, [name]),
+      screenshot: sample.screenshot,
+      category: 9,
+      priority: 'major',
+      where: `Комментарии «${name}»`,
+      problem: `У комментатора «${name}» разные фото.`,
+      expected: 'У одного имени одно фото.',
+    });
+    fail(`У комментатора «${name}» разные фото`);
   }
   return result;
 }

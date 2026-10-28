@@ -33,6 +33,7 @@ export async function createTestApp(options?: {
   lighthouse?: LighthouseRunner;
   staticChecks?: StaticChecks;
   repos?: Repos;
+  config?: Partial<AppConfig>;
 }): Promise<TestApp> {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-backend-'));
   const config: AppConfig = {
@@ -64,6 +65,11 @@ export async function createTestApp(options?: {
     visualChromePath: '',
     bcryptRounds: 4,
     poolMax: 10,
+    aioPreviewCampaignUuid: '',
+    aioPreviewSourceUuid: '',
+    aioPreviewDomainUuid: '',
+    aioTenantId: '',
+    ...options?.config,
   };
   const repos = options?.repos ?? createMemoryRepos();
   const aio = (options?.aio as FakeAio) ?? new FakeAio();

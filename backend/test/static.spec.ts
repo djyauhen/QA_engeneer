@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { defaultRules } from '../src/rules/rules';
 import { EXPECTED_SVG_SCRIPT_SHA256, runStaticChecks, STATIC_CHECK_NAMES } from '../src/static/static-checks';
+import { configuredStandFormHtml, dialCodeForCountries, resolveStandFormHtml, standFormHtml } from '../src/stand/form-html';
 import { applyCdnMacro, transformHtml } from '../src/stand/transform';
 
 describe('static checks', () => {
@@ -74,6 +75,29 @@ describe('stand macros', () => {
     });
     expect(open).toContain('evil.test/p.js');
     expect(open).not.toContain('data-stand-isolated');
+  });
+
+  it('maps the Netherlands and Germany and does not invent a code for an unknown country', () => {
+    expect(dialCodeForCountries(['NL'])).toBe('+31');
+    expect(dialCodeForCountries(['Netherlands'])).toBe('+31');
+    expect(dialCodeForCountries(['Germany'])).toBe('+49');
+    expect(dialCodeForCountries(['NL', 'DE'])).toBe('+31');
+    expect(dialCodeForCountries(['ZZ', 'PL'])).toBe('+48');
+    expect(dialCodeForCountries(['United Kingdom'])).toBe('+44');
+    expect(dialCodeForCountries(['UK'])).toBe('+44');
+    expect(dialCodeForCountries(['Narnia'])).toBeNull();
+    const unknown = standFormHtml(['Narnia']);
+    expect(unknown).toContain('type="tel"');
+    expect(unknown).toContain('Tel');
+    expect(unknown).not.toMatch(/\+\d/);
+    expect(standFormHtml(['NL'])).toContain('+31');
+    expect(resolveStandFormHtml('<div data-stand-form="1"></div>', ['NL'])).toBe(standFormHtml(['NL']));
+    expect(resolveStandFormHtml('<b>CUSTOM</b>', ['NL'])).toBe('<b>CUSTOM</b>');
+    expect(configuredStandFormHtml(undefined)).toBe(standFormHtml([]));
+    expect(configuredStandFormHtml('<div data-stand-form="1"></div>')).toBe(standFormHtml([]));
+    const example = fs.readFileSync(path.join(__dirname, '../.env.example'), 'utf8');
+    const line = example.split(/\r?\n/).find((row) => row.startsWith('STAND_FORM_HTML='));
+    expect(line?.slice('STAND_FORM_HTML='.length)).toBe(standFormHtml([]));
   });
 
   it('rewrites {{cdn}} inside css and js, where the stand serves those files as text', () => {

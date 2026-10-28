@@ -15,6 +15,7 @@ import {
   isImageSource,
   isSignedUrl,
   joinList,
+  lighthouseImageSrc,
   metricValue,
   qaCategoryLabel,
   qaPriorityText,
@@ -259,15 +260,6 @@ function text(value: unknown): string {
             <pre class="qa-report">{{ ai.report_markdown }}</pre>
           </details>
         }
-
-        <dialog #zoom class="image-dialog" aria-label="Изображение к находке" (close)="zoomed.set(null)">
-          @if (zoomed(); as image) {
-            <img [src]="image.src" [alt]="image.alt" />
-          }
-          <form method="dialog">
-            <button type="submit" class="secondary">Закрыть</button>
-          </form>
-        </dialog>
       </section>
     }
 
@@ -295,6 +287,16 @@ function text(value: unknown): string {
               <span class="mono">{{ metricValue(data().lighthouse?.mobile ?? null, metric.key) }}</span>
             </div>
           }
+          @if (lighthouseImage(data().lighthouse?.mobile?.screenshot); as shot) {
+            <button
+              type="button"
+              class="thumb"
+              aria-label="Открыть скриншот мобильной версии"
+              (click)="openImage(shot, 'Скриншот мобильной версии')"
+            >
+              <img [src]="shot" alt="Скриншот мобильной версии" />
+            </button>
+          }
         </section>
         <section aria-label="Компьютер">
           @if (nested()) {
@@ -308,9 +310,28 @@ function text(value: unknown): string {
               <span class="mono">{{ metricValue(data().lighthouse?.desktop ?? null, metric.key) }}</span>
             </div>
           }
+          @if (lighthouseImage(data().lighthouse?.desktop?.screenshot); as shot) {
+            <button
+              type="button"
+              class="thumb"
+              aria-label="Открыть скриншот компьютерной версии"
+              (click)="openImage(shot, 'Скриншот компьютерной версии')"
+            >
+              <img [src]="shot" alt="Скриншот компьютерной версии" />
+            </button>
+          }
         </section>
       </div>
     </section>
+
+    <dialog #zoom class="image-dialog" aria-label="Изображение к находке" (close)="zoomed.set(null)">
+      @if (zoomed(); as image) {
+        <img [src]="image.src" [alt]="image.alt" />
+      }
+      <form method="dialog">
+        <button type="submit" class="secondary">Закрыть</button>
+      </form>
+    </dialog>
   `,
 })
 export class ReportBlocksComponent {
@@ -322,6 +343,7 @@ export class ReportBlocksComponent {
   readonly recommendation = RECOMMENDATION;
   readonly structureText = STRUCTURE_FAILED_TEXT;
   readonly metrics = LH_METRICS;
+  readonly lighthouseImage = lighthouseImageSrc;
   readonly formatTimestamp = formatTimestamp;
   readonly joinList = joinList;
   readonly findingPath = findingPath;

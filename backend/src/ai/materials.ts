@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { safeResolveUnderLanding } from '../static/landing-utils';
+import { transformHtml } from '../stand/transform';
 
 export const MAX_PAGE_TEXT_CHARS = 200_000;
 export const MAX_AI_IMAGES = 8;
@@ -31,15 +32,42 @@ export interface MaterialImage {
   buffer: Buffer;
 }
 
+/** One comment avatar as it appears in the landing HTML, before image dedupe. */
+export interface CommentAvatarOccurrence {
+  /** index.html or index.php */
+  file: string;
+  /** Commenter name, whitespace collapsed. */
+  name: string;
+  /** Trimmed and casefolded. */
+  nameKey: string;
+  /** SHA-256 of the avatar bytes. Same path or same bytes share this key. */
+  photoKey: string;
+  placeholder: boolean;
+  /** data URL of this avatar, for a finding card. */
+  screenshot: string;
+}
+
 export interface AiMaterials {
   pageText: string;
   textTruncated: boolean;
   person: PersonClaim;
   images: MaterialImage[];
+  commentAvatars: CommentAvatarOccurrence[];
 }
 
 const NAME_RE = /\p{Lu}\p{Ll}+(?:[-\s]+\p{Lu}\p{Ll}+){1,3}/u;
 const SKIP_NAME_RE = /favicon|pixel|spacer|sprite|blank|logo|icon/i;
+const COMMENT_MARKER_RE = /comment|review|otzyv|отзыв|feedback/iu;
+const NAME_TOKEN_RE = /^(?:name|author|user|username|nick|nickname)$/i;
+const NAME_REJECT_RE = /text|body|message/i;
+const PLACEHOLDER_RE =
+  /(?:^|[^a-z0-9])(?:placeholder|default[-_]?avatar|no[-_]?photo|no[-_]?avatar|anon(?:ymous)?|silhouette|userpic|stub|blank|nophoto)(?:[^a-z0-9]|$)/i;
+const NOT_A_PERSON_RE =
+  /^(?:comments?|reviews?|repl(?:y|ies)|likes?|share|read|more|show|hide|users?|admin|guest|anonymous|feedback|otzyv|отзыв|отзывы)$/iu;
+const PERSON_WORD = String.raw`\p{Lu}\p{Ll}+(?:-\p{Lu}\p{Ll}+)?`;
+const PERSON_NAME_EXACT = new RegExp(`^${PERSON_WORD}(?:[ \\u00a0]+${PERSON_WORD}){0,2}$`, 'u');
+/** Comment avatars above this size are skipped: the finding card stores the bytes as a data URL. */
+const COMMENT_AVATAR_MAX_BYTES = 2_000_000;
 const VOID_TAGS = new Set([
   'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr',
 ]);
@@ -51,31 +79,65 @@ const TAG_RE = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
 const EMPTY_PERSON: PersonClaim = { from_land_name: null, from_page_text: null, resolved: null, conflict: false };
 
 export function buildAiMaterials(landingFolder: string, landName: string, _checkDateIso?: string): AiMaterials {
-  const html = readIndexHtml(landingFolder);
-  if (html === null) {
+  const index = readLandingIndex(landingFolder);
+  if (index === null) {
     const person = resolvePerson(landName, null, '');
-    return { pageText: '', textTruncated: false, person, images: [] };
+    return { pageText: '', textTruncated: false, person, images: [], commentAvatars: [] };
   }
-  const cleaned = cleanHtml(html);
+  const cleaned = cleanHtml(index.html);
   const parsed = parseTags(cleaned);
-  const fullText = collapse(decodeEntities(parsed.marked.replace(MARK_RE, ' ')));
-  const textTruncated = fullText.length > MAX_PAGE_TEXT_CHARS;
-  const pageText = textTruncated ? fullText.slice(0, MAX_PAGE_TEXT_CHARS) : fullText;
-  const person = resolvePerson(landName, firstH1(cleaned), pageText);
+  const extracted = visibleText(parsed);
+  const person = resolvePerson(landName, firstH1(cleaned), extracted.pageText);
   const images = selectImages(landingFolder, cleaned, parsed, person.resolved);
-  return { pageText, textTruncated, person, images };
+  const commentAvatars = collectCommentAvatars(landingFolder, cleaned, parsed, person.resolved, index.file);
+  return { pageText: extracted.pageText, textTruncated: extracted.textTruncated, person, images, commentAvatars };
 }
 
-function readIndexHtml(landingFolder: string): string | null {
-  for (const name of ['index.html', 'index.php']) {
+export interface AiPageText {
+  pageText: string;
+  textTruncated: boolean;
+  source: 'rendered' | 'transformed';
+}
+
+/** Rendered stand text wins. Otherwise the archive is transformed the same way the stand serves it. */
+export function pageTextForAi(
+  rawHtml: string,
+  options: { formHtml: string; brandName: string; cdnBase: string; isolated: boolean },
+  rendered: string | null,
+): AiPageText {
+  const renderedText = collapse(rendered ?? '');
+  if (renderedText) {
+    const textTruncated = renderedText.length > MAX_PAGE_TEXT_CHARS;
+    return {
+      pageText: textTruncated ? renderedText.slice(0, MAX_PAGE_TEXT_CHARS) : renderedText,
+      textTruncated,
+      source: 'rendered',
+    };
+  }
+  const transformed = extractPageText(transformHtml(rawHtml, options));
+  return { ...transformed, source: 'transformed' };
+}
+
+export function extractPageText(html: string): { pageText: string; textTruncated: boolean } {
+  return visibleText(parseTags(cleanHtml(html)));
+}
+
+function readLandingIndex(landingFolder: string): { file: 'index.html' | 'index.php'; html: string } | null {
+  for (const name of ['index.html', 'index.php'] as const) {
     const file = path.join(landingFolder, name);
     try {
-      if (fs.statSync(file).isFile()) return fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+      if (fs.statSync(file).isFile()) {
+        return { file: name, html: fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '') };
+      }
     } catch {
       /* try the next candidate */
     }
   }
   return null;
+}
+
+export function readLandingIndexHtml(landingFolder: string): string | null {
+  return readLandingIndex(landingFolder)?.html ?? null;
 }
 
 function cleanHtml(html: string): string {
@@ -102,6 +164,15 @@ function collapse(text: string): string {
   return text.replace(/[\s\u00a0]+/g, ' ').trim();
 }
 
+function visibleText(parsed: ParsedTags): { pageText: string; textTruncated: boolean } {
+  const fullText = collapse(decodeEntities(parsed.marked.replace(MARK_RE, ' ')));
+  const textTruncated = fullText.length > MAX_PAGE_TEXT_CHARS;
+  return {
+    pageText: textTruncated ? fullText.slice(0, MAX_PAGE_TEXT_CHARS) : fullText,
+    textTruncated,
+  };
+}
+
 function firstH1(cleaned: string): string | null {
   const match = /<h1\b[^>]*>([\s\S]*?)<\/h1\s*>/i.exec(cleaned);
   if (!match) return null;
@@ -109,10 +180,19 @@ function firstH1(cleaned: string): string | null {
   return text || null;
 }
 
+interface TagFrame {
+  name: string;
+  comment: boolean;
+  start: number;
+  end: number;
+}
+
 interface RawImg {
   tag: string;
   offset: number;
   inComment: boolean;
+  /** Smallest ancestor whose class or id marks a comment block. End is filled when that tag closes. */
+  commentFrame: TagFrame | null;
 }
 
 interface ParsedTags {
@@ -122,17 +202,25 @@ interface ParsedTags {
 
 function parseTags(cleaned: string): ParsedTags {
   const imgs: RawImg[] = [];
-  const stack: Array<{ name: string; comment: boolean }> = [];
+  const stack: TagFrame[] = [];
   const marked = cleaned.replace(TAG_RE, (full: string, slash: string, name: string, attrs: string, offset: number) => {
     const tag = name.toLowerCase();
     if (tag === 'img') {
-      imgs.push({ tag: full, offset, inComment: stack.some((entry) => entry.comment) });
+      let commentFrame: TagFrame | null = null;
+      for (let i = stack.length - 1; i >= 0; i -= 1) {
+        if (stack[i].comment) {
+          commentFrame = stack[i];
+          break;
+        }
+      }
+      imgs.push({ tag: full, offset, inComment: commentFrame !== null, commentFrame });
       return ` ${MARK_OPEN}${imgs.length - 1}${MARK_CLOSE} `;
     }
     if (VOID_TAGS.has(tag) || full.endsWith('/>')) return ' ';
     if (slash) {
       for (let i = stack.length - 1; i >= 0; i -= 1) {
         if (stack[i].name === tag) {
+          stack[i].end = offset;
           stack.length = i;
           break;
         }
@@ -140,7 +228,7 @@ function parseTags(cleaned: string): ParsedTags {
       return ' ';
     }
     const marker = `${attrOf(attrs, 'class') ?? ''} ${attrOf(attrs, 'id') ?? ''}`;
-    stack.push({ name: tag, comment: /comment/i.test(marker) });
+    stack.push({ name: tag, comment: COMMENT_MARKER_RE.test(marker), start: offset, end: cleaned.length });
     return ' ';
   });
   return { marked, imgs };
@@ -322,4 +410,167 @@ function selectImages(landingFolder: string, cleaned: string, parsed: ParsedTags
     mime: candidate.mime,
     buffer: candidate.buffer,
   }));
+}
+
+function nameKeyOf(name: string): string {
+  return collapse(name).toLocaleLowerCase();
+}
+
+function markerTokens(marker: string): string[] {
+  return marker.split(/[^A-Za-z0-9\u0400-\u04FF]+/).filter(Boolean);
+}
+
+function isAuthorMarker(marker: string): boolean {
+  if (!marker.trim() || NAME_REJECT_RE.test(marker)) return false;
+  return markerTokens(marker).some((token) => NAME_TOKEN_RE.test(token));
+}
+
+function looksLikePerson(name: string): boolean {
+  if (!PERSON_NAME_EXACT.test(name)) return false;
+  const words = name.split(/[ \u00a0]+/);
+  return words.some((word) => !NOT_A_PERSON_RE.test(word));
+}
+
+function acceptName(name: string, celebrityKey: string | null): boolean {
+  if (!looksLikePerson(name)) return false;
+  if (celebrityKey && nameKeyOf(name) === celebrityKey) return false;
+  return true;
+}
+
+function distanceToElement(element: ElementSpan, imgAt: number): number {
+  if (imgAt >= element.contentStart && imgAt <= element.contentEnd) return 0;
+  if (imgAt < element.contentStart) return element.contentStart - imgAt;
+  return imgAt - element.contentEnd;
+}
+
+function nearestName(items: Array<{ element: ElementSpan; text: string }>, imgAt: number): string | null {
+  if (!items.length) return null;
+  const ranked = [...items].sort((a, b) => {
+    const distance = distanceToElement(a.element, imgAt) - distanceToElement(b.element, imgAt);
+    if (distance !== 0) return distance;
+    return a.text.length - b.text.length || a.text.localeCompare(b.text);
+  });
+  return ranked[0].text;
+}
+
+interface ElementSpan {
+  name: string;
+  author: boolean;
+  reject: boolean;
+  contentStart: number;
+  contentEnd: number;
+}
+
+function scanElements(block: string): ElementSpan[] {
+  const elements: ElementSpan[] = [];
+  const stack: ElementSpan[] = [];
+  const re = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:"[^"]*"|'[^']*'|[^'">])*)>/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(block)) !== null) {
+    const full = match[0];
+    const slash = match[1];
+    const tag = match[2].toLowerCase();
+    const attrs = match[3] ?? '';
+    if (slash) {
+      for (let i = stack.length - 1; i >= 0; i -= 1) {
+        if (stack[i].name === tag) {
+          stack[i].contentEnd = match.index;
+          stack.length = i;
+          break;
+        }
+      }
+      continue;
+    }
+    if (VOID_TAGS.has(tag) || full.endsWith('/>')) continue;
+    const marker = `${attrOf(attrs, 'class') ?? ''} ${attrOf(attrs, 'id') ?? ''}`;
+    const element: ElementSpan = {
+      name: tag,
+      author: isAuthorMarker(marker),
+      reject: NAME_REJECT_RE.test(marker),
+      contentStart: match.index + full.length,
+      contentEnd: block.length,
+    };
+    stack.push(element);
+    elements.push(element);
+  }
+  return elements;
+}
+
+function elementText(block: string, element: ElementSpan): string {
+  const inner = block.slice(element.contentStart, element.contentEnd);
+  return collapse(decodeEntities(inner.replace(/<[^>]+>/g, ' ')));
+}
+
+function insideReject(element: ElementSpan, elements: ElementSpan[]): boolean {
+  return elements.some(
+    (other) =>
+      other.reject &&
+      other !== element &&
+      element.contentStart >= other.contentStart &&
+      element.contentEnd <= other.contentEnd,
+  );
+}
+
+function commenterName(block: string, imgAt: number, celebrityKey: string | null): string | null {
+  const elements = scanElements(block);
+  const authors = elements
+    .filter((element) => element.author)
+    .map((element) => ({ element, text: elementText(block, element) }))
+    .filter((item) => acceptName(item.text, null));
+  const author = nearestName(authors, imgAt);
+  if (author) return author;
+  const nearby = elements
+    .filter((element) => !element.reject && !insideReject(element, elements))
+    .map((element) => ({ element, text: elementText(block, element) }))
+    .filter((item) => acceptName(item.text, celebrityKey));
+  return nearestName(nearby, imgAt);
+}
+
+function isPlaceholderAvatar(filePath: string, marker: string, alt: string): boolean {
+  const fileName = path.basename(filePath);
+  return PLACEHOLDER_RE.test(fileName) || PLACEHOLDER_RE.test(marker) || PLACEHOLDER_RE.test(alt);
+}
+
+function collectCommentAvatars(
+  landingFolder: string,
+  cleaned: string,
+  parsed: ParsedTags,
+  celebrity: string | null,
+  landingFile: string,
+): CommentAvatarOccurrence[] {
+  const celebrityKey = celebrity ? nameKeyOf(celebrity) : null;
+  const occurrences: CommentAvatarOccurrence[] = [];
+  for (const img of parsed.imgs) {
+    if (!img.commentFrame) continue;
+    const block = cleaned.slice(img.commentFrame.start, img.commentFrame.end);
+    const name = commenterName(block, img.offset - img.commentFrame.start, celebrityKey);
+    if (!name) continue;
+    let resolved: string | null = null;
+    for (const source of candidateSources(img.tag)) {
+      resolved = resolveImageFile(landingFolder, source);
+      if (resolved) break;
+    }
+    if (!resolved) continue;
+    let buffer: Buffer;
+    try {
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > COMMENT_AVATAR_MAX_BYTES) continue;
+      buffer = fs.readFileSync(resolved);
+    } catch {
+      continue;
+    }
+    const mime = sniffMime(buffer, path.extname(resolved).toLowerCase());
+    if (!mime) continue;
+    const marker = `${attrOf(img.tag, 'class') ?? ''} ${attrOf(img.tag, 'id') ?? ''}`;
+    const alt = collapse(decodeEntities(attrOf(img.tag, 'alt') ?? ''));
+    occurrences.push({
+      file: landingFile,
+      name,
+      nameKey: nameKeyOf(name),
+      photoKey: createHash('sha256').update(buffer).digest('hex'),
+      placeholder: isPlaceholderAvatar(resolved, marker, alt),
+      screenshot: `data:${mime};base64,${buffer.toString('base64')}`,
+    });
+  }
+  return occurrences;
 }

@@ -39,7 +39,7 @@ export interface AiGeneral {
 
 export interface AiCheck {
   category: number;
-  status: 'PASS' | 'FAIL' | 'N/A';
+  status: 'PASS' | 'FAIL' | 'N/A' | 'GAP';
   note?: string;
 }
 
@@ -49,6 +49,8 @@ export interface AiMeta {
   text_truncated?: boolean;
   vision?: boolean;
   outlet_url?: string | null;
+  fact_source?: string | null;
+  fx_date?: string | null;
   person_from_name?: string | null;
   person_from_text?: string | null;
   person_conflict?: boolean;
@@ -75,6 +77,7 @@ export interface LighthouseMetrics {
   cumulative_layout_shift: number | null;
   speed_index: number | null;
   time_to_interactive: number | null;
+  screenshot?: string | null;
 }
 
 export interface LighthouseBlock {

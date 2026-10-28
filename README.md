@@ -47,4 +47,6 @@
 
 ## Локальный запуск
 
+Локальная база — Postgres в Docker, не Neon. Из корня репозитория: `docker compose up -d`. Контейнер `qa-postgres` (образ `postgres:16`) слушает `127.0.0.1:5432`, база `qa`, пользователь `qa`. В `backend/.env` для него стоит `DATABASE_URL` с `sslmode=disable` и `STORAGE=neon`. Остановить: `docker compose stop`. Поднять снова: `docker compose up -d`.
+
 В каталоге `frontend/` и в каталоге `backend/` — `npm start`. Скрипт backend запускает `dist/main.js`, поэтому перед первым запуском выполните `npm run build`. Имена секретов — в `backend/.env.example`. Реальные значения в репозиторий не класть.
