@@ -1,0 +1,169 @@
+# Production runtime is the Nest process (node dist/main.js) and the Angular
+# static build. docker-compose.yml only starts local Postgres for development
+# and is not part of this deploy.
+
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vps-deploy
+  cancel-in-progress: false
+
+env:
+  DEPLOY_HOST: 206.188.197.105
+  DEPLOY_USER: deploy
+  # Optional secret SSH_PORT overrides this when the SSH port is not 22.
+  DEPLOY_PORT: ${{ secrets.SSH_PORT || '22' }}
+  DEPLOY_PATH: /home/deploy/qa_test
+  # Optional repository variable. Public API origin, no trailing slash.
+  API_BASE_URL: ${{ vars.API_BASE_URL || 'http://bdc-it.uk:3000' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Use frontend package manager
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare npm@11.19.0 --activate
+          npm --version
+
+      - name: Test and build backend
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+          npm run build
+          test -f dist/main.js
+
+      - name: Test and build frontend
+        working-directory: frontend
+        env:
+          API_BASE_URL: ${{ env.API_BASE_URL }}
+        run: |
+          set -euo pipefail
+          case "$API_BASE_URL" in
+            http://*|https://*) ;;
+            *)
+              echo "API_BASE_URL must start with http:// or https://"
+              exit 1
+              ;;
+          esac
+          npm ci
+          npm test
+          node scripts/apply-api-base.mjs
+          npm run build
+          test -f dist/qa-assistant/browser/index.html
+
+      - name: Stage release
+        run: |
+          set -euo pipefail
+          mkdir -p release/backend release/frontend
+          cp backend/package.json backend/package-lock.json release/backend/
+          cp -a backend/dist release/backend/dist
+          cp -a frontend/dist/qa-assistant/browser/. release/frontend/
+          test -f release/backend/dist/main.js
+          test -f release/backend/package-lock.json
+          test -f release/frontend/index.html
+
+      - name: Upload release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download release
+        uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Record server host key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keyscan -p "$DEPLOY_PORT" -T 15 "$DEPLOY_HOST" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          if ! grep -q . ~/.ssh/known_hosts; then
+            echo "ssh-keyscan returned no host keys for the deploy host"
+            exit 1
+          fi
+
+      - name: Publish release and restart API
+        run: |
+          set -euo pipefail
+          if [ -f release/backend/package.json ]; then
+            root=release
+          elif [ -f release/release/backend/package.json ]; then
+            root=release/release
+          else
+            echo "Release artifact layout was not recognized"
+            find release -maxdepth 4 -type f | head -n 50
+            exit 1
+          fi
+          ssh_cmd="ssh -p ${DEPLOY_PORT} -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
+          $ssh_cmd "${DEPLOY_USER}@${DEPLOY_HOST}" mkdir -p -- "$(printf '%q' "$DEPLOY_PATH/backend/dist")" "$(printf '%q' "$DEPLOY_PATH/frontend")"
+          rsync -az --delete -e "$ssh_cmd" "$root/backend/dist/" "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/backend/dist/"
+          rsync -az -e "$ssh_cmd" "$root/backend/package.json" "$root/backend/package-lock.json" "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/backend/"
+          rsync -az --delete -e "$ssh_cmd" "$root/frontend/" "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/frontend/"
+          $ssh_cmd "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s -- "$DEPLOY_PATH" <<'EOF'
+          set -euo pipefail
+          deploy_path="$1"
+          cd "$deploy_path/backend"
+          if [ ! -f .env ]; then
+            echo "Missing ${deploy_path}/backend/.env on the server. Create it before the first deploy."
+            exit 1
+          fi
+          if [ ! -x /usr/bin/node ]; then
+            echo "Expected Node.js at /usr/bin/node"
+            exit 1
+          fi
+          npm ci --omit=dev
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+          if [ ! -S "${XDG_RUNTIME_DIR}/bus" ]; then
+            echo "User systemd bus is missing. On the server run: sudo loginctl enable-linger deploy"
+            exit 1
+          fi
+          systemctl --user restart qa-backend
+          sleep 3
+          if ! systemctl --user is-active --quiet qa-backend; then
+            systemctl --user --no-pager --lines=40 status qa-backend || true
+            exit 1
+          fi
+          EOF
