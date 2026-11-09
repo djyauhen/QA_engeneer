@@ -13,17 +13,21 @@ import { SessionStore } from '../core/session.store';
     <main class="login-screen">
       <form class="card login-card" (submit)="submit($event)">
         <h1>Вход</h1>
-        <label for="login">Логин</label>
-        <input id="login" name="login" autocomplete="username" [value]="login()" (input)="login.set(inputValue($event))" />
-        <label for="password">Пароль</label>
-        <input
-          id="password"
-          name="password"
-          type="password"
-          autocomplete="current-password"
-          [value]="password()"
-          (input)="password.set(inputValue($event))"
-        />
+        <div class="field">
+          <label for="login">Логин</label>
+          <input id="login" name="login" autocomplete="username" [value]="login()" (input)="login.set(inputValue($event))" />
+        </div>
+        <div class="field">
+          <label for="password">Пароль</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            [value]="password()"
+            (input)="password.set(inputValue($event))"
+          />
+        </div>
         @if (error()) {
           <p class="alert error" role="alert">{{ error() }}</p>
         }

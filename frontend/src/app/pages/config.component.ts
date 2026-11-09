@@ -27,7 +27,7 @@ interface RulesForm {
     } @else if (loadError()) {
       <p class="alert error" role="alert">{{ loadError() }}</p>
     } @else if (form(); as current) {
-      <form (submit)="save($event)">
+      <form class="stack" (submit)="save($event)">
         <label for="prefixes">Разрешённые внешние префиксы</label>
         <textarea id="prefixes" rows="8" [value]="current.allowed_external_prefixes" (input)="patch('allowed_external_prefixes', inputValue($event))"></textarea>
 
@@ -36,7 +36,7 @@ interface RulesForm {
 
         <fieldset>
           <legend>Макрос формы</legend>
-          <label class="check">
+          <label class="check switch">
             <input type="checkbox" [checked]="current.expectFormMacro" (change)="patchFlag($event)" />
             В index ожидается макрос формы
           </label>

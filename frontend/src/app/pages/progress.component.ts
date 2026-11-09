@@ -36,7 +36,7 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
       <h1>Ход проверки</h1>
       <p class="alert error" role="alert">{{ error() }}</p>
     } @else if (view(); as current) {
-      <h1>Ход проверки</h1>
+      <h1>{{ showGate(current) ? 'Развилка ИИ' : 'Ход проверки' }}</h1>
       @if (error()) {
         <p class="alert error" role="alert">{{ error() }}</p>
       }
@@ -48,8 +48,7 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
         @for (step of current.steps; track step.name) {
           <li [class]="'step step-' + step.state">
             <span class="mark" aria-hidden="true">{{ mark(step) }}</span>
-            <span>{{ label(step.name) }}</span>
-            <span class="step-status">{{ statusText(step.state) }}</span>
+            <span class="step-name">{{ label(step.name) }}</span>
             @if (step.state === 'retrying') {
               <span class="extra">Идёт повтор</span>
             }
@@ -59,16 +58,16 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
             @if (step.state === 'waiting_user') {
               <span class="extra">Развилка ИИ</span>
             }
+            <span class="step-status">{{ statusText(step.state) }}</span>
           </li>
         }
       </ol>
 
       @if (showGate(current)) {
         <section class="card" aria-label="Развилка ИИ">
-          <h2>Развилка ИИ</h2>
           <p>{{ gateText }}</p>
           @if (structureFailed(current)) {
-            <p>{{ structureText }}</p>
+            <p class="alert neutral">{{ structureText }}</p>
           }
           <div class="actions">
             <button type="button" class="primary" (click)="decide('allow')" [disabled]="gateLocked()">Разрешить ИИ</button>
@@ -82,11 +81,15 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
         <p class="alert neutral">{{ structureText }}</p>
       }
 
-      @if (reportReady(current)) {
-        <p><a routerLink="/reports/{{ current.check_id }}">Отчёт</a></p>
-      }
-      @if (current.stand_url) {
-        <p><a routerLink="/checks/{{ current.check_id }}/stand">Стенд</a></p>
+      @if (reportReady(current) || current.stand_url) {
+        <p class="actions">
+          @if (reportReady(current)) {
+            <a class="secondary link" routerLink="/reports/{{ current.check_id }}">Отчёт</a>
+          }
+          @if (current.stand_url) {
+            <a class="secondary link" routerLink="/checks/{{ current.check_id }}/stand">Стенд</a>
+          }
+        </p>
       }
 
       <app-report-blocks [data]="body(current)" idPrefix="progress" />

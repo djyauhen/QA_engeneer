@@ -11,10 +11,11 @@ import { ApiService } from '../core/api.service';
   selector: 'app-shell',
   imports: [RouterOutlet, RouterLink, RouterLinkActive],
   template: `
-    <div class="shell">
+    <div class="shell" [class.shell-tl]="session.role() === tl" [class.shell-qa]="session.role() !== tl">
       <nav class="nav" aria-label="Разделы">
         <p class="brand">Помощник QA</p>
         <p class="role">{{ roleLabel() }}</p>
+        <div class="nav-gap" aria-hidden="true"></div>
         <a routerLink="/launch" routerLinkActive="active" ariaCurrentWhenActive="page">Запуск проверки</a>
         <a
           routerLink="/progress"
@@ -37,7 +38,7 @@ import { ApiService } from '../core/api.service';
           <a routerLink="/users" routerLinkActive="active" ariaCurrentWhenActive="page">Пользователи</a>
           <a routerLink="/catalog-query" routerLinkActive="active" ariaCurrentWhenActive="page">Каталог AIO</a>
         }
-        <button type="button" class="secondary logout" (click)="logout()">Выйти</button>
+        <button type="button" class="quiet logout" (click)="logout()">Выйти</button>
       </nav>
       <main class="main">
         <router-outlet />

@@ -22,7 +22,7 @@ interface CatalogQueryForm {
     } @else if (loadError()) {
       <p class="alert error" role="alert">{{ loadError() }}</p>
     } @else if (form(); as current) {
-      <form (submit)="save($event)">
+      <form class="stack" (submit)="save($event)">
         <label for="catalog-search">Поиск AIO</label>
         <input
           id="catalog-search"

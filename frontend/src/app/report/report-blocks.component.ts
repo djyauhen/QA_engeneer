@@ -54,9 +54,7 @@ function text(value: unknown): string {
     @if (heading()) {
       <h2>{{ heading() }}</h2>
     }
-    @if (showRecommendation()) {
-      <p class="recommendation">{{ recommendation }}</p>
-    }
+    <div class="report-head">
     <dl class="facts">
       @if (data().name) {
         <div>
@@ -94,13 +92,17 @@ function text(value: unknown): string {
           <dd>{{ data().catalog_status }}</dd>
         </div>
       }
+    </dl>
       @if (showDate() && data().created_at) {
-        <div>
-          <dt>Дата отчёта</dt>
-          <dd>{{ formatTimestamp(data().created_at) }}</dd>
+        <div class="report-date">
+          <span class="hint">Дата отчёта</span>
+          <strong>{{ formatTimestamp(data().created_at) }}</strong>
         </div>
       }
-    </dl>
+    </div>
+    @if (showRecommendation()) {
+      <p class="recommendation">{{ recommendation }}</p>
+    }
 
     <section class="block" [attr.aria-labelledby]="sectionId('static-title')">
       <header class="block-head">
@@ -236,7 +238,7 @@ function text(value: unknown): string {
             } @else if (!signed(card.screenshot)) {
               <p>{{ card.screenshot }}</p>
             } @else {
-              <p class="hint">Скриншот</p>
+              <p class="shot-placeholder">Скриншот</p>
             }
           </article>
         }
@@ -281,12 +283,14 @@ function text(value: unknown): string {
           } @else {
             <h3>Мобильная</h3>
           }
-          @for (metric of metrics; track metric.key) {
-            <div class="metric">
-              <span>{{ metric.label }}</span>
-              <span class="mono">{{ metricValue(data().lighthouse?.mobile ?? null, metric.key) }}</span>
-            </div>
-          }
+          <div class="metric-grid">
+            @for (metric of metrics; track metric.key) {
+              <div class="metric-cell">
+                <span class="metric-label">{{ metric.label }}</span>
+                <span class="metric-value">{{ metricValue(data().lighthouse?.mobile ?? null, metric.key) }}</span>
+              </div>
+            }
+          </div>
           @if (lighthouseImage(data().lighthouse?.mobile?.screenshot); as shot) {
             <button
               type="button"
@@ -304,12 +308,14 @@ function text(value: unknown): string {
           } @else {
             <h3>Компьютер</h3>
           }
-          @for (metric of metrics; track metric.key) {
-            <div class="metric">
-              <span>{{ metric.label }}</span>
-              <span class="mono">{{ metricValue(data().lighthouse?.desktop ?? null, metric.key) }}</span>
-            </div>
-          }
+          <div class="metric-grid">
+            @for (metric of metrics; track metric.key) {
+              <div class="metric-cell">
+                <span class="metric-label">{{ metric.label }}</span>
+                <span class="metric-value">{{ metricValue(data().lighthouse?.desktop ?? null, metric.key) }}</span>
+              </div>
+            }
+          </div>
           @if (lighthouseImage(data().lighthouse?.desktop?.screenshot); as shot) {
             <button
               type="button"

@@ -19,17 +19,17 @@ import { SessionStore } from '../core/session.store';
         <p class="empty">Отчётов нет.</p>
       } @else {
         <div class="table-scroll">
-          <table class="data" aria-label="Список отчётов">
+          <table class="data reports" aria-label="Список отчётов">
             <thead>
               <tr>
-                <th>Дата</th>
-                <th>human_id</th>
+                <th class="col-date">Дата</th>
+                <th class="col-id">human_id</th>
                 <th>Название</th>
-                <th>Статика</th>
-                <th>ИИ</th>
-                <th>Lighthouse</th>
+                <th class="col-static">Статика</th>
+                <th class="col-ai">ИИ</th>
+                <th class="col-lh">Lighthouse</th>
                 @if (showOwner()) {
-                  <th>Кто запустил</th>
+                  <th class="col-owner">Кто запустил</th>
                 }
               </tr>
             </thead>
@@ -42,14 +42,14 @@ import { SessionStore } from '../core/session.store';
                   (click)="open(row.report_id)"
                   (keydown)="onKey($event, row.report_id, index)"
                 >
-                  <td>{{ formatTimestamp(row.created_at) }}</td>
-                  <td class="mono">{{ row.human_id }}</td>
+                  <td class="col-date">{{ formatTimestamp(row.created_at) }}</td>
+                  <td class="mono col-id">{{ row.human_id }}</td>
                   <td>{{ row.name }}</td>
-                  <td><span class="chip">{{ row.staticSummary }}</span></td>
-                  <td><span class="chip">{{ row.aiStatus }}</span></td>
-                  <td><span class="chip">{{ row.lhStatus }}</span></td>
+                  <td class="col-static"><span class="chip">{{ row.staticSummary }}</span></td>
+                  <td class="col-ai"><span class="chip">{{ row.aiStatus }}</span></td>
+                  <td class="col-lh"><span class="chip">{{ row.lhStatus }}</span></td>
                   @if (showOwner()) {
-                    <td>{{ row.owner_login }}</td>
+                    <td class="col-owner">{{ row.owner_login }}</td>
                   }
                 </tr>
               }

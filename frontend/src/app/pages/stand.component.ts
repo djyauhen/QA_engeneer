@@ -26,7 +26,7 @@ import { SessionStore } from '../core/session.store';
       }
       @if (standUrl()) {
         <p class="hint">{{ caption }}</p>
-        <p><a [href]="standUrl()" target="_blank" rel="noopener noreferrer">{{ standUrl() }}</a></p>
+        <a class="stand-url" [href]="standUrl()" target="_blank" rel="noopener noreferrer">{{ standUrl() }}</a>
         @if (frame(); as src) {
           <iframe
             class="stand-frame"

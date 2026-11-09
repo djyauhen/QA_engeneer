@@ -32,7 +32,7 @@ import { SessionStore } from '../core/session.store';
       </p>
     }
     <div class="toolbar">
-      <div class="field">
+      <div class="field field-search">
         <label for="search">Поиск</label>
         <input id="search" [value]="query()" (input)="query.set(inputValue($event))" />
       </div>
@@ -40,19 +40,23 @@ import { SessionStore } from '../core/session.store';
         Обновить
       </button>
       <div class="spacer"></div>
-      <div class="field">
-        <label for="human-id">human_id</label>
-        <input
-          id="human-id"
-          [value]="humanId()"
-          placeholder="human_id"
-          aria-describedby="human-hint"
-          autocomplete="off"
-          (input)="onHumanId($event)"
-        />
+      <div class="launch-actions">
+        <div class="field field-human">
+          <label for="human-id">human_id</label>
+          <input
+            id="human-id"
+            [value]="humanId()"
+            placeholder="human_id"
+            aria-describedby="human-hint"
+            autocomplete="off"
+            (input)="onHumanId($event)"
+          />
+        </div>
+        <button type="button" class="primary" (click)="launch()" [disabled]="launching()" [attr.aria-busy]="launching()">
+          Запустить проверку
+        </button>
         <p id="human-hint" class="hint">Идентификатор ленда из каталога</p>
       </div>
-      <button type="button" class="primary" (click)="launch()" [disabled]="launching()">Запустить проверку</button>
     </div>
 
     @if (refreshError()) {
@@ -82,12 +86,12 @@ import { SessionStore } from '../core/session.store';
       <p class="empty">{{ emptySearch }}</p>
     } @else if (catalogLoaded()) {
       <div class="table-scroll">
-      <table class="data" aria-label="Каталог лендингов">
+      <table class="data catalog" aria-label="Каталог лендингов">
         <thead>
           <tr>
-            <th>id</th>
-            <th>Лендинг</th>
-            <th>Создано</th>
+            <th class="id">id</th>
+            <th class="name">Лендинг</th>
+            <th class="created">Создано</th>
           </tr>
         </thead>
         <tbody>
@@ -101,9 +105,9 @@ import { SessionStore } from '../core/session.store';
               (click)="select(row)"
               (keydown)="onRowKey($event, row, index)"
             >
-              <td class="mono">{{ row.human_id }}</td>
-              <td>{{ row.name }}</td>
-              <td>{{ formatTimestamp(row.created_at) }}</td>
+              <td class="mono id">{{ row.human_id }}</td>
+              <td class="name">{{ row.name }}</td>
+              <td class="created">{{ formatTimestamp(row.created_at) }}</td>
             </tr>
           }
         </tbody>

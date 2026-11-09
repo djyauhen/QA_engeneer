@@ -15,19 +15,19 @@ import { DUPLICATE_LOGIN, ENV_ACCOUNT, ROLE_QA, ROLE_TL, Role, UserRow } from '.
       <p class="alert error" role="alert">{{ loadError() }}</p>
     } @else if (users(); as list) {
       <div class="table-scroll">
-      <table class="data" aria-label="Пользователи">
+      <table class="data users" aria-label="Пользователи">
         <thead>
           <tr>
-            <th>Логин</th>
-            <th>Роль</th>
+            <th class="col-login">Логин</th>
+            <th class="col-role">Роль</th>
             <th>Источник</th>
           </tr>
         </thead>
         <tbody>
           @for (user of list; track user.login) {
             <tr>
-              <td class="mono">{{ user.login }}</td>
-              <td>{{ user.role }}</td>
+              <td class="mono col-login">{{ user.login }}</td>
+              <td class="col-role">{{ user.role }}</td>
               <td>
                 @if (user.source === 'environment') {
                   <span class="chip">{{ envLabel }}</span>
@@ -39,26 +39,32 @@ import { DUPLICATE_LOGIN, ENV_ACCOUNT, ROLE_QA, ROLE_TL, Role, UserRow } from '.
       </table>
       </div>
       <form class="card user-form" (submit)="create($event)">
-        <label for="new-login">Логин</label>
-        <input id="new-login" autocomplete="off" [value]="login()" (input)="login.set(inputValue($event))" />
-        <label for="new-password">Пароль</label>
-        <input
-          id="new-password"
-          type="password"
-          autocomplete="new-password"
-          [value]="password()"
-          (input)="password.set(inputValue($event))"
-        />
+        <div class="field">
+          <label for="new-login">Логин</label>
+          <input id="new-login" autocomplete="off" [value]="login()" (input)="login.set(inputValue($event))" />
+        </div>
+        <div class="field">
+          <label for="new-password">Пароль</label>
+          <input
+            id="new-password"
+            type="password"
+            autocomplete="new-password"
+            [value]="password()"
+            (input)="password.set(inputValue($event))"
+          />
+        </div>
         <fieldset>
           <legend>Роль</legend>
-          <label class="choice" [class.selected]="role() === tl">
-            <input type="radio" name="role" [checked]="role() === tl" (change)="role.set(tl)" />
-            ТЛ
-          </label>
-          <label class="choice" [class.selected]="role() === qa">
-            <input type="radio" name="role" [checked]="role() === qa" (change)="role.set(qa)" />
-            QA
-          </label>
+          <div class="choices">
+            <label class="choice" [class.selected]="role() === tl">
+              <input type="radio" name="role" [checked]="role() === tl" (change)="role.set(tl)" />
+              ТЛ
+            </label>
+            <label class="choice" [class.selected]="role() === qa">
+              <input type="radio" name="role" [checked]="role() === qa" (change)="role.set(qa)" />
+              QA
+            </label>
+          </div>
         </fieldset>
         @if (createError()) {
           <p class="alert error" role="alert">{{ createError() }}</p>
