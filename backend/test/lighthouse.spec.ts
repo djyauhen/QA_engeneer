@@ -1,47 +1,41 @@
+import path from 'path';
 import { lighthouseSpawnSpec, parseLighthouse } from '../src/lighthouse/lighthouse';
 
 const chromeArg = '--chrome-path=C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const cliPath = path.join('app', 'node_modules', 'lighthouse', 'cli', 'index.js');
 
 describe('lighthouse CLI spawn', () => {
-  it('runs npx through node on Windows so a Chrome path with spaces stays one argument', () => {
-    const spec = lighthouseSpawnSpec(['--yes', 'lighthouse', 'http://127.0.0.1/stand', chromeArg], {
-      platform: 'win32',
+  it('runs the installed CLI through node so a Chrome path with spaces stays one argument', () => {
+    const spec = lighthouseSpawnSpec(['--quiet', 'http://127.0.0.1/stand', chromeArg], {
       execPath: 'C:\\Program Files\\nodejs\\node.exe',
-      fileExists: (candidate) => candidate.endsWith('npx-cli.js'),
-    });
-    expect(spec.options.shell).toBe(false);
-    expect(spec.command).toBe('C:\\Program Files\\nodejs\\node.exe');
-    expect(spec.args[0]).toBe('C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js');
-    expect(spec.args.slice(1)).toEqual(['--yes', 'lighthouse', 'http://127.0.0.1/stand', chromeArg]);
-  });
-
-  it('quotes npx.cmd for cmd.exe when the npm cli script is missing', () => {
-    const spec = lighthouseSpawnSpec(['--yes', 'lighthouse', 'http://127.0.0.1/stand?a=1&b=2', chromeArg], {
-      platform: 'win32',
-      execPath: 'C:\\nodejs\\node.exe',
-      fileExists: () => false,
-      comSpec: 'C:\\Windows\\System32\\cmd.exe',
-    });
-    expect(spec.command).toBe('C:\\Windows\\System32\\cmd.exe');
-    expect(spec.options).toEqual({ shell: false, windowsVerbatimArguments: true });
-    expect(spec.args.slice(0, 3)).toEqual(['/d', '/s', '/c']);
-    const command = String(spec.args[3]);
-    expect(command.startsWith('"npx.cmd ')).toBe(true);
-    expect(command).toContain('"http://127.0.0.1/stand?a=1&b=2"');
-    expect(command).toContain(`"${chromeArg}"`);
-  });
-
-  it('keeps a direct npx spawn off Windows', () => {
-    const spec = lighthouseSpawnSpec(['--yes', 'lighthouse', chromeArg], {
-      platform: 'linux',
-      execPath: '/usr/bin/node',
-      fileExists: () => true,
+      cliPath,
     });
     expect(spec).toEqual({
-      command: 'npx',
-      args: ['--yes', 'lighthouse', chromeArg],
+      command: 'C:\\Program Files\\nodejs\\node.exe',
+      args: [cliPath, '--quiet', 'http://127.0.0.1/stand', chromeArg],
       options: { shell: false },
     });
+    expect(spec.args.join('\n')).not.toContain('npx');
+  });
+
+  it('passes a query string as one argument without a shell', () => {
+    const spec = lighthouseSpawnSpec(['http://127.0.0.1/stand?a=1&b=2', chromeArg], {
+      execPath: 'C:\\nodejs\\node.exe',
+      cliPath,
+    });
+    expect(spec).toEqual({
+      command: 'C:\\nodejs\\node.exe',
+      args: [cliPath, 'http://127.0.0.1/stand?a=1&b=2', chromeArg],
+      options: { shell: false },
+    });
+  });
+
+  it('uses the local lighthouse CLI and the current node binary when paths are omitted', () => {
+    const spec = lighthouseSpawnSpec(['--quiet', chromeArg]);
+    expect(spec.command).toBe(process.execPath);
+    expect(spec.args[0].replace(/\\/g, '/')).toMatch(/\/node_modules\/lighthouse\/cli\/index\.js$/);
+    expect(spec.args.slice(1)).toEqual(['--quiet', chromeArg]);
+    expect(spec.options).toEqual({ shell: false });
   });
 });
 

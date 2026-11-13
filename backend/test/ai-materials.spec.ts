@@ -82,7 +82,7 @@ describe('orchestrator sends landing materials to the AI', () => {
     ]);
     expect(input?.checkDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(input?.landingPreviewUrl ?? null).toBeNull();
-    expect(input?.previewScreenshot ?? null).toBeNull();
+    expect(input?.previewShots).toEqual([]);
     expect(ctx.aio.previewCalls).toEqual([]);
     const ai = report.body.ai;
     expect(ai.schema_version).toBe(2);
@@ -277,7 +277,7 @@ describe('landing preview link in the AI phase', () => {
       const input = ctx.ai.lastInput;
       expect(ctx.aio.previewCalls).toEqual([cardUuid]);
       expect(input?.landingPreviewUrl).toBe(previewUrl);
-      expect(input?.previewScreenshot ?? null).toBeNull();
+      expect(input?.previewShots).toEqual([]);
       expect(input?.standUrl).toContain('/preview/');
       expect(input?.standUrl).not.toBe(previewUrl);
       expect(input?.pageText).toContain('Mifix');
