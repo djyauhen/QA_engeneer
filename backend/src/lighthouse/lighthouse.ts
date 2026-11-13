@@ -40,20 +40,51 @@ export class CliLighthouseRunner extends LighthouseRunner {
   async run(url: string, formFactor: 'mobile' | 'desktop'): Promise<LighthouseMetrics> {
     const chrome = resolveChromeExecutable(this.config.lighthouseChromePath);
     if (!chrome) throw new Error('Chrome не найден');
-    const args = [
-      url,
-      '--quiet',
-      `--chrome-flags=--headless${this.config.lighthouseNoSandbox ? ' --no-sandbox' : ''}`,
-      '--only-categories=performance',
-      `--form-factor=${formFactor}`,
-      '--output=json',
-      '--output-path=stdout',
-      `--chrome-path=${chrome}`,
-    ];
-    if (formFactor === 'desktop') args.push('--preset=desktop');
+    const args = lighthouseCliArgs(url, formFactor, {
+      chromePath: chrome,
+      noSandbox: this.config.lighthouseNoSandbox,
+    });
     const stdout = await exec(args);
     return parseLighthouse(stdout);
   }
+}
+
+/**
+ * CLI args for one audit. A fresh Lighthouse Chrome does not keep the preview cookie
+ * from a previous visit, and CSS `url()` resolved by the browser drops `?t=`.
+ * The cookie is sent on the audit's own requests so same-origin files still pass the token check.
+ */
+export function lighthouseCliArgs(
+  url: string,
+  formFactor: 'mobile' | 'desktop',
+  options: { chromePath: string; noSandbox: boolean },
+): string[] {
+  const args = [
+    url,
+    '--quiet',
+    `--chrome-flags=--headless${options.noSandbox ? ' --no-sandbox' : ''}`,
+    '--only-categories=performance',
+    `--form-factor=${formFactor}`,
+    '--output=json',
+    '--output-path=stdout',
+    `--chrome-path=${options.chromePath}`,
+  ];
+  if (formFactor === 'desktop') args.push('--preset=desktop');
+  const headers = previewAuthHeaders(url);
+  if (headers) args.push(`--extra-headers=${JSON.stringify(headers)}`);
+  return args;
+}
+
+export function previewAuthHeaders(url: string): { Cookie: string } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const token = parsed.searchParams.get('t');
+  if (!token || !parsed.pathname.includes('/preview/')) return null;
+  return { Cookie: `qa_preview=${encodeURIComponent(token)}` };
 }
 
 export interface LighthouseSpawnSpec {

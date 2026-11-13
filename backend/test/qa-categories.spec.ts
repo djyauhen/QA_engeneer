@@ -17,7 +17,7 @@ const order = ['desktop', 'preview', 'preview_2', 'landing_footer', 'outlet_head
 const kinds = { content: ['I1'], comment: ['I2'] };
 
 const OFFLINE_PHRASE: Record<number, string> = {
-  2: 'Сайт издания этот вызов не открывает. Эталон шапки и футера — вложенные кадры.',
+  2: 'Сайт издания этот вызов не открывает. Нет outlet_header или outlet_footer в attachments_order — статус N/A, не FAIL.',
   3: 'Биографию в сети не ищи. Источник сведений о человеке — fact_sheet.person.',
   4: 'Гражданство и известность в сети не ищи. Источник для этого пункта — fact_sheet.person.',
 };
@@ -67,13 +67,21 @@ describe('per-category prompts', () => {
     expect(prompts[0]).toContain('язык основного текста');
     expect(prompts[0]).not.toContain('ПРОВЕРКА ТЕЛЕФОННОГО КОДА');
     expect(prompts[1]).toContain('outlet_header');
+    expect(prompts[1]).toContain('отсутствие кадра ошибкой не считай');
+    expect(prompts[1]).not.toContain('вложенные кадры');
     expect(prompts[1]).toContain(OFFLINE_PHRASE[2]);
     expect(prompts[1]).not.toContain('Ссылку сам не открывай');
     expect(prompts[2]).toContain('fact_sheet.person');
+    expect(prompts[2]).toContain('fact_sheet.person.extract');
+    expect(prompts[2]).toContain('Прямое противоречие extract');
+    expect(prompts[2]).toContain('сводками поиска');
     expect(prompts[2]).toContain(OFFLINE_PHRASE[3]);
     expect(prompts[2]).toContain('image_checks');
     expect(prompts[2]).toContain('Пустая карточка не запрещает');
+    expect(prompts[2]).toContain('не означает, что человека нет');
     expect(prompts[3]).toContain('Иностранное происхождение');
+    expect(prompts[3]).toContain('Википедии или поиском до вызова');
+    expect(prompts[3]).toContain('citizenship, description и extract');
     expect(prompts[3]).toContain('Пустой fact_sheet не запрещает');
     expect(prompts[3]).toContain(OFFLINE_PHRASE[4]);
     expect(prompts[3]).not.toContain('image_checks');
@@ -348,7 +356,7 @@ describe('per-category instructions', () => {
     }
     const header = categoryInstruction(2);
     expect(header).toContain(
-      'Эталон шапки и футера — только вложенные кадры, сайт из этого вызова не открывается.\n\nСравни предоставленные скриншоты с оригинальным оформлением.',
+      'Кадров оригинала в этом вызове может не быть. Если outlet_header или outlet_footer не приложены, укажи «Не удалось проверить» и не ставь ошибку. Сайт из этого вызова не открывается.\n\nСравни предоставленные скриншоты с оригинальным оформлением.',
     );
     expect(header).toContain('Шапку сайта (header).');
     expect(header).not.toContain(OUTLET_SENTENCE);

@@ -3,9 +3,15 @@ import os from 'os';
 import path from 'path';
 import { defaultRules } from '../src/rules/rules';
 import { safeResolveUnderLanding } from '../src/static/landing-utils';
-import { EXPECTED_SVG_SCRIPT_SHA256, runStaticChecks, STATIC_CHECK_NAMES } from '../src/static/static-checks';
+import {
+  EXPECTED_SVG_SCRIPT_SHA256,
+  MERGED_SPLIT_UNAVAILABLE,
+  STATIC_CHECK_NAMES,
+  checkRequiredSplits,
+  runStaticChecks,
+} from '../src/static/static-checks';
 import { configuredStandFormHtml, dialCodeForCountries, resolveStandFormHtml, standFormHtml } from '../src/stand/form-html';
-import { applyCdnMacro, transformHtml } from '../src/stand/transform';
+import { applyCdnMacro, rewriteCssAssets, stampCdnUrls, transformHtml } from '../src/stand/transform';
 
 describe('static checks', () => {
   it('does not run later checks when structure fails', async () => {
@@ -232,5 +238,179 @@ describe('stand macros', () => {
     expect(applyCdnMacro('var src="{{cdn}}/images/a.webp"', 'https://stand.test/preview/1')).toBe(
       'var src="https://stand.test/preview/1/images/a.webp"',
     );
+  });
+
+  it('serves a captured page with its stylesheet, images and preview token', () => {
+    const source = `<html><head>
+      <base href="https://www.index.hr/">
+      <link rel="stylesheet" href="./css/style.css">
+      <style>.hero{background:url(./images/bg.png)} .root{background:url(/images/root.png)}</style>
+    </head><body>
+      <img src="./images/logo.png" alt="index.hr" srcset="./images/logo.png 1x, /images/logo-2.png 2x">
+      <img src="https://cdn.index.hr/hotlink.png" alt="hot">
+      <script src="https://evil.test/p.js"></script>
+      <script src="js/local.js"></script>
+    </body></html>`;
+    const out = transformHtml(source, {
+      formHtml: '<b>FORM</b>',
+      brandName: 'Acme',
+      cdnBase: 'https://bdc-it.uk/preview/check',
+      isolated: true,
+      previewToken: 'tok',
+    });
+    expect(out).toContain('<base href="https://bdc-it.uk/preview/check/">');
+    expect(out).not.toContain('https://www.index.hr/');
+    expect(out).toContain('href="https://bdc-it.uk/preview/check/css/style.css?t=tok"');
+    expect(out).toContain('src="https://bdc-it.uk/preview/check/images/logo.png?t=tok"');
+    expect(out).toContain('https://bdc-it.uk/preview/check/images/logo-2.png?t=tok');
+    expect(out).toContain('url(https://bdc-it.uk/preview/check/images/bg.png?t=tok)');
+    expect(out).toContain('url(https://bdc-it.uk/preview/check/images/root.png?t=tok)');
+    expect(out).toContain('https://cdn.index.hr/hotlink.png');
+    expect(out).not.toContain('evil.test/p.js');
+    expect(out).toContain('https://bdc-it.uk/preview/check/js/local.js?t=tok');
+    expect(out).toContain('window.__CDN_BASE__="https://bdc-it.uk/preview/check"');
+    const css = rewriteCssAssets(applyCdnMacro("src:url('{{cdn}}/fonts/a.woff2');.b{background:url('../images/a.png')}", 'https://bdc-it.uk/preview/check'), {
+      assetRoot: 'https://bdc-it.uk/preview/check',
+      pageUrl: 'https://bdc-it.uk/preview/check/css/style.css',
+      previewToken: 'tok',
+    });
+    expect(css).toContain("url('https://bdc-it.uk/preview/check/fonts/a.woff2?t=tok')");
+    expect(css).toContain("url('https://bdc-it.uk/preview/check/images/a.png?t=tok')");
+    expect(rewriteCssAssets('background:url("data:image/svg+xml,abc")', { assetRoot: 'https://bdc-it.uk/preview/check' })).toContain(
+      'data:image/svg+xml,abc',
+    );
+    expect(stampCdnUrls(applyCdnMacro('var src="{{cdn}}/images/a.webp"', 'https://bdc-it.uk/preview/check'), 'https://bdc-it.uk/preview/check', 'tok')).toBe(
+      'var src="https://bdc-it.uk/preview/check/images/a.webp?t=tok"',
+    );
+    expect(stampCdnUrls('window.__CDN_BASE__="https://bdc-it.uk/preview/check"', 'https://bdc-it.uk/preview/check', 'tok')).toBe(
+      'window.__CDN_BASE__="https://bdc-it.uk/preview/check"',
+    );
+  });
+
+  it('rewrites index.hr asset URLs that exist in the archive and leaves the live publisher alone', () => {
+    const archived = new Set(['/css/style.css', '/images/5e444464-index_main.svg', '/images/134598b8-paprika_logo.svg']);
+    const source = `<html><head>
+      <link rel="stylesheet" href="./css/style.css">
+      <link rel="stylesheet" href="https://www.index.hr/css/style.css">
+      <link rel="stylesheet" href="//www.index.hr/css/missing.css">
+    </head><body>
+      <img src="./images/5e444464-index_main.svg" alt="index.hr">
+      <img src="//www.index.hr/images/134598b8-paprika_logo.svg" alt="index.hr">
+      <a href="https://www.index.hr/vijesti">Vijesti</a>
+    </body></html>`;
+    const out = transformHtml(source, {
+      formHtml: '',
+      brandName: 'Acme',
+      cdnBase: 'https://bdc-it.uk/preview/check',
+      isolated: true,
+      previewToken: 'tok',
+      assetExists: (pathname) => archived.has(pathname),
+    });
+    expect(out).toContain('href="https://bdc-it.uk/preview/check/css/style.css?t=tok"');
+    expect(out).toContain('src="https://bdc-it.uk/preview/check/images/5e444464-index_main.svg?t=tok"');
+    expect(out).toContain('src="https://bdc-it.uk/preview/check/images/134598b8-paprika_logo.svg?t=tok"');
+    expect(out).not.toContain('www.index.hr/css/style.css');
+    expect(out).not.toContain('www.index.hr/images/');
+    expect(out).toContain('//www.index.hr/css/missing.css');
+    expect(out).toContain('https://www.index.hr/vijesti');
+    const untouched = transformHtml('<img src="//www.index.hr/images/134598b8-paprika_logo.svg" alt="index.hr">', {
+      formHtml: '',
+      brandName: 'Acme',
+      cdnBase: 'https://bdc-it.uk/preview/check',
+      isolated: true,
+      previewToken: 'tok',
+    });
+    expect(untouched).toContain('//www.index.hr/images/134598b8-paprika_logo.svg');
+    const css = rewriteCssAssets(
+      '.a{background:url(../images/5e444464-index_main.svg)}.b{background:url(//www.index.hr/images/134598b8-paprika_logo.svg)}@font-face{src:url(https://fonts.gstatic.com/s/notocoloremoji/v40/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab4.ttf)}',
+      {
+        assetRoot: 'https://bdc-it.uk/preview/check',
+        pageUrl: 'https://bdc-it.uk/preview/check/css/style.css',
+        previewToken: 'tok',
+        assetExists: (pathname) => archived.has(pathname),
+      },
+    );
+    expect(css).toContain('url(https://bdc-it.uk/preview/check/images/5e444464-index_main.svg?t=tok)');
+    expect(css).toContain('url(https://bdc-it.uk/preview/check/images/134598b8-paprika_logo.svg?t=tok)');
+    expect(css).toContain('https://fonts.gstatic.com/s/notocoloremoji/v40/Yq6P-KqIXTD0t4D9z1ESnKM3-HpFab4.ttf');
+    expect(css).not.toContain('www.index.hr');
+  });
+});
+
+describe('required split macros', () => {
+  function landing(files: Record<string, string>): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-split-'));
+    const folder = path.join(root, 'landing');
+    fs.mkdirSync(folder);
+    for (const [name, body] of Object.entries(files)) {
+      fs.writeFileSync(path.join(folder, name), body);
+    }
+    return root;
+  }
+
+  async function run(files: Record<string, string>) {
+    const root = landing(files);
+    try {
+      return await checkRequiredSplits(root);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('passes when the required macros are present and the subtitle is absent', async () => {
+    const result = await run({
+      'index.html': '<html>{{split.title}}</html>',
+      'index.php': '{{split.bannerUrl}}',
+    });
+    expect(result).toEqual({ name: STATIC_CHECK_NAMES.split, status: 'passed', findings: [] });
+  });
+
+  it('passes when the subtitle is present', async () => {
+    const result = await run({
+      'index.php': '{{split.title}}\n{{split.subtitle}}\n{{split.bannerUrl}}\n',
+    });
+    expect(result).toEqual({ name: STATIC_CHECK_NAMES.split, status: 'passed', findings: [] });
+  });
+
+  it('fails when the title macro is missing and names that macro', async () => {
+    const result = await run({
+      'index.html': '{{split.Title}}\n{{split.bannerUrl}}\n',
+    });
+    expect(result.status).toBe('failed');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].text).toContain('{{split.title}}');
+    expect(result.findings[0].text).not.toContain('{{split.bannerUrl}}');
+    expect(result.findings[0].text).not.toContain('subtitle');
+    expect(result.findings[0].text).not.toMatch(/стр\./);
+  });
+
+  it('fails when the banner macro is missing and names that macro', async () => {
+    const result = await run({
+      'index.html': '{{split.title}}\n{{split.bannerurl}}\n{{split.subtitle}}\n',
+    });
+    expect(result.status).toBe('failed');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].text).toContain('{{split.bannerUrl}}');
+    expect(result.findings[0].text).not.toContain('{{split.title}}');
+    expect(result.findings[0].text).not.toContain('subtitle');
+  });
+
+  it('fails with both required macros when each one is missing', async () => {
+    const result = await run({
+      'index.html': '<html>{{split.subtitle}}</html>',
+    });
+    expect(result.status).toBe('failed');
+    expect(result.findings).toHaveLength(2);
+    const text = result.findings.map((finding) => finding.text).join('\n');
+    expect(text).toContain('{{split.title}}');
+    expect(text).toContain('{{split.bannerUrl}}');
+    expect(text).not.toContain('subtitle');
+  });
+
+  it('fails when the merged archive is unavailable', async () => {
+    const result = await checkRequiredSplits(null);
+    expect(result.status).toBe('failed');
+    expect(result.name).toBe(STATIC_CHECK_NAMES.split);
+    expect(result.findings).toEqual([{ text: MERGED_SPLIT_UNAVAILABLE }]);
   });
 });

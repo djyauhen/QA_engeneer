@@ -6,10 +6,11 @@ import { INestApplication } from '@nestjs/common';
 import { AppConfig } from '../src/config';
 import { CheckStore } from '../src/checks/check.store';
 import { WorkdirService } from '../src/files/workdir.service';
-import { StaticChecks } from '../src/static/static-checks';
+import { AioDownloadError } from '../src/aio/aio.client';
+import { MERGED_SPLIT_UNAVAILABLE, STATIC_CHECK_NAMES, StaticChecks } from '../src/static/static-checks';
 import { StaticItem } from '../src/reports/report.types';
 import { createTestApp, TestApp } from './app';
-import { aioRow, structureFailZip, structurePassZip } from './fakes';
+import { FakeAio, aioRow, structureFailZip, structurePassZip, zipFiles } from './fakes';
 
 class PassedStatic extends StaticChecks {
   async run(): Promise<StaticItem[]> {
@@ -67,8 +68,10 @@ describe('checks, stand, AI and lighthouse', () => {
     const waiting = await waitFor(http, session, started.body.check_id, (body) =>
       body.steps.some((step) => step.name === 'ai_gate' && step.state === 'waiting_user'),
     );
-    expect(waiting.static.items).toHaveLength(1);
+    expect(waiting.static.items).toHaveLength(2);
     expect(waiting.static.items[0].status).toBe('failed');
+    expect(waiting.static.items[1].name).toBe(STATIC_CHECK_NAMES.split);
+    expect(waiting.static.items[1].status).toBe('passed');
     expect(waiting.ai.status).toBe('не запускался (ждут решения пользователя)');
     expect(ctx.ai.calls).toBe(0);
     expect(ctx.lighthouse.calls).toBe(0);
@@ -92,7 +95,7 @@ describe('checks, stand, AI and lighthouse', () => {
     expect(report.status).toBe(200);
     expect(report.body.ai.decision).toBe('deny');
     expect(report.body.ai.status).toBe('не запускался (ждут решения пользователя)');
-    expect(report.body.static.items).toHaveLength(1);
+    expect(report.body.static.items).toHaveLength(2);
     expect(report.body.verdict).toBeUndefined();
     expect(report.body.overall_status).toBeUndefined();
     expect(report.body.stand_url).toBeUndefined();
@@ -177,7 +180,25 @@ describe('checks, stand, AI and lighthouse', () => {
   });
 
   it('serves the stand with isolation until the owner allows actions', async () => {
-    ctx.aio.zip = structurePassZip();
+    ctx.aio.zip = zipFiles({
+      'landing/index.html': `<html><head></head><body>
+{{form}}
+{{aio.visit.fields.offer_name.for_visitors}}
+<img src="{{cdn}}/images/dot.png">
+<img src="https://www.index.hr/images/dot.png" alt="index.hr">
+<img src="//www.index.hr/images/dot.png" alt="index.hr">
+<link rel="stylesheet" href="./css/style.css">
+<a href="https://www.index.hr/vijesti">Vijesti</a>
+<script src="https://evil.test/pixel.js"></script>
+<script src="js/local.js"></script>
+{{link}}
+</body></html>`,
+      'landing/favicon.ico': 'ico',
+      'landing/images/dot.png': Buffer.from([137, 80, 78, 71]),
+      'landing/js/local.js': 'var local = 1;',
+      'landing/css/style.css':
+        '.a{background:url(../images/dot.png)}.b{background:url(//www.index.hr/images/dot.png)}@font-face{src:url(https://fonts.gstatic.com/s/notocoloremoji/v40/Yq6P.ttf)}',
+    });
     const started = await request(http.getHttpServer())
       .post('/checks')
       .set('x-session-id', session)
@@ -200,10 +221,40 @@ describe('checks, stand, AI and lighthouse', () => {
     const isolated = await request(http.getHttpServer()).get(previewPath);
     expect(isolated.status).toBe(200);
     expect(isolated.headers['content-security-policy']).toContain("form-action 'none'");
+    expect(isolated.headers['content-security-policy']).toContain("base-uri 'self' http://127.0.0.1:3000");
+    expect(isolated.headers['content-security-policy']).toContain("style-src 'self' 'unsafe-inline' http://127.0.0.1:3000");
+    expect(isolated.headers['content-security-policy']).not.toContain('script-src \'self\' \'unsafe-inline\' http');
     expect(isolated.text).toContain('FORM');
     expect(isolated.text).toContain('Acme');
     expect(isolated.text).toContain('{{link}}');
     expect(isolated.text).not.toContain('evil.test/pixel.js');
+    const token = new URL(String(live.stand_url)).searchParams.get('t');
+    expect(token).toBeTruthy();
+    expect(isolated.text).toContain(`/preview/${id}/images/dot.png?t=${token}`);
+    expect(isolated.text).toContain(`/preview/${id}/css/style.css?t=${token}`);
+    expect(isolated.text).not.toContain('www.index.hr/images/dot.png');
+    expect(isolated.text).toContain('https://www.index.hr/vijesti');
+    expect(isolated.text).toContain(`/preview/${id}/js/local.js?t=${token}`);
+    const css = await request(http.getHttpServer()).get(`/preview/${id}/css/style.css?t=${token}`);
+    expect(css.status).toBe(200);
+    expect(css.text).toContain(`/preview/${id}/images/dot.png?t=${token}`);
+    expect(css.text).not.toContain('www.index.hr');
+    expect(css.text).toContain('https://fonts.gstatic.com/s/notocoloremoji/v40/Yq6P.ttf');
+    expect(isolated.text).toContain(`<base href="http://127.0.0.1:3000/preview/${id}/">`);
+    expect(String(isolated.headers['set-cookie'])).toContain(`qa_preview=${token}`);
+    const blocked = await request(http.getHttpServer()).get(`/preview/${id}/images/dot.png`);
+    expect(blocked.status).toBe(404);
+    const wrongCookie = await request(http.getHttpServer())
+      .get(`/preview/${id}/images/dot.png`)
+      .set('Cookie', 'qa_preview=not-the-token');
+    expect(wrongCookie.status).toBe(404);
+    const viaCookie = await request(http.getHttpServer())
+      .get(`/preview/${id}/images/dot.png`)
+      .set('Cookie', `qa_preview=${token}`);
+    expect(viaCookie.status).toBe(200);
+    expect(viaCookie.headers['content-type']).toContain('image/png');
+    const viaQuery = await request(http.getHttpServer()).get(`/preview/${id}/images/dot.png?t=${token}`);
+    expect(viaQuery.status).toBe(200);
     await request(http.getHttpServer())
       .post(`/checks/${id}/stand-actions`)
       .set('x-session-id', session)
@@ -214,6 +265,7 @@ describe('checks, stand, AI and lighthouse', () => {
     expect(open.headers['content-security-policy']).toContain('frame-ancestors');
     expect(open.headers['x-content-type-options']).toBe('nosniff');
     expect(open.text).toContain('evil.test/pixel.js');
+    expect(open.text).toContain(`/preview/${id}/images/dot.png?t=${token}`);
   });
 
   it('resumes a waiting check on another instance after the runner is gone', async () => {
@@ -292,6 +344,68 @@ describe('checks, stand, AI and lighthouse', () => {
       .get(`/checks/${other.body.check_id}`)
       .set('x-session-id', qa.body.session_id);
     expect(otherView.body.replaced_previous_stand).toBe(false);
+  });
+
+  it.each([
+    ['missing', (aio: FakeAio) => {
+      aio.mergedZip = null;
+    }],
+    ['failed', (aio: FakeAio) => {
+      aio.mergedReadError = new AioDownloadError('rejected');
+    }],
+  ])('fails the split check when merged is %s and still runs the original pipeline', async (_label, arrange) => {
+    await ctx.close();
+    ctx = await createTestApp({ staticChecks: new PassedStatic() });
+    http = ctx.app;
+    const login = await request(http.getHttpServer()).post('/session').send({ login: 'env-tl', password: 'env-tl-pass' });
+    session = login.body.session_id;
+    ctx.aio.rows = [aioRow({ human_id: '61', uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1' })];
+    await request(http.getHttpServer()).post('/catalog/refresh').set('x-session-id', session);
+    arrange(ctx.aio);
+    const started = await request(http.getHttpServer())
+      .post('/checks')
+      .set('x-session-id', session)
+      .send({ human_id: '61' });
+    const done = await waitFor(http, session, started.body.check_id, (body) =>
+      body.steps.some((step) => step.name === 'report' && step.state === 'done'),
+    );
+    expect(done.steps.find((step: { name: string }) => step.name === 'download_file').state).toBe('done');
+    expect(done.steps.find((step: { name: string }) => step.name === 'static').state).toBe('done');
+    expect(done.steps.find((step: { name: string }) => step.name === 'stand').state).toBe('done');
+    expect(done.steps.find((step: { name: string }) => step.name === 'ai').state).toBe('done');
+    expect(done.steps.find((step: { name: string }) => step.name === 'ai_gate').state).toBe('done');
+    const split = done.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.split);
+    expect(split.status).toBe('failed');
+    expect(split.findings).toEqual([{ text: MERGED_SPLIT_UNAVAILABLE }]);
+    expect(done.static.summary).toBe('есть failed');
+    expect(done.static.items[0].status).toBe('passed');
+    expect(ctx.ai.calls).toBe(1);
+  });
+
+  it('holds AI when a required split macro is missing', async () => {
+    await ctx.close();
+    ctx = await createTestApp({ staticChecks: new PassedStatic() });
+    http = ctx.app;
+    const login = await request(http.getHttpServer()).post('/session').send({ login: 'env-tl', password: 'env-tl-pass' });
+    session = login.body.session_id;
+    ctx.aio.rows = [aioRow({ human_id: '62', uuid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1' })];
+    await request(http.getHttpServer()).post('/catalog/refresh').set('x-session-id', session);
+    ctx.aio.mergedZip = zipFiles({ 'landing/index.html': '<html>{{split.subtitle}}</html>' });
+    const started = await request(http.getHttpServer())
+      .post('/checks')
+      .set('x-session-id', session)
+      .send({ human_id: '62' });
+    const waiting = await waitFor(http, session, started.body.check_id, (body) =>
+      body.steps.some((step) => step.name === 'ai_gate' && step.state === 'waiting_user'),
+    );
+    const split = waiting.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.split);
+    const text = split.findings.map((finding: { text: string }) => finding.text).join('\n');
+    expect(split.status).toBe('failed');
+    expect(text).toContain('{{split.title}}');
+    expect(text).toContain('{{split.bannerUrl}}');
+    expect(text).not.toContain('subtitle');
+    expect(ctx.ai.calls).toBe(0);
+    expect(waiting.steps.find((step: { name: string }) => step.name === 'download_file').state).toBe('done');
   });
 });
 

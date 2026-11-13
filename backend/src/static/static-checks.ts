@@ -50,7 +50,17 @@ export const STATIC_CHECK_NAMES = {
   unwanted: 'Проверка запрещённых элементов',
   base64: 'Проверка base64 и atob',
   cdn: 'Проверка префикса {{cdn}}/ в CSS/JS',
+  split: 'Проверка обязательных сплитов',
 } as const;
+
+const SPLIT_TITLE = '{{split.title}}';
+const SPLIT_BANNER = '{{split.bannerUrl}}';
+
+export const MERGED_SPLIT_UNAVAILABLE =
+  'Невозможно проверить сплиты: архив merged отсутствует или не скачался';
+
+export const MERGED_SPLIT_UNPACK_FAILED =
+  'Невозможно проверить сплиты: не удалось распаковать архив merged';
 
 export function summarizeStatic(items: StaticItem[]): string {
   if (items.some((entry) => entry.status === 'failed')) return STATIC_SUMMARY_FAILED;
@@ -914,4 +924,36 @@ async function checkCdn(projectPath: string): Promise<StaticItem> {
     }
   }
   return item(STATIC_CHECK_NAMES.cdn, errors.length ? 'failed' : 'passed', errors);
+}
+
+export function failedSplitCheck(message: string): StaticItem {
+  return item(STATIC_CHECK_NAMES.split, 'failed', [message]);
+}
+
+function missingSplitMacro(content: string, macro: string): string {
+  return `В index не найден обязательный макрос ${macro}${formatLinesSuffix(linesForSubstring(content, macro, 50))}`;
+}
+
+/** Deterministic token check on the merged landing index. Subtitle is optional and never fails the check. */
+export async function checkRequiredSplits(projectPath: string | null): Promise<StaticItem> {
+  if (!projectPath) return failedSplitCheck(MERGED_SPLIT_UNAVAILABLE);
+  const resolved = resolveLandingFolder(projectPath);
+  if (!resolved.ok) return item(STATIC_CHECK_NAMES.split, 'failed', resolved.errors);
+  const indexFiles: string[] = [];
+  for (const name of ['index.html', 'index.php']) {
+    const filePath = path.join(resolved.landingFolder, name);
+    if (await fileExists(filePath)) indexFiles.push(filePath);
+  }
+  let indexContent = '';
+  for (const filePath of indexFiles) {
+    const read = await readFileUtf8(filePath);
+    if (read.ok) indexContent += read.content;
+  }
+  const errors: string[] = [];
+  if (indexFiles.length === 0) {
+    errors.push('Файл index.html или index.php не найден');
+  }
+  if (!indexContent.includes(SPLIT_TITLE)) errors.push(missingSplitMacro(indexContent, SPLIT_TITLE));
+  if (!indexContent.includes(SPLIT_BANNER)) errors.push(missingSplitMacro(indexContent, SPLIT_BANNER));
+  return item(STATIC_CHECK_NAMES.split, errors.length ? 'failed' : 'passed', errors);
 }

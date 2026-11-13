@@ -8,7 +8,7 @@ import { loadFactSheet } from '../ai/facts';
 import { capturePreviewPage, captureQaSurfaces, OutletReferenceShots } from '../ai/outlet-capture';
 import { matchOutlet } from '../ai/outlets';
 import { QA_INSTRUCTION } from '../ai/qa-instruction';
-import { AioClient, AioDownloadError } from '../aio/aio.client';
+import { AioClient, AioDownloadError, LanderArchives, OriginalFile } from '../aio/aio.client';
 import { CostsService } from '../admin/admin.services';
 import { RulesService } from '../admin/admin.services';
 import { AppConfig, previewLinkConfigured } from '../config';
@@ -17,7 +17,7 @@ import { WorkdirService } from '../files/workdir.service';
 import { LighthouseRunner } from '../lighthouse/lighthouse';
 import { cloneRules, effectiveLanguages, expectFormMacroForLander } from '../rules/rules';
 import { sanitizeReport } from '../redact';
-import { AiBlock, ReportPayload } from '../reports/report.types';
+import { AiBlock, ReportPayload, StaticItem } from '../reports/report.types';
 import { APP_CONFIG, CHECK_ARCHIVES_REPO, REPORTS_REPO } from '../tokens';
 import {
   AI_STATUS_ERROR,
@@ -30,7 +30,15 @@ import {
   STATIC_SUMMARY_INCOMPLETE,
 } from '../tokens';
 import { CheckArchivesRepo, ReportsRepo } from '../storage/repos';
-import { StaticChecks, summarizeStatic } from '../static/static-checks';
+import {
+  StaticChecks,
+  STATIC_CHECK_NAMES,
+  MERGED_SPLIT_UNAVAILABLE,
+  MERGED_SPLIT_UNPACK_FAILED,
+  checkRequiredSplits,
+  failedSplitCheck,
+  summarizeStatic,
+} from '../static/static-checks';
 import { captureStandJpeg, wantsVisualCapture } from '../stand/capture';
 import { resolveChromeExecutable } from '../stand/chrome-path';
 import { resolveStandFormHtml } from '../stand/form-html';
@@ -105,7 +113,7 @@ export class CheckOrchestrator {
       return;
     }
     if (check.state('ai_gate') === 'pending') {
-      const failed = check.staticBlock?.items.some((entry) => entry.status === 'failed') ?? false;
+      const failed = blocksStaticGate(check.staticBlock?.items ?? []);
       if (failed) {
         check.aiBlock = { status: AI_STATUS_WAITING, findings: [], decision: null, mode: 'real' };
         check.step('ai_gate', 'waiting_user');
@@ -170,11 +178,11 @@ export class CheckOrchestrator {
       );
       throw new Error('download-request-failed');
     }
-    let original: { read(signal?: AbortSignal): Promise<Buffer> } | null = null;
+    let loaded: LanderArchives;
     try {
-      await withAttempts(ATTEMPTS, async (attempt) => {
+      loaded = await withAttempts(ATTEMPTS, async (attempt) => {
         check.step('notifications', attempt === 1 ? 'running' : 'retrying');
-        original = await this.aio.findOriginal(check.card.uuid);
+        return this.aio.findLanderArchives(check.card.uuid);
       });
       check.step('notifications', 'done');
     } catch {
@@ -184,10 +192,9 @@ export class CheckOrchestrator {
     try {
       await withAttempts(ATTEMPTS, async (attempt) => {
         check.step('download_file', attempt === 1 ? 'running' : 'retrying');
-        if (!original) throw new HaltAttempts(new Error('no-file'));
         try {
           if (check.aborted) throw new HaltAttempts(abortError());
-          check.zip = await original.read(check.signal);
+          check.zip = await loaded.original.read(check.signal);
           await this.archives.put(check.id, check.zip);
         } catch (error) {
           if (check.aborted || isAbort(error)) throw new HaltAttempts(abortError());
@@ -199,6 +206,42 @@ export class CheckOrchestrator {
     } catch (error) {
       check.step('download_file', 'failed', downloadFailureText(error));
       throw new Error('download-file-failed');
+    }
+    await this.readMerged(check, loaded.merged);
+  }
+
+  private async readMerged(check: CheckRecord, file: OriginalFile | null): Promise<void> {
+    if (!file) return;
+    try {
+      check.mergedZip = await withAttempts(ATTEMPTS, async () => {
+        if (check.aborted) throw new HaltAttempts(abortError());
+        try {
+          return await file.read(check.signal);
+        } catch (error) {
+          if (check.aborted || isAbort(error)) throw new HaltAttempts(abortError());
+          if (error instanceof AioDownloadError && error.permanent) throw new HaltAttempts(error);
+          throw error;
+        }
+      });
+    } catch (error) {
+      if (isAbort(error) || check.aborted) throw error instanceof Error ? error : abortError();
+      check.mergedZip = null;
+      this.logger.error(`merged download failed: ${downloadFailureText(error)}`);
+    }
+  }
+
+  private async requiredSplits(check: CheckRecord): Promise<StaticItem> {
+    const zip = check.mergedZip;
+    check.mergedZip = null;
+    if (!zip) return checkRequiredSplits(null);
+    const dir = path.join(this.workdir.directory(check.id), 'merged');
+    try {
+      const unpacked = unpackZip(zip, dir);
+      return await checkRequiredSplits(unpacked.projectPath);
+    } catch {
+      return failedSplitCheck(MERGED_SPLIT_UNPACK_FAILED);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   }
 
@@ -236,7 +279,9 @@ export class CheckOrchestrator {
         if (!check.projectPath) throw new Error('no-project');
         return this.staticChecks.run(check.projectPath, rules);
       });
-      check.staticBlock = { summary: summarizeStatic(items), items };
+      const split = await this.requiredSplits(check);
+      const all = [...items, split];
+      check.staticBlock = { summary: summarizeStatic(all), items: all };
       check.step('static', 'done');
     } catch {
       check.staticBlock = { summary: STATIC_SUMMARY_INCOMPLETE, items: check.staticBlock?.items ?? [] };
@@ -328,6 +373,7 @@ export class CheckOrchestrator {
             checkDate,
             languages: check.card.languages,
             countries: check.card.countries,
+            search: { baseUrl: this.config.aiBaseUrl, apiKey: this.config.aiApiKey },
           })
         : Promise.resolve(null);
     let reference: OutletReferenceShots | null = null;
@@ -593,6 +639,16 @@ export class CheckOrchestrator {
 }
 
 const PERMANENT_UNPACK_CODES = new Set(['EROFS', 'EPERM', 'EACCES', 'ENOSPC', 'ENOENT', 'ENOTDIR', 'EISDIR']);
+
+function blocksStaticGate(items: StaticItem[]): boolean {
+  return items.some((entry) => {
+    if (entry.status !== 'failed') return false;
+    if (entry.name !== STATIC_CHECK_NAMES.split) return true;
+    return entry.findings.some(
+      (finding) => finding.text !== MERGED_SPLIT_UNAVAILABLE && finding.text !== MERGED_SPLIT_UNPACK_FAILED,
+    );
+  });
+}
 
 function permanentUnpackError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;

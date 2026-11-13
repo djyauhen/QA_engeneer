@@ -139,10 +139,12 @@ describe('AIO client', () => {
     }
   });
 
-  it('requests original only and does not treat the process response as a file', async () => {
+  it('requests original and merged and does not treat the process response as a file', async () => {
     const signed = (kind: string) => `https://app.aio.tech/${kind}?${'sign' + 'ature'}=secret`;
+    const fetched: string[] = [];
     const fetchImpl = async (url: string, init?: RequestInit) => {
-      if (String(url).includes('/actions/process')) {
+      const href = String(url);
+      if (href.includes('/actions/process')) {
         expect(init?.body).toBeInstanceOf(FormData);
         const form = init?.body as FormData;
         expect(form.get('action')).toBe('Lander\\Download');
@@ -153,7 +155,7 @@ describe('AIO client', () => {
           uuid: 'uuid-1',
         });
       }
-      if (String(url).includes('/notifications')) {
+      if (href.includes('/notifications')) {
         return jsonResponse({
           data: {
             data: [
@@ -174,19 +176,76 @@ describe('AIO client', () => {
           },
         });
       }
-      if (String(url).includes('/original')) {
-        expect(String(url)).toContain('token=test-aio-token-value');
-        expect(String(url)).not.toContain('merged');
-        return new Response(Buffer.from('zip-bytes'), { status: 200 });
+      if (href.includes('/original') || href.includes('/merged')) {
+        expect(init?.redirect).toBe('manual');
+        const headers = new Headers(init?.headers);
+        expect(headers.get('authorization')).toBeNull();
+        expect(headers.get('cookie')).toBeNull();
+        expect(href).toContain('token=test-aio-token-value');
+      }
+      if (href.includes('/original')) {
+        expect(href).not.toContain('merged');
+        fetched.push('original');
+        return new Response(Buffer.from('zip-original'), { status: 200 });
+      }
+      if (href.includes('/merged')) {
+        fetched.push('merged');
+        return new Response(Buffer.from('zip-merged'), { status: 200 });
       }
       return new Response('no', { status: 404 });
     };
     const client = new HttpAioClient(config(), fetchImpl);
     await client.requestDownload('uuid-1');
-    const file = await client.findOriginal('uuid-1');
-    const bytes = await file.read();
-    expect(bytes.toString()).toBe('zip-bytes');
-    expect(JSON.stringify(file)).not.toContain('sign' + 'ature');
+    const files = await client.findLanderArchives('uuid-1');
+    expect(files.merged).not.toBeNull();
+    const originalBytes = await files.original.read();
+    const mergedBytes = await files.merged?.read();
+    expect(originalBytes.toString()).toBe('zip-original');
+    expect(mergedBytes?.toString()).toBe('zip-merged');
+    expect(originalBytes.toString()).not.toContain('Download Requested');
+    expect(mergedBytes?.toString()).not.toContain('Download Requested');
+    expect(fetched).toEqual(['original', 'merged']);
+    expect(JSON.stringify(files.original)).not.toContain('sign' + 'ature');
+    expect(JSON.stringify(files.merged)).not.toContain('sign' + 'ature');
+    expect(JSON.stringify(files)).not.toContain('sign' + 'ature');
+  });
+
+  it('leaves merged empty when the done notification has no merged url', async () => {
+    const signed = (kind: string) => `https://app.aio.tech/${kind}?${'sign' + 'ature'}=secret`;
+    const calls: string[] = [];
+    const fetchImpl = async (url: string) => {
+      const href = String(url);
+      calls.push(href);
+      if (href.includes('/notifications')) {
+        return jsonResponse({
+          data: {
+            data: [
+              {
+                notification: {
+                  type: 'lander.download',
+                  payload: {
+                    status: 'done',
+                    lander_uuid: 'uuid-1',
+                    files: [
+                      { kind: 'merged', url: '' },
+                      { kind: 'original', url: signed('original') },
+                    ],
+                  },
+                },
+              },
+            ],
+          },
+        });
+      }
+      if (href.includes('/original')) return new Response(Buffer.from('zip-bytes'), { status: 200 });
+      return new Response('no', { status: 404 });
+    };
+    const client = new HttpAioClient(config(), fetchImpl);
+    const files = await client.findLanderArchives('uuid-1');
+    expect(files.merged).toBeNull();
+    expect((await files.original.read()).toString()).toBe('zip-bytes');
+    expect(calls.some((href) => href.includes('/merged'))).toBe(false);
+    expect(JSON.stringify(files)).not.toContain('sign' + 'ature');
   });
 
   it('fetches a signed storage url unchanged and keeps a failed status without the url', async () => {

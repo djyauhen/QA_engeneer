@@ -524,6 +524,11 @@ describe('DeepSeek chat completions client', () => {
     expect(presentHeader).not.toContain('скриншотов оригинала издания нет');
     expect(presentHeader).not.toContain('ставь N/A');
     expect(presentPerson).toContain('fact_sheet.person (Ben Woldring');
+    expect(presentPerson).toContain('Википедия или поиск до вызова');
+    expect(presentPerson).toContain('description и extract');
+    expect(presentPerson).not.toContain('web_search');
+    expect(presentPerson).not.toContain('открой сайт');
+    expect(textAt(1, 3)).toContain('description и extract');
     expect(presentAmount).toContain('Депозит в USD считай по fx_rates на 2026-10-27');
     expect(textAt(1, 1)).toContain('видимый текст отрисованного стенда');
     expect(textAt(1, 7)).not.toContain('offer_name');

@@ -1,6 +1,6 @@
 import AdmZip from 'adm-zip';
 import { AiClient, AiInput, AiResult } from '../src/ai/ai.client';
-import { AioClient, OriginalFile } from '../src/aio/aio.client';
+import { AioClient, LanderArchives, OriginalFile } from '../src/aio/aio.client';
 import { CatalogQuery, cloneCatalogQuery, defaultCatalogQuery } from '../src/catalog/catalog-query';
 import { LighthouseRunner, StubLighthouseRunner } from '../src/lighthouse/lighthouse';
 import { AiFinding, LighthouseMetrics } from '../src/reports/report.types';
@@ -26,6 +26,12 @@ export function structurePassZip(): Buffer {
     'landing/favicon.ico': 'ico',
     'landing/images/dot.png': Buffer.from([137, 80, 78, 71]),
     'landing/js/local.js': 'var local = 1;',
+  });
+}
+
+export function splitPassZip(): Buffer {
+  return zipFiles({
+    'landing/index.html': '<html><head></head><body>{{split.title}}{{split.bannerUrl}}</body></html>',
   });
 }
 
@@ -78,6 +84,8 @@ export class FakeAio extends AioClient {
   fileReads = 0;
   rows: unknown[] = [];
   zip: Buffer = structurePassZip();
+  mergedZip: Buffer | null = splitPassZip();
+  mergedReadError: Error | null = null;
   failDownloads = 0;
   previewCalls: string[] = [];
   previewLink: string | null = null;
@@ -96,12 +104,25 @@ export class FakeAio extends AioClient {
     if (this.downloadRequests.length <= this.failDownloads) throw new Error('Сбой вызова AIO');
   }
 
-  async findOriginal(uuid: string): Promise<OriginalFile> {
+  async findLanderArchives(uuid: string): Promise<LanderArchives> {
     this.notificationPolls.push(uuid);
-    return {
+    const original: OriginalFile = {
       read: async () => {
         this.fileReads += 1;
         return this.zip;
+      },
+    };
+    if (!this.mergedZip) return { original, merged: null };
+    const mergedZip = this.mergedZip;
+    const mergedReadError = this.mergedReadError;
+    return {
+      original,
+      merged: {
+        read: async () => {
+          this.fileReads += 1;
+          if (mergedReadError) throw mergedReadError;
+          return mergedZip;
+        },
       },
     };
   }

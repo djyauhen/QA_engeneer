@@ -324,17 +324,393 @@ export function readFallbackFx(body: unknown): FxRates | null {
   return Object.keys(rates).length ? { date, base: 'USD', rates } : null;
 }
 
+interface FactLookup {
+  person: string | null;
+  checkDate: string;
+  languages?: readonly string[];
+  countries?: readonly string[];
+  search?: { baseUrl: string; apiKey: string } | null;
+}
+
+interface SearchHit {
+  rerankScore: number;
+  authority: number;
+  title: string;
+  url: string;
+  snippet: string;
+  summary: string;
+  siteName: string;
+}
+
+const DEATH_PHRASES = [
+  'passed away',
+  'obituary',
+  'death',
+  'died',
+  'умерла',
+  'умер',
+  'скончал',
+  'погибла',
+  'погиб',
+  'некролог',
+  'gestorben',
+  'overleden',
+  'zmarł',
+  'décédé',
+  'falleció',
+];
+
+const SEARCH_TEXT_LIMIT = 128;
+const SEARCH_COUNT = 8;
+const SEARCH_TIMEOUT_MS = 10_000;
+
 export async function loadFactSheet(
-  options: { person: string | null; checkDate: string; languages?: readonly string[]; countries?: readonly string[] },
+  options: FactLookup,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<{ person: PersonFact | null; fx: FxRates | null }> {
-  const [person, fx] = await Promise.all([
-    options.person
-      ? fetchPerson(options.person, options.checkDate, options.languages ?? [], options.countries ?? [], fetchImpl)
-      : Promise.resolve(null),
-    fetchFx(fetchImpl),
-  ]);
+  const [person, fx] = await Promise.all([loadPerson(options, fetchImpl), fetchFx(fetchImpl)]);
   return { person, fx };
+}
+
+async function loadPerson(options: FactLookup, fetchImpl: typeof fetch): Promise<PersonFact | null> {
+  const name = typeof options.person === 'string' ? options.person.trim() : '';
+  if (!name) return null;
+  const countries = options.countries ?? [];
+  const found = await fetchPerson(name, options.checkDate, options.languages ?? [], countries, fetchImpl);
+  if (found) return found;
+  return personFromSearch(name, options.checkDate, countries, options.search ?? null, fetchImpl);
+}
+
+async function personFromSearch(
+  name: string,
+  checkDate: string,
+  countries: readonly string[],
+  search: { baseUrl: string; apiKey: string } | null,
+  fetchImpl: typeof fetch,
+): Promise<PersonFact | null> {
+  if (!isPersonName(name)) return null;
+  const apiKey = search?.apiKey.trim() ?? '';
+  if (!search || !apiKey) return null;
+  const built = buildPersonSearch(name, countries);
+  const url = built ? deepSeekSearchUrl(search.baseUrl) : null;
+  if (!built || !url) return null;
+  try {
+    const payload: Record<string, unknown> = { query: built.query, count: SEARCH_COUNT, need_content: false };
+    if (built.oriQuestion) payload.ori_question = built.oriQuestion;
+    const body = await postJsonSearch(url, apiKey, JSON.stringify(payload), fetchImpl);
+    if (body == null) return null;
+    return personFromSearchHits(name, checkDate, countries, readSearchHits(body));
+  } catch {
+    return null;
+  }
+}
+
+function buildPersonSearch(name: string, countries: readonly string[]): { query: string; oriQuestion: string | null } | null {
+  const country = countrySearchWord(countries);
+  const query = limitSearchQuery(name, country);
+  if (!query) return null;
+  let oriQuestion: string | null = null;
+  if (country) {
+    const question = `Is ${name} alive in ${country}?`;
+    if (textLength(question) <= SEARCH_TEXT_LIMIT) oriQuestion = question;
+  }
+  return { query, oriQuestion };
+}
+
+function limitSearchQuery(name: string, country: string | null): string | null {
+  const living = country ? `"${name}" ${country} living` : `"${name}" living`;
+  if (fitsSearchText(living)) return living;
+  const dropped = country ? `"${name}" ${country}` : `"${name}"`;
+  if (fitsSearchText(dropped) && dropped.includes(name)) return dropped;
+  return shortenSearchQuery(name, country);
+}
+
+function shortenSearchQuery(name: string, country: string | null): string | null {
+  const tail = country ? ` ${country}` : '';
+  const chars = [...name];
+  for (let length = chars.length - 1; length >= 1; length -= 1) {
+    const cut = chars.slice(0, length).join('').trimEnd();
+    if (!cut) continue;
+    const query = `"${cut}"${tail}`;
+    if (fitsSearchText(query) && query.includes(cut)) return query;
+  }
+  return null;
+}
+
+function fitsSearchText(value: string): boolean {
+  const length = textLength(value);
+  return length >= 1 && length <= SEARCH_TEXT_LIMIT && value.trim().length > 0;
+}
+
+function textLength(value: string): number {
+  return [...value].length;
+}
+
+function countrySearchWord(countries: readonly string[]): string | null {
+  for (const raw of countries) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim().replace(/\s+/g, ' ');
+    const norm = normalizeGeo(trimmed);
+    if (!norm || isDialToken(norm)) continue;
+    const group = GEO_BY_NAME.get(norm);
+    if (!group) continue;
+    const readable = group.slice(2);
+    if (readable.includes(norm)) return presentCountry(trimmed);
+    const preferred =
+      readable.find((token) => textLength(token) > 3 && isLatinGeoName(token)) ??
+      readable.find((token) => textLength(token) > 3);
+    if (!preferred) continue;
+    return geoLabel(preferred);
+  }
+  return null;
+}
+
+function presentCountry(shown: string): string {
+  const trimmed = shown.trim().replace(/\s+/g, ' ');
+  const lower = trimmed.toLocaleLowerCase('ru');
+  const upper = trimmed.toLocaleUpperCase('ru');
+  if (trimmed !== lower && trimmed !== upper) return trimmed;
+  return geoLabel(lower);
+}
+
+function isLatinGeoName(name: string): boolean {
+  return /^[\p{Script=Latin} ]+$/u.test(name);
+}
+
+function isDialToken(norm: string): boolean {
+  return /^\+?\d+$/.test(norm);
+}
+
+function deepSeekSearchUrl(baseUrl: string): string | null {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null;
+  if (parsed.port && parsed.port !== '443') return null;
+  const path = parsed.pathname.replace(/\/+$/, '');
+  const base = `${parsed.origin}${path}`;
+  return base.endsWith('/v1') ? `${base}/tools/search` : `${base}/v1/tools/search`;
+}
+
+async function postJsonSearch(url: string, apiKey: string, payload: string, fetchImpl: typeof fetch): Promise<unknown | null> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: 'POST',
+        signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: payload,
+      });
+    } catch {
+      return null;
+    }
+    if (response.ok) {
+      try {
+        return await response.json();
+      } catch {
+        return null;
+      }
+    }
+    const retry = response.status === 429 || response.status >= 500;
+    if (!retry || attempt === 1) return null;
+  }
+  return null;
+}
+
+function readSearchHits(body: unknown): SearchHit[] {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return [];
+  const results = (body as Record<string, unknown>).results;
+  if (!Array.isArray(results)) return [];
+  const hits: SearchHit[] = [];
+  for (const row of results) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const record = row as Record<string, unknown>;
+    hits.push({
+      rerankScore: readScore(record.rerank_score, 0),
+      authority: readScore(record.authority, -1),
+      title: readText(record.title),
+      url: readText(record.url),
+      snippet: readText(record.snippet),
+      summary: readText(record.summary),
+      siteName: readText(record.site_name),
+    });
+  }
+  return hits;
+}
+
+function readScore(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function readText(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function personFromSearchHits(
+  name: string,
+  checkDate: string,
+  countries: readonly string[],
+  hits: readonly SearchHit[],
+): PersonFact | null {
+  const usable = hits.filter((hit) => keepSearchHit(hit, name, countries, checkDate));
+  const chosen = chooseSearchHits(usable);
+  if (!chosen.length) return null;
+  const best = chosen[0];
+  const text = chosen.map((hit) => [hit.title, hit.snippet, hit.summary].join('\n')).join('\n');
+  const extract = chosen
+    .map((hit) => hit.summary.trim() || hit.snippet.trim())
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, EXTRACT_LIMIT);
+  return {
+    name,
+    source: best.url.trim(),
+    description: searchDescription(best),
+    extract,
+    born: null,
+    age_on_check_date: null,
+    citizenship: citizenshipLabels(text),
+    positions: [],
+  };
+}
+
+function chooseSearchHits(hits: readonly SearchHit[]): SearchHit[] {
+  const strong = hits.filter((hit) => hit.rerankScore >= 1.5 || hit.authority >= 3);
+  const kept = strong.length ? strong : hits.filter((hit) => hit.rerankScore >= 1);
+  return [...kept].sort((left, right) => right.rerankScore - left.rerankScore || right.authority - left.authority);
+}
+
+function keepSearchHit(hit: SearchHit, name: string, countries: readonly string[], checkDate: string): boolean {
+  const url = hit.url.trim();
+  if (!isHttpsHitUrl(url)) return false;
+  const fields = [hit.title, hit.snippet, hit.summary];
+  if (!fields.some((field) => titleMatchesPerson(name, field))) return false;
+  const blob = fields.join('\n');
+  if (isDeadHit(blob, checkDate)) return false;
+  if (!listedCountries(countries).length) return true;
+  return readableNamesFor(countries).some((token) => mentionsGeoName(blob, token));
+}
+
+function isHttpsHitUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return false;
+  if (parsed.port && parsed.port !== '443') return false;
+  return true;
+}
+
+function isDeadHit(text: string, checkDate: string): boolean {
+  if (hasDeathPhrase(text)) return true;
+  const year = parseDate(checkDate)?.year;
+  if (!year) return false;
+  for (const match of text.matchAll(/(?<!\d)(\d{4})\s*[-–—]\s*(\d{4})(?!\d)/g)) {
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+    if (start >= 1000 && start <= end && end < year) return true;
+  }
+  return false;
+}
+
+function hasDeathPhrase(text: string): boolean {
+  const lower = text.toLowerCase();
+  return DEATH_PHRASES.some((phrase) => phraseAtBoundary(lower, phrase));
+}
+
+function phraseAtBoundary(text: string, phrase: string): boolean {
+  let from = 0;
+  while (from < text.length) {
+    const at = text.indexOf(phrase, from);
+    if (at < 0) return false;
+    if (at === 0 || !isLetter(text[at - 1] ?? '')) return true;
+    from = at + phrase.length;
+  }
+  return false;
+}
+
+function isLetter(char: string): boolean {
+  return /[\p{L}\p{M}]/u.test(char);
+}
+
+function listedCountries(countries: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const country of countries) {
+    if (typeof country !== 'string') continue;
+    const trimmed = country.trim();
+    if (trimmed) out.push(trimmed);
+  }
+  return out;
+}
+
+function readableNamesFor(countries: readonly string[]): string[] {
+  const names: string[] = [];
+  for (const country of listedCountries(countries)) {
+    const norm = normalizeGeo(country);
+    if (!norm || isDialToken(norm)) continue;
+    const group = GEO_BY_NAME.get(norm);
+    if (!group) continue;
+    for (const name of group.slice(2)) {
+      if (!names.includes(name)) names.push(name);
+    }
+  }
+  return names;
+}
+
+function mentionsGeoName(text: string, name: string): boolean {
+  const pattern = new RegExp(`(?<![\\p{L}\\p{M}])${escapeRegExp(name)}(?![\\p{L}\\p{M}])`, 'iu');
+  return pattern.test(text);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function citizenshipLabels(text: string): string[] {
+  const labels: string[] = [];
+  for (const group of GEO_NAMES) {
+    for (const name of group.slice(2)) {
+      if (!mentionsGeoName(text, name)) continue;
+      const label = geoLabel(name);
+      if (!labels.includes(label)) labels.push(label);
+    }
+  }
+  return labels;
+}
+
+function geoLabel(name: string): string {
+  if (textLength(name) <= 3) return name.toLocaleUpperCase('ru');
+  return name.replace(/\p{L}+/gu, (word) => {
+    const chars = [...word];
+    return (chars[0] ?? '').toLocaleUpperCase('ru') + chars.slice(1).join('');
+  });
+}
+
+function searchDescription(hit: SearchHit): string {
+  const title = hit.title.trim();
+  if (title) return title;
+  const site = hit.siteName.trim();
+  if (site) return site;
+  return firstSentence(hit.summary.trim() || hit.snippet.trim());
+}
+
+function firstSentence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  const match = /^.+?[.!?。](?=\s|$)/.exec(trimmed);
+  return (match?.[0] ?? trimmed).trim();
 }
 
 interface FoundPerson {

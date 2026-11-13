@@ -9,3 +9,4 @@ backend/data/
 .DS_Store
 Thumbs.db
 docs/logs.json
+id_ed25519_dsjen

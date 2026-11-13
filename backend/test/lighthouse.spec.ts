@@ -1,5 +1,5 @@
 import path from 'path';
-import { lighthouseSpawnSpec, parseLighthouse } from '../src/lighthouse/lighthouse';
+import { lighthouseCliArgs, lighthouseSpawnSpec, parseLighthouse } from '../src/lighthouse/lighthouse';
 
 const chromeArg = '--chrome-path=C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const cliPath = path.join('app', 'node_modules', 'lighthouse', 'cli', 'index.js');
@@ -28,6 +28,27 @@ describe('lighthouse CLI spawn', () => {
       args: [cliPath, 'http://127.0.0.1/stand?a=1&b=2', chromeArg],
       options: { shell: false },
     });
+  });
+
+  it('sends the preview cookie to a fresh Lighthouse Chrome and keeps the argument unsplit', () => {
+    const url = 'https://bdc-it.uk/preview/bb613d11-d07d-4298-96c0-657b5476c778/index.html?t=b791a0c4e9d5bd72473419b16f8fb98f';
+    const args = lighthouseCliArgs(url, 'mobile', { chromePath: chromeArg, noSandbox: false });
+    const spec = lighthouseSpawnSpec(args, { execPath: 'C:\\Program Files\\nodejs\\node.exe', cliPath });
+    expect(spec.options).toEqual({ shell: false });
+    expect(spec.args[1]).toBe(url);
+    const header = spec.args.find((arg) => arg.startsWith('--extra-headers='));
+    expect(header).toBe('--extra-headers={"Cookie":"qa_preview=b791a0c4e9d5bd72473419b16f8fb98f"}');
+    const desktop = lighthouseCliArgs(url, 'desktop', { chromePath: chromeArg, noSandbox: true });
+    expect(desktop).toContain('--preset=desktop');
+    expect(desktop.some((arg) => arg.startsWith('--extra-headers='))).toBe(true);
+    expect(desktop).toContain('--chrome-flags=--headless --no-sandbox');
+    const plain = lighthouseCliArgs('https://bdc-it.uk/preview/1/index.html', 'mobile', {
+      chromePath: chromeArg,
+      noSandbox: false,
+    });
+    expect(plain.some((arg) => arg.startsWith('--extra-headers='))).toBe(false);
+    const foreign = lighthouseCliArgs('https://www.index.hr/?t=secret', 'mobile', { chromePath: chromeArg, noSandbox: false });
+    expect(foreign.some((arg) => arg.startsWith('--extra-headers='))).toBe(false);
   });
 
   it('uses the local lighthouse CLI and the current node binary when paths are omitted', () => {

@@ -466,6 +466,330 @@ describe('fact sheet parsing', () => {
   });
 });
 
+describe('deepseek person search', () => {
+  const apiKey = 'test-search-key';
+  const search = { baseUrl: 'https://api.deepseek.com', apiKey };
+  const summaryText = 'Jan Kowalski (1950) is a politician in Poland.';
+  const living = {
+    rerank_score: 2.4,
+    authority: 4,
+    title: 'Jan Kowalski — polityk',
+    url: 'https://example.pl/people/jan-kowalski',
+    snippet: '',
+    summary: summaryText,
+    content: 'DO NOT USE THIS CONTENT Jan Kowalski died',
+    site_name: 'Not The Title',
+  };
+
+  function searchOnly(results: unknown): typeof fetch {
+    return async (url) => {
+      const href = String(url);
+      if (href.includes('/tools/search')) return factJson({ results });
+      if (href.startsWith('https://api.frankfurter.app/')) return fxJson();
+      return new Response('no', { status: 404 });
+    };
+  }
+
+  async function capturingSearch(results: unknown, countries: readonly string[]) {
+    const requests: Array<Record<string, unknown>> = [];
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const href = String(url);
+      if (href.includes('/tools/search')) {
+        requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return factJson({ results });
+      }
+      if (href.startsWith('https://api.frankfurter.app/')) return fxJson();
+      return new Response('no', { status: 404 });
+    };
+    const sheet = await loadFactSheet(
+      { person: 'Jan Kowalski', checkDate: '2026-10-27', countries, search },
+      fetchImpl,
+    );
+    return { requests, sheet };
+  }
+
+  it('fills the card from a living high-authority hit when Wikipedia misses', async () => {
+    const seen: Array<{ url: string; init?: RequestInit }> = [];
+    const urls: string[] = [];
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const href = String(url);
+      urls.push(href);
+      if (href.includes('/tools/search')) {
+        seen.push({ url: href, init });
+        return factJson({ results: [living] });
+      }
+      if (href.startsWith('https://api.frankfurter.app/')) return fxJson();
+      return new Response('no', { status: 404 });
+    };
+    const sheet = await loadFactSheet(
+      { person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search },
+      fetchImpl,
+    );
+    expect(sheet.person).toMatchObject({
+      name: 'Jan Kowalski',
+      source: 'https://example.pl/people/jan-kowalski',
+      description: 'Jan Kowalski — polityk',
+      born: null,
+      age_on_check_date: null,
+      positions: [],
+    });
+    expect(sheet.person?.extract).toContain(summaryText);
+    expect(sheet.person?.extract).not.toContain('DO NOT USE');
+    expect(sheet.person?.citizenship).toContain('Poland');
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url).toBe('https://api.deepseek.com/v1/tools/search');
+    expect(seen[0].url.endsWith('/v1/tools/search')).toBe(true);
+    expect(seen[0].url).not.toContain(apiKey);
+    expect(seen[0].init?.method).toBe('POST');
+    expect(new Headers(seen[0].init?.headers).get('authorization')).toBe(`Bearer ${apiKey}`);
+    expect(new Headers(seen[0].init?.headers).get('content-type')).toBe('application/json');
+    const body = JSON.parse(String(seen[0].init?.body)) as Record<string, unknown>;
+    expect(body.need_content).toBe(false);
+    expect(body.count).toBe(8);
+    expect(body.localization).toBeUndefined();
+    expect(String(body.query).length).toBeLessThanOrEqual(128);
+    expect(body.query).toContain('Jan Kowalski');
+    expect(body.query).toContain('Poland');
+    expect(body.query).toBe('"Jan Kowalski" Poland living');
+    expect(body.ori_question).toBe('Is Jan Kowalski alive in Poland?');
+    expect(String(seen[0].init?.body)).not.toContain(apiKey);
+    expect(urls.some((href) => href.includes('example.pl'))).toBe(false);
+  });
+
+  it('builds the search path on a /v1 base and retries one 429', async () => {
+    const seen: string[] = [];
+    let searches = 0;
+    const fetchImpl: typeof fetch = async (url) => {
+      const href = String(url);
+      if (!href.includes('/tools/search')) return new Response('no', { status: 404 });
+      searches += 1;
+      seen.push(href);
+      if (searches === 1) return new Response('rate', { status: 429 });
+      return factJson({ results: [living] });
+    };
+    const sheet = await loadFactSheet(
+      {
+        person: 'Jan Kowalski',
+        checkDate: '2026-10-27',
+        countries: ['PL'],
+        search: { baseUrl: 'https://api.deepseek.com/v1/', apiKey },
+      },
+      fetchImpl,
+    );
+    expect(searches).toBe(2);
+    expect(seen.every((href) => href === 'https://api.deepseek.com/v1/tools/search')).toBe(true);
+    expect(seen.some((href) => href.includes('/v1/v1/'))).toBe(false);
+    expect(sheet.person?.source).toBe(living.url);
+    expect(sheet.person?.citizenship).toContain('Poland');
+  });
+
+  it('drops obituaries and lifespans that end before the check year', async () => {
+    const dead = [
+      {
+        rerank_score: 2.8,
+        authority: 4,
+        title: 'Obituary: Jan Kowalski',
+        url: 'https://example.pl/obituary',
+        snippet: 'Jan Kowalski passed away in Poland.',
+        summary: 'Jan Kowalski died in Poland.',
+      },
+      {
+        rerank_score: 2.2,
+        authority: 3,
+        title: 'Jan Kowalski (1950-2019)',
+        url: 'https://example.pl/life',
+        snippet: '',
+        summary: 'Jan Kowalski (1950–2019) worked in Poland.',
+      },
+      {
+        rerank_score: 2,
+        authority: 4,
+        title: 'Jan Kowalski',
+        url: 'https://example.pl/ru',
+        snippet: '',
+        summary: 'Jan Kowalski умер в Poland.',
+      },
+    ];
+    const sheet = await loadFactSheet(
+      { person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search },
+      searchOnly(dead),
+    );
+    expect(sheet.person).toBeNull();
+  });
+
+  it('rejects a namesake from another country and a bare PL code', async () => {
+    const hits = [
+      {
+        rerank_score: 2.9,
+        authority: 4,
+        title: 'Jan Kowalski',
+        url: 'https://news.example.pl/jan-kowalski',
+        snippet: 'Jan Kowalski PL exclusive',
+        summary: 'Jan Kowalski is a singer in Germany.',
+      },
+      {
+        rerank_score: 2.1,
+        authority: 3,
+        title: 'Jan Kowalski',
+        url: 'https://example.de/polish',
+        snippet: '',
+        summary: 'Jan Kowalski is a Polish singer.',
+      },
+    ];
+    const sheet = await loadFactSheet(
+      { person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search },
+      searchOnly(hits),
+    );
+    expect(sheet.person).toBeNull();
+  });
+
+  it('does not search when Wikidata already returned a person', async () => {
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (url) => {
+      const href = String(url);
+      calls.push(href);
+      if (href.includes('/page/summary/')) return factJson(summary);
+      if (href.startsWith('https://api.frankfurter.app/')) return fxJson();
+      if (href.includes('/tools/search')) return factJson({ results: [living] });
+      return new Response('no', { status: 404 });
+    };
+    const sheet = await loadFactSheet(
+      { person: 'Andrzej Duda', checkDate: '2026-10-27', search },
+      fetchImpl,
+    );
+    expect(sheet.person).toMatchObject({
+      name: 'Andrzej Duda',
+      source: 'https://en.wikipedia.org/wiki/Andrzej_Duda',
+    });
+    expect(calls.some((href) => href.includes('/tools/search'))).toBe(false);
+  });
+
+  it('stays null and does not call search without credentials', async () => {
+    const tracked = (label: string, calls: string[]): typeof fetch => async (url) => {
+      const href = String(url);
+      calls.push(`${label}:${href}`);
+      if (href.startsWith('https://api.frankfurter.app/')) return fxJson();
+      return new Response('no', { status: 404 });
+    };
+    const plain: string[] = [];
+    const emptyKey: string[] = [];
+    const blankKey: string[] = [];
+    const httpBase: string[] = [];
+    await expect(loadFactSheet({ person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'] }, tracked('plain', plain))).resolves.toMatchObject({
+      person: null,
+    });
+    await expect(
+      loadFactSheet(
+        { person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search: null },
+        tracked('empty', emptyKey),
+      ),
+    ).resolves.toMatchObject({ person: null });
+    await expect(
+      loadFactSheet(
+        { person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search: { baseUrl: 'https://api.deepseek.com', apiKey: '   ' } },
+        tracked('blank', blankKey),
+      ),
+    ).resolves.toMatchObject({ person: null });
+    await expect(
+      loadFactSheet(
+        { person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search: { baseUrl: 'http://api.deepseek.com', apiKey } },
+        tracked('http', httpBase),
+      ),
+    ).resolves.toMatchObject({ person: null });
+    for (const calls of [plain, emptyKey, blankKey, httpBase]) {
+      expect(calls.some((href) => href.includes('/v1/tools/search'))).toBe(false);
+    }
+  });
+
+  it('keeps a weaker local hit, prefers a strong one, and shapes the query from the country name', async () => {
+    const weak = {
+      rerank_score: 1.1,
+      authority: 1,
+      title: '',
+      url: 'https://local.example/jan-kowalski',
+      snippet: 'Jan Kowalski lives in Poland.',
+      summary: '',
+      site_name: 'Gazeta',
+    };
+    const weakOnly = await loadFactSheet(
+      { person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search },
+      searchOnly([weak]),
+    );
+    expect(weakOnly.person).toMatchObject({
+      source: weak.url,
+      description: 'Gazeta',
+      born: null,
+      positions: [],
+    });
+    expect(weakOnly.person?.extract).toContain('Jan Kowalski lives in Poland.');
+    expect(weakOnly.person?.citizenship).toContain('Poland');
+
+    const tooWeak = await loadFactSheet(
+      { person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search },
+      searchOnly([{ ...weak, rerank_score: 0.4, authority: 1 }]),
+    );
+    expect(tooWeak.person).toBeNull();
+
+    const strong = { ...living, rerank_score: 2.2, authority: 2, url: 'https://best.example/jan-kowalski', summary: 'BEST Jan Kowalski lives in Poland.' };
+    const ranked = await loadFactSheet(
+      { person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search },
+      searchOnly([weak, strong]),
+    );
+    expect(ranked.person?.source).toBe(strong.url);
+    expect(ranked.person?.extract).toBe('BEST Jan Kowalski lives in Poland.');
+
+    const sentence = await capturingSearch(
+      [{ ...living, summary: 'Jan Kowalski serves Poland. Extra sentence.', title: ' ', site_name: '' }],
+      ['Польша'],
+    );
+    expect(sentence.requests[0]?.query).toBe('"Jan Kowalski" Польша living');
+    expect(sentence.requests[0]?.ori_question).toBe('Is Jan Kowalski alive in Польша?');
+    expect(sentence.sheet.person?.description).toBe('Jan Kowalski serves Poland.');
+    expect(sentence.sheet.person?.citizenship).toContain('Poland');
+
+    const germany = await capturingSearch(
+      [{ ...living, summary: 'Jan Kowalski lives in Germany.', url: 'https://example.de/jan-kowalski' }],
+      ['DE', 'PL'],
+    );
+    expect(germany.requests[0]?.query).toBe('"Jan Kowalski" Germany living');
+    expect(germany.sheet.person?.citizenship).toContain('Germany');
+
+    const dial = await capturingSearch([living], ['+48', 'PL']);
+    expect(dial.requests[0]?.query).toBe('"Jan Kowalski" Poland living');
+    expect(String(dial.requests[0]?.query)).not.toContain('+48');
+
+    const open = await capturingSearch(
+      [{ ...living, summary: 'Jan Kowalski is a public figure.', url: 'https://example.com/jan-kowalski' }],
+      [],
+    );
+    expect(open.requests[0]?.query).toBe('"Jan Kowalski" living');
+    expect(open.requests[0]?.ori_question).toBeUndefined();
+    expect(open.sheet.person?.source).toBe('https://example.com/jan-kowalski');
+    expect(open.sheet.person?.citizenship).toEqual([]);
+  });
+
+  it('returns no hits on a client error without a second try and survives a thrown search', async () => {
+    let calls = 0;
+    const once: typeof fetch = async (url) => {
+      if (!String(url).includes('/tools/search')) return new Response('no', { status: 404 });
+      calls += 1;
+      return new Response('bad', { status: 400 });
+    };
+    await expect(
+      loadFactSheet({ person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search }, once),
+    ).resolves.toMatchObject({ person: null });
+    expect(calls).toBe(1);
+
+    const thrown: typeof fetch = async (url) => {
+      if (String(url).includes('/tools/search')) throw new Error(`down ${apiKey}`);
+      return new Response('no', { status: 404 });
+    };
+    await expect(
+      loadFactSheet({ person: 'Jan Kowalski', checkDate: '2026-10-27', countries: ['PL'], search }, thrown),
+    ).resolves.toMatchObject({ person: null });
+  });
+});
+
 function factJson(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }

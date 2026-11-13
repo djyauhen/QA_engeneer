@@ -56,7 +56,7 @@ export interface AiInput {
   outlet?: { name: string; url: string; header: Buffer; footer: Buffer } | null;
   /** Bottom of the landing stand, when Chrome could capture it. */
   landingFooter?: Buffer | null;
-  /** Wikipedia card for the resolved person. Null when the lookup did not run. */
+  /** Person card for the resolved celebrity. Null when the lookup did not run. */
   factSheet?: FactSheet | null;
   /** ECB-derived units of currency per 1 USD. Null when the lookup did not run or failed. */
   fxRates?: FxRates | null;
@@ -390,8 +390,10 @@ function previewNote(bundle: ReviewBundle, category: number): string {
   if (labels.length) {
     const first = labels[0];
     const last = labels[labels.length - 1];
-    const base = `Кадры ${labels.join(', ')} — страница landing_preview_url, уже снятая нашим браузером сверху вниз. ${first} — верх и шапка, ${last} — низ и футер. Эти кадры уже вложены, повторно превью не скачивай.`;
-    if (category === 2) return `${base} Шапка ленда — ${first}, футер ленда — ${last}. Сверяй их с вложенными кадрами издания.`;
+    const base = `Кадры ${labels.join(', ')} — страница landing_preview_url, уже снятая нашим браузером сверху вниз. ${first} — верх и шапка, ${last} — низ и футер. Эти кадры уже приложены к сообщению, повторно превью не скачивай.`;
+    if (category === 2) {
+      return `${base} Шапка ленда — ${first}, футер ленда — ${last}. Эталон издания — outlet_header и outlet_footer, только если эти метки есть в attachments_order. Если их нет — N/A, не FAIL.`;
+    }
     if (category === 3) {
       return `${base} Ссылку сам не открывай. Сверь лицо, имя на картинке и подпись с персонажем из названия ленда. Совпало — не ошибка. Другой человек — FAIL. Лица не видно — clarifications, не FAIL.`;
     }
@@ -423,7 +425,7 @@ function factNote(bundle: ReviewBundle, category: number): string {
   const geo = (bundle.input.countries ?? []).filter(Boolean).join(', ') || 'страницы';
   if (category === 3 || category === 4) {
     const picked =
-      'Если fact_sheet.person есть, это ныне живущий человек, чьё гражданство совпало с этим GEO; его уже нашли поиском. Умершего тёзку и человека из другой страны в карточку не кладут.';
+      'Если fact_sheet.person есть, это ныне живущий человек этого GEO: карточку дали Википедия или поиск до вызова. Сверь гражданство, description и extract. Умершего тёзку и человека из другой страны в карточку не кладут.';
     const person = bundle.input.factSheet?.person;
     if (person) {
       const citizenship = (person.citizenship ?? []).join(', ') || 'не указано';

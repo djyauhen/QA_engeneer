@@ -7,12 +7,13 @@ import { ACTIVE_CHECKS_REPO, APP_CONFIG, CHECK_ARCHIVES_REPO } from '../tokens';
 import { CheckStore } from '../checks/check.store';
 import { unpackZip } from '../files/unpack';
 import { WorkdirService } from '../files/workdir.service';
-import { resolveLandingFolder } from '../static/landing-utils';
+import { resolveLandingFolder, safeResolveUnderLanding } from '../static/landing-utils';
 import { CheckArchivesRepo, ActiveChecksRepo } from '../storage/repos';
 import { resolveStandFormHtml } from './form-html';
-import { applyCdnMacro, ISOLATED_CSP, liveCsp, transformHtml } from './transform';
+import { applyCdnMacro, isolatedCsp, liveCsp, rewriteCssAssets, stampCdnUrls, transformHtml } from './transform';
 
 const CDN_TEXT_EXT = new Set(['.css', '.js', '.mjs']);
+const PREVIEW_COOKIE = 'qa_preview';
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -59,7 +60,7 @@ export class PreviewService {
       return;
     }
     const checkId = parts[1];
-    const token = typeof req.query.t === 'string' ? req.query.t : '';
+    const token = previewTokenFrom(req);
     const relative = parts.slice(2).join('/') || 'index.html';
     const local = this.checks.get(checkId);
     if (local) {
@@ -73,7 +74,7 @@ export class PreviewService {
         return;
       }
       local.landingFolder = folder;
-      this.send(res, checkId, folder, relative, local.actionsAllowed, local.card.countries);
+      this.send(res, req, checkId, folder, relative, local.actionsAllowed, local.card.countries, token);
       return;
     }
     const row = await this.active.get(checkId);
@@ -86,7 +87,7 @@ export class PreviewService {
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    this.send(res, checkId, folder, relative, row.payload.actionsAllowed, row.payload.countries ?? []);
+    this.send(res, req, checkId, folder, relative, row.payload.actionsAllowed, row.payload.countries ?? [], token);
   }
 
   private async folderFor(checkId: string, known: string | null): Promise<string | null> {
@@ -105,11 +106,13 @@ export class PreviewService {
 
   private send(
     res: Response,
+    req: Request,
     checkId: string,
     landingFolder: string,
     relative: string,
     actionsAllowed: boolean,
     countries: readonly string[],
+    token: string,
   ): void {
     const target = path.resolve(landingFolder, relative);
     const root = path.resolve(landingFolder);
@@ -118,30 +121,118 @@ export class PreviewService {
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    const policy = actionsAllowed ? liveCsp(this.config.frontendOrigin) : ISOLATED_CSP;
+    const policy = actionsAllowed ? liveCsp(this.config.frontendOrigin) : isolatedCsp(originOf(this.config.publicBaseUrl));
+    const cdn = this.cdnBaseFor(checkId);
     res.setHeader('Content-Security-Policy', policy);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Cache-Control', 'private');
+    res.setHeader('Vary', 'Cookie');
+    res.setHeader('Set-Cookie', previewCookie(checkId, token, req.secure || this.config.publicBaseUrl.startsWith('https://')));
     const ext = path.extname(target).toLowerCase();
     res.setHeader('Content-Type', TYPES[ext] ?? 'application/octet-stream');
+    const assetExists = archivedAssetExists(landingFolder);
     if (ext === '.html' || ext === '.php') {
       const html = fs.readFileSync(target, 'utf8');
       res.send(
         transformHtml(html, {
           formHtml: resolveStandFormHtml(this.config.standFormHtml, countries),
           brandName: this.config.standBrandName,
-          cdnBase: this.cdnBaseFor(checkId),
+          cdnBase: cdn,
           isolated: !actionsAllowed,
+          previewToken: token,
+          assetExists,
         }),
       );
       return;
     }
     if (CDN_TEXT_EXT.has(ext)) {
-      res.send(applyCdnMacro(fs.readFileSync(target, 'utf8'), this.cdnBaseFor(checkId)));
+      let body = applyCdnMacro(fs.readFileSync(target, 'utf8'), cdn);
+      if (ext === '.css') {
+        body = rewriteCssAssets(body, {
+          assetRoot: cdn,
+          pageUrl: `${cdn.replace(/\/$/, '')}/${relative}`,
+          previewToken: token,
+          assetExists,
+        });
+      } else {
+        body = stampCdnUrls(body, cdn, token);
+      }
+      res.send(body);
       return;
     }
     res.send(fs.readFileSync(target));
   }
+}
+
+function archivedAssetExists(landingFolder: string): (pathname: string) => boolean {
+  const cache = new Map<string, boolean>();
+  return (pathname) => {
+    const cached = cache.get(pathname);
+    if (cached !== undefined) return cached;
+    const ok = landingFileExists(landingFolder, pathname);
+    cache.set(pathname, ok);
+    return ok;
+  };
+}
+
+function landingFileExists(landingFolder: string, pathname: string): boolean {
+  if (!pathname.startsWith('/') || pathname.includes('\\') || pathname.includes('\0')) return false;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
+  const relative = decoded.replace(/^\/+/, '');
+  if (!relative) return false;
+  const file = safeResolveUnderLanding(landingFolder, relative);
+  if (!file) return false;
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function originOf(value: string): string {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return '';
+  }
+}
+
+function previewTokenFrom(req: Request): string {
+  if (typeof req.query.t === 'string' && req.query.t) return req.query.t;
+  return cookieValue(req.headers.cookie, PREVIEW_COOKIE);
+}
+
+function cookieValue(header: string | undefined, name: string): string {
+  if (!header) return '';
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    try {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+function previewCookie(checkId: string, token: string, secure: boolean): string {
+  const parts = [
+    `${PREVIEW_COOKIE}=${encodeURIComponent(token)}`,
+    `Path=/preview/${checkId}/`,
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=86400',
+  ];
+  if (secure) parts.push('Secure');
+  return parts.join('; ');
 }
 
 function existingLanding(dir: string): string | null {

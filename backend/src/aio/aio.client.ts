@@ -11,6 +11,17 @@ export interface OriginalFile {
   read(signal?: AbortSignal): Promise<Buffer>;
 }
 
+/** Original stays the pipeline archive. Merged is only for the split-macro check. */
+export interface LanderArchives {
+  original: OriginalFile;
+  merged: OriginalFile | null;
+}
+
+interface ArchiveUrls {
+  original: string;
+  merged: string | null;
+}
+
 export class AioDownloadError extends Error {
   readonly status: number | null;
   readonly permanent: boolean;
@@ -43,7 +54,11 @@ const DOWNLOAD_TIMEOUT_MS = 60_000;
 export abstract class AioClient {
   abstract loadCatalogRows(query?: CatalogQuery): Promise<unknown[]>;
   abstract requestDownload(uuid: string): Promise<void>;
-  abstract findOriginal(uuid: string): Promise<OriginalFile>;
+  abstract findLanderArchives(uuid: string): Promise<LanderArchives>;
+  async findOriginal(uuid: string): Promise<OriginalFile> {
+    const files = await this.findLanderArchives(uuid);
+    return files.original;
+  }
   /** Readable Landing Preview Link, or null when the three preview UUIDs are not configured. */
   abstract landingPreviewLink(landerUuid: string): Promise<string | null>;
 }
@@ -167,10 +182,14 @@ export class HttpAioClient extends AioClient {
     }
   }
 
-  async findOriginal(uuid: string): Promise<OriginalFile> {
-    const fileUrl = await this.pollOriginalUrl(uuid);
+  async findLanderArchives(uuid: string): Promise<LanderArchives> {
+    const urls = await this.pollArchiveUrls(uuid);
+    const mergedUrl = urls.merged;
     return {
-      read: (signal?: AbortSignal) => this.downloadFile(fileUrl, signal),
+      original: {
+        read: (signal?: AbortSignal) => this.downloadFile(urls.original, signal),
+      },
+      merged: mergedUrl ? { read: (signal?: AbortSignal) => this.downloadFile(mergedUrl, signal) } : null,
     };
   }
 
@@ -222,11 +241,11 @@ export class HttpAioClient extends AioClient {
     return { rows, next };
   }
 
-  private async pollOriginalUrl(uuid: string): Promise<string> {
+  private async pollArchiveUrls(uuid: string): Promise<ArchiveUrls> {
     const polls = this.config.aioNotifyPollsPerAttempt;
     for (let i = 0; i < polls; i += 1) {
-      const url = await this.scanNotifications(uuid);
-      if (url) return url;
+      const urls = await this.scanNotifications(uuid);
+      if (urls) return urls;
       if (i < polls - 1) {
         await delay(this.config.aioNotifyPollMs);
       }
@@ -234,16 +253,16 @@ export class HttpAioClient extends AioClient {
     throw new Error('Сбой вызова AIO');
   }
 
-  private async scanNotifications(uuid: string): Promise<string | null> {
+  private async scanNotifications(uuid: string): Promise<ArchiveUrls | null> {
     for (let page = 1; page <= 10; page += 1) {
       const pageResult = await this.scanNotificationPage(uuid, page);
-      if (pageResult.url) return pageResult.url;
+      if (pageResult.urls) return pageResult.urls;
       if (!pageResult.more) return null;
     }
     return null;
   }
 
-  private async scanNotificationPage(uuid: string, page: number): Promise<{ url: string | null; more: boolean }> {
+  private async scanNotificationPage(uuid: string, page: number): Promise<{ urls: ArchiveUrls | null; more: boolean }> {
     const url = this.withToken('/api/v1/notifications');
     url.searchParams.set('limit', '25');
     url.searchParams.set('page', String(page));
@@ -261,13 +280,11 @@ export class HttpAioClient extends AioClient {
       if (!payload) continue;
       if (payload.lander_uuid !== uuid || payload.status !== 'done') continue;
       const files = Array.isArray(payload.files) ? payload.files : [];
-      const original = files.find((file) => {
-        const row = file as Record<string, unknown>;
-        return row.kind === 'original' && typeof row.url === 'string' && row.url.length > 0;
-      }) as Record<string, unknown> | undefined;
-      if (original && typeof original.url === 'string') return { url: original.url, more: false };
+      const original = downloadUrl(files, 'original');
+      if (!original) continue;
+      return { urls: { original, merged: downloadUrl(files, 'merged') }, more: false };
     }
-    return { url: null, more: items.length >= 25 };
+    return { urls: null, more: items.length >= 25 };
   }
 
   private async downloadFile(fileUrl: string, signal?: AbortSignal): Promise<Buffer> {
@@ -322,6 +339,17 @@ function readTable(body: Record<string, unknown>): { rows?: unknown[]; next?: bo
   const response = (funnel as Record<string, unknown>).response;
   if (!response || typeof response !== 'object') return {};
   return response as { rows?: unknown[]; next?: boolean };
+}
+
+function downloadUrl(files: unknown[], kind: string): string | null {
+  for (const file of files) {
+    if (!file || typeof file !== 'object') continue;
+    const row = file as Record<string, unknown>;
+    if (row.kind !== kind) continue;
+    if (typeof row.url !== 'string' || row.url.length === 0) continue;
+    return row.url;
+  }
+  return null;
 }
 
 function readNotifications(body: unknown): Array<Record<string, unknown>> {

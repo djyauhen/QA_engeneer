@@ -19,6 +19,8 @@ export class CheckRecord {
   landingFolder: string | null = null;
   projectPath: string | null = null;
   zip: Buffer | null = null;
+  /** Merged export, used only for the split-macro check. Not the stand archive. */
+  mergedZip: Buffer | null = null;
   effectiveLanguages: string[] | null = null;
   finished: Promise<void> = Promise.resolve();
   aborted = false;
