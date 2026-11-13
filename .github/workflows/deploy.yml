@@ -22,8 +22,8 @@ env:
   # Optional secret SSH_PORT overrides this when the SSH port is not 22.
   DEPLOY_PORT: ${{ secrets.SSH_PORT || '22' }}
   DEPLOY_PATH: /home/deploy/qa_test
-  # Optional repository variable. Public API origin, no trailing slash.
-  API_BASE_URL: ${{ vars.API_BASE_URL || 'http://bdc-it.uk:3000' }}
+  # Optional repository variable. Public HTTPS origin, no trailing slash, no port 3000.
+  API_BASE_URL: ${{ vars.API_BASE_URL || 'https://bdc-it.uk' }}
 
 jobs:
   build:
@@ -65,9 +65,19 @@ jobs:
         run: |
           set -euo pipefail
           case "$API_BASE_URL" in
-            http://*|https://*) ;;
+            https://*) ;;
             *)
-              echo "API_BASE_URL must start with http:// or https://"
+              echo "API_BASE_URL must be https:// without a trailing slash. Port 3000 is not public."
+              exit 1
+              ;;
+          esac
+          case "$API_BASE_URL" in
+            */)
+              echo "API_BASE_URL must not have a trailing slash"
+              exit 1
+              ;;
+            *:3000|*:3000/*)
+              echo "API_BASE_URL must not use port 3000"
               exit 1
               ;;
           esac
@@ -84,9 +94,14 @@ jobs:
           cp backend/package.json backend/package-lock.json release/backend/
           cp -a backend/dist release/backend/dist
           cp -a frontend/dist/qa-assistant/browser/. release/frontend/
+          mkdir -p release/deploy
+          cp deploy/edge.sh release/deploy/edge.sh
+          cp -a deploy/nginx release/deploy/nginx
           test -f release/backend/dist/main.js
           test -f release/backend/package-lock.json
           test -f release/frontend/index.html
+          test -f release/deploy/edge.sh
+          test -f release/deploy/nginx/qa_test.conf
 
       - name: Upload release
         uses: actions/upload-artifact@v4
@@ -141,6 +156,8 @@ jobs:
           rsync -az --delete -e "$ssh_cmd" "$root/backend/dist/" "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/backend/dist/"
           rsync -az -e "$ssh_cmd" "$root/backend/package.json" "$root/backend/package-lock.json" "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/backend/"
           rsync -az --delete -e "$ssh_cmd" "$root/frontend/" "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/frontend/"
+          $ssh_cmd "${DEPLOY_USER}@${DEPLOY_HOST}" mkdir -p -- "$(printf '%q' "$DEPLOY_PATH/deploy")"
+          rsync -az --delete -e "$ssh_cmd" "$root/deploy/" "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/deploy/"
           $ssh_cmd "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s -- "$DEPLOY_PATH" <<'EOF'
           set -euo pipefail
           deploy_path="$1"
@@ -154,6 +171,17 @@ jobs:
             exit 1
           fi
           npm ci --omit=dev
+          if [ ! -f "$deploy_path/deploy/edge.sh" ]; then
+            echo "Missing ${deploy_path}/deploy/edge.sh in the release."
+            exit 1
+          fi
+          chmod 755 "$deploy_path/deploy/edge.sh"
+          if ! sudo -n "$deploy_path/deploy/edge.sh"; then
+            echo "TLS edge setup failed."
+            echo "If sudo asked for a password, install this once as root:"
+            echo "echo 'deploy ALL=(root) NOPASSWD: ${deploy_path}/deploy/edge.sh' > /etc/sudoers.d/qa-edge && chmod 440 /etc/sudoers.d/qa-edge"
+            exit 1
+          fi
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
           export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
           if [ ! -S "${XDG_RUNTIME_DIR}/bus" ]; then
@@ -161,8 +189,25 @@ jobs:
             exit 1
           fi
           systemctl --user restart qa-backend
-          sleep 3
+          sleep 1
           if ! systemctl --user is-active --quiet qa-backend; then
+            systemctl --user --no-pager --lines=40 status qa-backend || true
+            exit 1
+          fi
+          port=$(sed -n 's/^PORT=//p' .env | tail -n 1 | tr -d "\"'[:space:]")
+          case "$port" in
+            ''|*[!0-9]*) port=3000 ;;
+          esac
+          healthy=0
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null; then
+              healthy=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$healthy" -ne 1 ]; then
+            echo "API health check failed on 127.0.0.1:${port}/health"
             systemctl --user --no-pager --lines=40 status qa-backend || true
             exit 1
           fi

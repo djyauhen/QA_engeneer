@@ -22,6 +22,7 @@ export interface FactSheet {
 
 const USER_AGENT = 'QA-assistant/0.1 (landing fact check)';
 const EXTRACT_LIMIT = 4000;
+const CANDIDATE_LIMIT = 8;
 const FRANKFURTER_URL = 'https://api.frankfurter.app/latest?from=USD';
 const FALLBACK_FX_URL = 'https://open.er-api.com/v6/latest/USD';
 const FACT_HOSTS = new Set(['www.wikidata.org', 'api.frankfurter.app', 'open.er-api.com']);
@@ -34,6 +35,26 @@ const WIKI_LANGS = [
 ] as const;
 const WIKI_LANG_SET = new Set<string>(WIKI_LANGS);
 const WIKI_ALIAS: Record<string, string> = { nb: 'no' };
+
+const GEO_NAMES: readonly (readonly string[])[] = [
+  ['nl', 'nld', 'netherlands', 'the netherlands', 'holland', 'nederland', 'nederlanden', 'нидерланды', 'нидерландов', 'голландия'],
+  ['de', 'deu', 'germany', 'deutschland', 'германия', 'германии'],
+  ['fr', 'fra', 'france', 'frankreich', 'франция', 'франции'],
+  ['pl', 'pol', 'poland', 'polska', 'польша', 'польши'],
+  ['gb', 'gbr', 'uk', 'united kingdom', 'great britain', 'britain', 'england', 'великобритания', 'великобритании'],
+  ['ch', 'che', 'switzerland', 'schweiz', 'suisse', 'svizzera', 'швейцария', 'швейцарии'],
+  ['us', 'usa', 'united states', 'united states of america', 'сша'],
+  ['ca', 'can', 'canada', 'канада'],
+  ['es', 'esp', 'spain', 'españa', 'espana', 'испания'],
+  ['it', 'ita', 'italy', 'italia', 'италия'],
+  ['se', 'swe', 'sweden', 'sverige', 'швеция'],
+  ['no', 'nor', 'norway', 'norge', 'норвегия'],
+  ['dk', 'dnk', 'denmark', 'danmark', 'дания'],
+];
+const GEO_BY_NAME = new Map<string, readonly string[]>();
+for (const names of GEO_NAMES) {
+  for (const name of names) GEO_BY_NAME.set(name, names);
+}
 
 const FX_CODES = new Set([
   'AED', 'ALL', 'AUD', 'AZN', 'BAM', 'BDT', 'BGN', 'BRL', 'BYN', 'CAD', 'CHF', 'CLP', 'CNY', 'COP', 'CZK', 'DKK', 'EGP',
@@ -114,24 +135,47 @@ export function readOpenSearchTitle(body: unknown): string | null {
   return typeof title === 'string' && title.trim() ? title.trim() : null;
 }
 
+export function readOpenSearchTitles(body: unknown): string[] {
+  if (!Array.isArray(body) || !Array.isArray(body[1])) return [];
+  const titles: string[] = [];
+  for (const entry of body[1]) {
+    if (titles.length >= 5) break;
+    if (typeof entry !== 'string') continue;
+    const title = entry.trim();
+    if (!title || titles.includes(title)) continue;
+    titles.push(title);
+  }
+  return titles;
+}
+
 export function readWikidataSearch(
   body: unknown,
   name: string,
 ): { id: string; label: string; description: string } | null {
-  if (!body || typeof body !== 'object') return null;
+  return readWikidataMatches(body, name)[0] ?? null;
+}
+
+function readWikidataMatches(
+  body: unknown,
+  name: string,
+): { id: string; label: string; description: string }[] {
+  if (!body || typeof body !== 'object') return [];
   const search = (body as Record<string, unknown>).search;
-  if (!Array.isArray(search)) return null;
+  if (!Array.isArray(search)) return [];
+  const matches: { id: string; label: string; description: string }[] = [];
   for (const row of search) {
+    if (matches.length >= 5) break;
     if (!row || typeof row !== 'object') continue;
     const record = row as Record<string, unknown>;
     const id = record.id;
     const label = record.label;
     if (typeof id !== 'string' || !/^Q\d+$/.test(id) || typeof label !== 'string' || !label.trim()) continue;
     if (!titleMatchesPerson(name, label)) continue;
+    if (matches.some((match) => match.id === id)) continue;
     const description = typeof record.description === 'string' ? record.description.trim() : '';
-    return { id, label: label.trim(), description };
+    matches.push({ id, label: label.trim(), description });
   }
-  return null;
+  return matches;
 }
 
 export function readSitelink(
@@ -153,10 +197,14 @@ export function readSitelink(
 }
 
 export function readBirth(body: unknown): { iso: string; precision: number } | null {
+  return readTimeClaim(body, 'P569');
+}
+
+function readTimeClaim(body: unknown, property: string): { iso: string; precision: number } | null {
   if (!body || typeof body !== 'object') return null;
   const claims = (body as Record<string, unknown>).claims;
   if (!claims || typeof claims !== 'object') return null;
-  const rows = (claims as Record<string, unknown>).P569;
+  const rows = (claims as Record<string, unknown>)[property];
   if (!Array.isArray(rows) || !rows[0] || typeof rows[0] !== 'object') return null;
   const snak = (rows[0] as Record<string, unknown>).mainsnak;
   if (!snak || typeof snak !== 'object') return null;
@@ -277,11 +325,13 @@ export function readFallbackFx(body: unknown): FxRates | null {
 }
 
 export async function loadFactSheet(
-  options: { person: string | null; checkDate: string; languages?: readonly string[] },
+  options: { person: string | null; checkDate: string; languages?: readonly string[]; countries?: readonly string[] },
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<{ person: PersonFact | null; fx: FxRates | null }> {
   const [person, fx] = await Promise.all([
-    options.person ? fetchPerson(options.person, options.checkDate, options.languages ?? [], fetchImpl) : Promise.resolve(null),
+    options.person
+      ? fetchPerson(options.person, options.checkDate, options.languages ?? [], options.countries ?? [], fetchImpl)
+      : Promise.resolve(null),
     fetchFx(fetchImpl),
   ]);
   return { person, fx };
@@ -300,13 +350,14 @@ async function fetchPerson(
   name: string,
   checkDate: string,
   languages: readonly string[],
+  countries: readonly string[],
   fetchImpl: typeof fetch,
 ): Promise<PersonFact | null> {
   const trimmed = name.trim();
   if (!isPersonName(trimmed)) return null;
   const langs = wikiLangsFor(languages);
   try {
-    const found = await findPerson(trimmed, langs, fetchImpl);
+    const found = await findPerson(trimmed, langs, checkDate, countries, fetchImpl);
     if (!found) return null;
     const [birthBody, introBody, citizenshipBody, positionBody] = await Promise.all([
       found.qid ? getJsonRetry(claimsUrl(found.qid, 'P569'), fetchImpl) : Promise.resolve(null),
@@ -336,27 +387,66 @@ async function fetchPerson(
   }
 }
 
-async function findPerson(name: string, langs: string[], fetchImpl: typeof fetch): Promise<FoundPerson | null> {
+async function findPerson(
+  name: string,
+  langs: string[],
+  checkDate: string,
+  countries: readonly string[],
+  fetchImpl: typeof fetch,
+): Promise<FoundPerson | null> {
+  const geo = geoTokens(countries);
+  const seen = new Set<string>();
+  let count = 0;
+  const consider = async (candidate: FoundPerson | null): Promise<FoundPerson | null> => {
+    if (!candidate || count >= CANDIDATE_LIMIT) return null;
+    const keys = candidateKeys(candidate);
+    if (keys.some((key) => seen.has(key))) return null;
+    for (const key of keys) seen.add(key);
+    count += 1;
+    if (!(await acceptsPerson(candidate, checkDate, geo, langs, fetchImpl))) return null;
+    return candidate;
+  };
+
   for (const lang of langs) {
-    const direct = await summaryOf(lang, name, name, fetchImpl);
+    if (count >= CANDIDATE_LIMIT) return null;
+    const direct = await consider(await summaryOf(lang, name, name, fetchImpl));
     if (direct) return direct;
-    const title = readOpenSearchTitle(await getJsonRetry(searchUrl(lang, name), fetchImpl));
-    if (title && titleMatchesPerson(name, title)) {
-      const searched = await summaryOf(lang, title, name, fetchImpl);
+    if (count >= CANDIDATE_LIMIT) return null;
+    const titles = readOpenSearchTitles(await getJsonRetry(searchUrl(lang, name), fetchImpl));
+    for (const title of titles) {
+      if (!titleMatchesPerson(name, title) || seen.has(`${lang}:${title}`)) continue;
+      if (count >= CANDIDATE_LIMIT) return null;
+      const searched = await consider(await summaryOf(lang, title, name, fetchImpl));
       if (searched) return searched;
+      if (count >= CANDIDATE_LIMIT) return null;
     }
   }
-  let hit: { id: string; label: string; description: string } | null = null;
+
   for (const lang of langs) {
-    hit = readWikidataSearch(await getJsonRetry(wikidataSearchUrl(name, lang), fetchImpl), name);
-    if (hit) break;
+    if (count >= CANDIDATE_LIMIT) return null;
+    const hits = readWikidataMatches(await getJsonRetry(wikidataSearchUrl(name, lang), fetchImpl), name);
+    for (const hit of hits) {
+      if (seen.has(hit.id)) continue;
+      if (count >= CANDIDATE_LIMIT) return null;
+      const fromData = await consider(await personFromWikidata(hit, name, langs, fetchImpl));
+      if (fromData) return fromData;
+      if (count >= CANDIDATE_LIMIT) return null;
+    }
   }
-  if (!hit) return null;
+  return null;
+}
+
+async function personFromWikidata(
+  hit: { id: string; label: string; description: string },
+  name: string,
+  langs: string[],
+  fetchImpl: typeof fetch,
+): Promise<FoundPerson | null> {
   const entity = await getJsonRetry(entityUrl(hit.id, langs), fetchImpl);
   const sitelink = readSitelink(entity, hit.id, langs);
   if (sitelink) {
     const fromLink = await summaryOf(sitelink.lang, sitelink.title, name, fetchImpl);
-    if (fromLink) return fromLink;
+    if (fromLink) return { ...fromLink, qid: fromLink.qid ?? hit.id };
   }
   const description = readEntityDescription(entity, hit.id, langs) || hit.description;
   const source = canonicalFactSource(`https://www.wikidata.org/wiki/${hit.id}`);
@@ -369,6 +459,155 @@ async function findPerson(name: string, langs: string[], fetchImpl: typeof fetch
     qid: hit.id,
     wiki: null,
   };
+}
+
+async function acceptsPerson(
+  found: FoundPerson,
+  checkDate: string,
+  geo: ReadonlySet<string>,
+  langs: readonly string[],
+  fetchImpl: typeof fetch,
+): Promise<boolean> {
+  if (found.qid && (await diedOnOrBefore(found.qid, checkDate, fetchImpl))) return false;
+  if (geo.size === 0) return true;
+  if (!found.qid) return false;
+  const body = await getJsonRetry(claimsUrl(found.qid, 'P27'), fetchImpl);
+  if (body == null) return false;
+  return citizenshipMatches(readEntityIds(body), geo, langs, fetchImpl);
+}
+
+async function diedOnOrBefore(qid: string, checkDate: string, fetchImpl: typeof fetch): Promise<boolean> {
+  const body = await getJsonRetry(claimsUrl(qid, 'P570'), fetchImpl);
+  if (body == null) return false;
+  const death = readTimeClaim(body, 'P570');
+  if (!death) return false;
+  return isoOnOrBefore(death.iso, checkDate);
+}
+
+async function citizenshipMatches(
+  ids: readonly string[],
+  geo: ReadonlySet<string>,
+  langs: readonly string[],
+  fetchImpl: typeof fetch,
+): Promise<boolean> {
+  if (!ids.length) return false;
+  const coded = await Promise.all(
+    ids.map(async (id) => ({
+      id,
+      code: readCountryCode(await getJsonRetry(claimsUrl(id, 'P297'), fetchImpl)),
+    })),
+  );
+  const needLabels: string[] = [];
+  for (const row of coded) {
+    if (row.code) {
+      if (geo.has(row.code.toLowerCase())) return true;
+      continue;
+    }
+    needLabels.push(row.id);
+  }
+  if (!needLabels.length) return false;
+  const labels = readLabelLists(await getJsonRetry(labelsUrl(needLabels, langs), fetchImpl));
+  for (const id of needLabels) {
+    for (const label of labels[id] ?? []) {
+      if (geo.has(normalizeGeo(label))) return true;
+    }
+  }
+  return false;
+}
+
+function candidateKeys(candidate: FoundPerson): string[] {
+  const keys: string[] = [];
+  if (candidate.qid) keys.push(candidate.qid);
+  if (candidate.wiki) keys.push(`${candidate.wiki.lang}:${candidate.wiki.title}`);
+  if (!keys.length) keys.push(candidate.name.toLowerCase());
+  return keys;
+}
+
+function geoTokens(countries: readonly string[]): Set<string> {
+  const tokens = new Set<string>();
+  for (const country of countries) {
+    if (typeof country !== 'string') continue;
+    const norm = normalizeGeo(country);
+    if (!norm) continue;
+    const names = GEO_BY_NAME.get(norm);
+    if (!names) {
+      tokens.add(norm);
+      continue;
+    }
+    for (const name of names) tokens.add(name);
+  }
+  return tokens;
+}
+
+function normalizeGeo(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[_|/]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function isoOnOrBefore(iso: string, onIso: string): boolean {
+  const left = parseDate(iso);
+  const right = parseDate(onIso);
+  if (!left || !right) return false;
+  if (left.year !== right.year) return left.year < right.year;
+  if (left.month !== right.month) return left.month < right.month;
+  return left.day <= right.day;
+}
+
+function readCountryCode(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const claims = (body as Record<string, unknown>).claims;
+  if (!claims || typeof claims !== 'object') return null;
+  const rows = (claims as Record<string, unknown>).P297;
+  if (!Array.isArray(rows)) return null;
+  let bestRank = -1;
+  let code: string | null = null;
+  for (const row of rows) {
+    const rank = rankWeight(row);
+    if (rank < 0) continue;
+    if (code !== null && rank <= bestRank) continue;
+    const value = stringClaim(row);
+    if (!value || !/^[A-Za-z]{2}$/.test(value)) continue;
+    bestRank = rank;
+    code = value.toUpperCase();
+  }
+  return code;
+}
+
+function stringClaim(row: unknown): string | null {
+  if (!row || typeof row !== 'object') return null;
+  const snak = (row as Record<string, unknown>).mainsnak;
+  if (!snak || typeof snak !== 'object') return null;
+  const datavalue = (snak as Record<string, unknown>).datavalue;
+  if (!datavalue || typeof datavalue !== 'object') return null;
+  const value = (datavalue as Record<string, unknown>).value;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function readLabelLists(body: unknown): Record<string, string[]> {
+  if (!body || typeof body !== 'object') return {};
+  const entities = (body as Record<string, unknown>).entities;
+  if (!entities || typeof entities !== 'object') return {};
+  const labels: Record<string, string[]> = {};
+  for (const [id, entity] of Object.entries(entities as Record<string, unknown>)) {
+    if (!entity || typeof entity !== 'object') continue;
+    const bag = (entity as Record<string, unknown>).labels;
+    if (!bag || typeof bag !== 'object') continue;
+    const values: string[] = [];
+    for (const entry of Object.values(bag as Record<string, unknown>)) {
+      if (!entry || typeof entry !== 'object') continue;
+      const value = (entry as Record<string, unknown>).value;
+      if (typeof value !== 'string') continue;
+      const trimmed = value.trim();
+      if (trimmed && !values.includes(trimmed)) values.push(trimmed);
+    }
+    if (values.length) labels[id] = values;
+  }
+  return labels;
 }
 
 async function summaryOf(lang: string, title: string, wanted: string, fetchImpl: typeof fetch): Promise<FoundPerson | null> {
@@ -402,7 +641,7 @@ function summaryUrl(lang: string, title: string): string {
 }
 
 function searchUrl(lang: string, name: string): string {
-  return `https://${lang}.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(name)}&limit=1&namespace=0&format=json`;
+  return `https://${lang}.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(name)}&limit=5&namespace=0&format=json`;
 }
 
 function introUrl(lang: string, title: string): string {

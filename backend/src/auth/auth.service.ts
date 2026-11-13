@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import { AppConfig, SessionUser } from '../config';
@@ -35,7 +35,7 @@ export class SessionService {
       source: user.source,
       expires_at: new Date(now + SESSION_TTL_MS).toISOString(),
       absolute_expires_at: new Date(now + SESSION_ABSOLUTE_MS).toISOString(),
-      password_fingerprint: user.source === 'environment' ? passwordFingerprint(this.config.tlPassword) : null,
+      password_fingerprint: user.source === 'environment' ? passwordFingerprint(this.config.tlPassword, this.config.fingerprintKey) : null,
     });
     return id;
   }
@@ -54,7 +54,7 @@ export class SessionService {
     if (
       row.source === 'environment' &&
       row.password_fingerprint &&
-      row.password_fingerprint !== passwordFingerprint(this.config.tlPassword)
+      row.password_fingerprint !== passwordFingerprint(this.config.tlPassword, this.config.fingerprintKey)
     ) {
       await this.sessions.delete(id);
       return null;
@@ -99,7 +99,7 @@ export class AuthService {
     const tlLogin = safeEqual(login, this.config.tlLogin);
     const tlPassword = safeEqual(password, this.config.tlPassword);
     if (tlLogin && tlPassword) return { login: this.config.tlLogin, role: ROLE_TL, source: 'environment' };
-    if (tlLogin || !user || !matches) return null;
+    if (tlLogin || !user || !matches || user.disabled) return null;
     return { login: user.login, role: user.role as Role, source: 'neon' };
   }
 
@@ -115,8 +115,8 @@ export class AuthService {
   }
 }
 
-export function passwordFingerprint(password: string): string {
-  return createHash('sha256').update(password).digest('hex');
+export function passwordFingerprint(password: string, key: string): string {
+  return createHmac('sha256', key).update(password).digest('hex');
 }
 
 export function safeEqual(left: string, right: string): boolean {

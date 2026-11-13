@@ -4,6 +4,7 @@ import { AuthModule } from './auth/auth.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { ChecksModule } from './checks/checks.module';
 import { AioModule } from './aio/aio.module';
+import { HealthModule } from './health/health.module';
 import { ReportsModule } from './reports/reports.module';
 import { Runtime, RuntimeModule } from './runtime.module';
 import { UsersModule } from './users/users.module';
@@ -16,6 +17,7 @@ export class AppModule {
       imports: [
         RuntimeModule.register(runtime),
         AuthModule,
+        HealthModule,
         UsersModule,
         AioModule,
         CatalogModule,

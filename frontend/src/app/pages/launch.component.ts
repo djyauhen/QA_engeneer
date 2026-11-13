@@ -5,17 +5,7 @@ import { ApiService } from '../core/api.service';
 import { catalogSourceLine, normalizeCatalogQuery } from '../core/catalog-query';
 import { errorCode, errorText } from '../core/http-error';
 import { formatTimestamp, inputValue, joinList } from '../core/format';
-import {
-  CATALOG_STATUS_CAPTION,
-  COLLISION_TEXT,
-  EMPTY_CATALOG,
-  EMPTY_SEARCH,
-  NOT_IN_CATALOG,
-  PREVIEW_CAPTION,
-  CatalogItem,
-  CatalogPayload,
-  CatalogQuery,
-} from '../core/models';
+import { ROLE_TL, CATALOG_STATUS_CAPTION, COLLISION_TEXT, EMPTY_CATALOG, EMPTY_SEARCH, NOT_IN_CATALOG, PREVIEW_CAPTION, CatalogItem, CatalogPayload, CatalogQuery } from '../core/models';
 import { SessionStore } from '../core/session.store';
 
 @Component({
@@ -36,9 +26,11 @@ import { SessionStore } from '../core/session.store';
         <label for="search">Поиск</label>
         <input id="search" [value]="query()" (input)="query.set(inputValue($event))" />
       </div>
-      <button type="button" class="secondary" (click)="refresh()" [disabled]="refreshing()" [attr.aria-busy]="refreshing()">
-        Обновить
-      </button>
+      @if (session.role() === tl) {
+        <button type="button" class="secondary" (click)="refresh()" [disabled]="refreshing()" [attr.aria-busy]="refreshing()">
+          Обновить
+        </button>
+      }
       <div class="spacer"></div>
       <div class="launch-actions">
         <div class="field field-human">
@@ -102,7 +94,7 @@ import { SessionStore } from '../core/session.store';
               tabindex="0"
               [class.selected]="selected()?.uuid === row.uuid"
               [attr.aria-selected]="selected()?.uuid === row.uuid"
-              (click)="select(row)"
+              (click)="launchRow(row)"
               (keydown)="onRowKey($event, row, index)"
             >
               <td class="mono id">{{ row.human_id }}</td>
@@ -175,6 +167,7 @@ export class LaunchComponent {
   private readonly api = inject(ApiService);
   private readonly router = inject(Router);
   private readonly session = inject(SessionStore);
+  readonly tl = ROLE_TL;
   readonly items = signal<CatalogItem[]>([]);
   readonly catalogQuery = signal<CatalogQuery | null>(null);
   readonly refreshedAt = signal<string | null>(null);
@@ -265,6 +258,13 @@ export class LaunchComponent {
     this.notice.set('');
   }
 
+  launchRow(row: CatalogItem): void {
+    if (this.launching()) return;
+    this.launchError.set('');
+    this.select(row);
+    this.post({ human_id: row.human_id, uuid: row.uuid });
+  }
+
   onHumanId(event: Event): void {
     const value = inputValue(event);
     this.humanId.set(value);
@@ -275,7 +275,7 @@ export class LaunchComponent {
   onRowKey(event: KeyboardEvent, row: CatalogItem, index: number): void {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      this.select(row);
+      this.launchRow(row);
       return;
     }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;

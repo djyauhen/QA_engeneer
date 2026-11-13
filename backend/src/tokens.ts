@@ -10,6 +10,7 @@ export const COSTS_REPO = 'COSTS_REPO';
 export const ACTIVE_CHECKS_REPO = 'ACTIVE_CHECKS_REPO';
 export const CHECK_ARCHIVES_REPO = 'CHECK_ARCHIVES_REPO';
 export const LOGIN_ATTEMPTS_REPO = 'LOGIN_ATTEMPTS_REPO';
+export const DB_PING = 'DB_PING';
 export const SESSION_ABSOLUTE_MS = 7 * 24 * 60 * 60 * 1000;
 export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 export const LOGIN_MAX_FAILURES = 10;
@@ -55,7 +56,8 @@ export const LH_STATUS_DONE = 'выполнен';
 export const LH_STATUS_SKIPPED = 'не запускался';
 export const LH_STATUS_ERROR = 'ошибка после повторов';
 
-export const LEASE_MS = 20_000;
+export const LEASE_MS = 180_000;
+export const LEASE_RENEW_MS = 60_000;
 
 export const STATIC_SUMMARY_FAILED = 'есть failed';
 export const STATIC_SUMMARY_WARNING = 'только warning';

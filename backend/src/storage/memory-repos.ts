@@ -34,15 +34,33 @@ export class MemoryUsersRepo implements UsersRepo {
     if (this.rows.some((row) => row.login === user.login)) {
       throw new Error('duplicate-login');
     }
-    this.rows.push({ login: user.login, password_hash: user.password_hash, role: user.role });
+    this.rows.push({
+      login: user.login,
+      password_hash: user.password_hash,
+      role: user.role,
+      disabled: user.disabled === true,
+    });
   }
 
   async findByLogin(login: string): Promise<StoredUser | null> {
-    return this.rows.find((row) => row.login === login) ?? null;
+    const row = this.rows.find((item) => item.login === login);
+    return row ? { ...row } : null;
   }
 
-  async list(): Promise<Array<{ login: string; role: string }>> {
-    return this.rows.map((row) => ({ login: row.login, role: row.role }));
+  async list(): Promise<Array<{ login: string; role: string; disabled: boolean }>> {
+    return this.rows.map((row) => ({ login: row.login, role: row.role, disabled: row.disabled === true }));
+  }
+
+  async setDisabled(login: string, disabled: boolean): Promise<void> {
+    const row = this.rows.find((item) => item.login === login);
+    if (!row) throw new Error('user-not-found');
+    row.disabled = disabled;
+  }
+
+  async setPasswordHash(login: string, passwordHash: string): Promise<void> {
+    const row = this.rows.find((item) => item.login === login);
+    if (!row) throw new Error('user-not-found');
+    row.password_hash = passwordHash;
   }
 }
 
@@ -354,6 +372,7 @@ export function createMemoryRepos(): Repos {
     activeChecks: new MemoryActiveChecksRepo(),
     archives: new MemoryArchivesRepo(),
     loginAttempts: new MemoryLoginAttemptsRepo(),
+    ping: async () => undefined,
     close: async () => undefined,
   };
 }

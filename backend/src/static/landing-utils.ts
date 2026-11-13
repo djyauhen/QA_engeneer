@@ -33,14 +33,34 @@ export function isPathInsideRoot(rootDir: string, candidatePath: string): boolea
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+const CDN_MACRO = '{{cdn}}';
+
+/**
+ * Maps a leading `{{cdn}}` to the landing root.
+ * `{{cdn}}/images/a.png` and `{{cdn}}images/a.png` both become `images/a.png`.
+ * A single `{cdn}` is not a macro. A leading `./` before the macro, or left on the remainder, stays a relative path.
+ * Protocol-relative `//` after the macro is returned unchanged so the caller can reject it.
+ */
+export function stripLandingCdnMacro(relativePath: string): string {
+  let value = relativePath;
+  if (value.startsWith(`./${CDN_MACRO}`)) value = value.slice(2);
+  if (!value.startsWith(CDN_MACRO)) return relativePath;
+  const rest = value.slice(CDN_MACRO.length);
+  if (rest.startsWith('/') && !rest.startsWith('//')) return rest.slice(1);
+  return rest;
+}
+
+function isSchemeOrProtocolRelative(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//');
+}
+
 export function safeResolveUnderLanding(landingFolder: string, unsafeRelativePath: string | null): string | null {
   if (unsafeRelativePath == null || typeof unsafeRelativePath !== 'string') return null;
   const cleaned = unsafeRelativePath.split('?')[0].split('#')[0].trim();
-  if (!cleaned) return null;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(cleaned)) return null;
-  if (cleaned.startsWith('//')) return null;
-  if (path.isAbsolute(cleaned)) return null;
-  const joined = path.resolve(landingFolder, cleaned);
+  if (!cleaned || isSchemeOrProtocolRelative(cleaned)) return null;
+  const local = stripLandingCdnMacro(cleaned);
+  if (!local || isSchemeOrProtocolRelative(local) || path.isAbsolute(local)) return null;
+  const joined = path.resolve(landingFolder, local);
   if (!isPathInsideRoot(landingFolder, joined)) return null;
   return joined;
 }
@@ -103,6 +123,65 @@ export function readFileUtf8Safe(filePath: string): { ok: true; content: string 
     return { ok: true, content: fs.readFileSync(filePath, 'utf-8') };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : 'read-failed' };
+  }
+}
+
+export async function readFileUtf8(filePath: string): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
+  try {
+    const size = (await fs.promises.stat(filePath)).size;
+    if (size > MAX_TEXT_BYTES) return { ok: false, error: 'too-large' };
+    return { ok: true, content: await fs.promises.readFile(filePath, 'utf-8') };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'read-failed' };
+  }
+}
+
+export async function getAllFilesByExtensionsAsync(rootDir: string, extensions: string[]): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    let items: string[];
+    try {
+      items = await fs.promises.readdir(dir);
+    } catch {
+      return;
+    }
+    for (const item of items) {
+      const itemPath = path.join(dir, item);
+      let stats: fs.Stats;
+      try {
+        stats = await fs.promises.stat(itemPath);
+      } catch {
+        continue;
+      }
+      if (stats.isDirectory()) await walk(itemPath);
+      else if (extensions.includes(path.extname(item).toLowerCase())) out.push(itemPath);
+    }
+  };
+  await walk(rootDir);
+  return out;
+}
+
+export async function walkFilesByExtensionsAsync(
+  dir: string,
+  extensions: string[],
+  onFile: (filePath: string) => void | Promise<void>,
+): Promise<void> {
+  let items: string[];
+  try {
+    items = await fs.promises.readdir(dir);
+  } catch {
+    return;
+  }
+  for (const item of items) {
+    const itemPath = path.join(dir, item);
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.stat(itemPath);
+    } catch {
+      continue;
+    }
+    if (stats.isDirectory()) await walkFilesByExtensionsAsync(itemPath, extensions, onFile);
+    else if (extensions.includes(path.extname(item).toLowerCase())) await onFile(itemPath);
   }
 }
 

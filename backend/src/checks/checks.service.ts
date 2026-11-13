@@ -7,7 +7,6 @@ import {
   NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
-import { waitUntil } from '@vercel/functions';
 import { SessionUser } from '../config';
 import { CatalogService } from '../catalog/catalog.service';
 import { toChoiceRow } from '../catalog/map-row';
@@ -31,7 +30,6 @@ export class ChecksService implements OnModuleInit {
   onModuleInit(): void {
     this.store.setContinueListener((check) => {
       check.finished = this.orchestrator.run(check);
-      waitUntil(check.finished);
     });
   }
 
@@ -63,10 +61,6 @@ export class ChecksService implements OnModuleInit {
     check.step('catalog', 'done');
     this.store.add(check);
     check.finished = this.orchestrator.run(check);
-    // The response returns immediately. On Vercel the invocation is cancelled with it
-    // unless this promise is registered; locally waitUntil is a no-op.
-    // The run returns at the human gate, so the invocation does not stay open while QA decides.
-    waitUntil(check.finished);
     return { check_id: check.id };
   }
 

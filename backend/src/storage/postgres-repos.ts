@@ -46,6 +46,7 @@ export async function createPostgresRepos(databaseUrl: string, poolMax = 10): Pr
   };
   pool.query = ((...args: Parameters<Pool['query']>) =>
     ensureSchema().then(() => query(...args))) as Pool['query'];
+  const purge = armReportPurge(pool);
   return {
     users: new PgUsersRepo(pool),
     sessions: new PgSessionsRepo(pool),
@@ -57,10 +58,54 @@ export async function createPostgresRepos(databaseUrl: string, poolMax = 10): Pr
     activeChecks: new PgActiveChecksRepo(pool),
     archives: new PgArchivesRepo(pool),
     loginAttempts: new PgLoginAttemptsRepo(pool),
+    ping: async () => {
+      await pool.query('SELECT 1');
+    },
     close: async () => {
+      purge.stop();
       await pool.end();
     },
   };
+}
+
+const REPORT_PURGE_MS = 60 * 60 * 1000;
+
+function armReportPurge(pool: Pool): { stop: () => void } {
+  const run = () => {
+    purgeStored(pool, new Date()).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : 'purge failed';
+      console.error(`report purge failed: ${message.replace(/postgres(?:ql)?:\/\/\S+/gi, '[redacted]')}`);
+    });
+  };
+  const startup = setTimeout(run, 0);
+  startup.unref?.();
+  const timer = setInterval(run, REPORT_PURGE_MS);
+  timer.unref?.();
+  return {
+    stop: () => {
+      clearTimeout(startup);
+      clearInterval(timer);
+    },
+  };
+}
+
+async function purgeStored(pool: Pool, now: Date): Promise<void> {
+  const cutoff = retentionCutoff(now).toISOString();
+  await pool.query('DELETE FROM reports WHERE created_at < $1', [cutoff]);
+  await pool.query('DELETE FROM cost_entries WHERE recorded_at < $1', [cutoff]);
+  await pool.query(
+    `DELETE FROM check_archives
+     WHERE id IN (
+       SELECT id FROM active_checks
+       WHERE payload->>'reportSaved' = 'true'
+         AND updated_at < NOW() - INTERVAL '24 hours'
+     )`,
+  );
+  await pool.query(
+    `DELETE FROM active_checks
+     WHERE payload->>'reportSaved' = 'true'
+       AND updated_at < NOW() - INTERVAL '24 hours'`,
+  );
 }
 
 async function runSchema(query: Pool['query']): Promise<void> {
@@ -79,7 +124,7 @@ class PgUsersRepo implements UsersRepo {
   async insert(user: StoredUser): Promise<void> {
     try {
       await this.pool.query(
-        'INSERT INTO users (login, password_hash, role) VALUES ($1, $2, $3)',
+        'INSERT INTO users (login, password_hash, role, disabled) VALUES ($1, $2, $3, FALSE)',
         [user.login, user.password_hash, user.role],
       );
     } catch (error) {
@@ -93,18 +138,29 @@ class PgUsersRepo implements UsersRepo {
   }
 
   async findByLogin(login: string): Promise<StoredUser | null> {
-    const result = await this.pool.query<{ login: string; password_hash: string; role: string }>(
-      'SELECT login, password_hash, role FROM users WHERE login = $1',
+    const result = await this.pool.query<{ login: string; password_hash: string; role: string; disabled: boolean }>(
+      'SELECT login, password_hash, role, disabled FROM users WHERE login = $1',
       [login],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    return row ? { ...row, disabled: row.disabled === true } : null;
   }
 
-  async list(): Promise<Array<{ login: string; role: string }>> {
-    const result = await this.pool.query<{ login: string; role: string }>(
-      'SELECT login, role FROM users ORDER BY login',
+  async list(): Promise<Array<{ login: string; role: string; disabled: boolean }>> {
+    const result = await this.pool.query<{ login: string; role: string; disabled: boolean }>(
+      'SELECT login, role, disabled FROM users ORDER BY login',
     );
-    return result.rows.map((row) => ({ login: row.login, role: row.role }));
+    return result.rows.map((row) => ({ login: row.login, role: row.role, disabled: row.disabled === true }));
+  }
+
+  async setDisabled(login: string, disabled: boolean): Promise<void> {
+    const result = await this.pool.query('UPDATE users SET disabled = $2 WHERE login = $1', [login, disabled]);
+    if ((result.rowCount ?? 0) === 0) throw new Error('user-not-found');
+  }
+
+  async setPasswordHash(login: string, passwordHash: string): Promise<void> {
+    const result = await this.pool.query('UPDATE users SET password_hash = $2 WHERE login = $1', [login, passwordHash]);
+    if ((result.rowCount ?? 0) === 0) throw new Error('user-not-found');
   }
 }
 
@@ -172,16 +228,14 @@ class PgReportsRepo implements ReportsRepo {
   }
 
   async get(id: string): Promise<ReportPayload | null> {
-    await this.purge(new Date());
     const result = await this.pool.query<{ payload: ReportPayload }>(
-      'SELECT payload FROM reports WHERE id = $1',
-      [id],
+      'SELECT payload FROM reports WHERE id = $1 AND created_at >= $2',
+      [id, retentionCutoff(new Date()).toISOString()],
     );
     return result.rows[0]?.payload ?? null;
   }
 
   async list(ownerLogin: string | null, now: Date): Promise<ReportListItem[]> {
-    await this.purge(now);
     const result = await this.pool.query<{
       id: string;
       human_id: string;
@@ -224,7 +278,6 @@ class PgReportsRepo implements ReportsRepo {
     excludeId: string;
     now: Date;
   }): Promise<ReportPayload | null> {
-    await this.purge(input.now);
     const result = await this.pool.query<{ payload: ReportPayload }>(
       `SELECT payload FROM reports
        WHERE human_id = $1
@@ -243,25 +296,6 @@ class PgReportsRepo implements ReportsRepo {
       ],
     );
     return result.rows[0]?.payload ?? null;
-  }
-
-  private async purge(now: Date): Promise<void> {
-    const cutoff = retentionCutoff(now).toISOString();
-    await this.pool.query('DELETE FROM reports WHERE created_at < $1', [cutoff]);
-    await this.pool.query('DELETE FROM cost_entries WHERE recorded_at < $1', [cutoff]);
-    await this.pool.query(
-      `DELETE FROM check_archives
-       WHERE id IN (
-         SELECT id FROM active_checks
-         WHERE payload->>'reportSaved' = 'true'
-           AND updated_at < NOW() - INTERVAL '24 hours'
-       )`,
-    );
-    await this.pool.query(
-      `DELETE FROM active_checks
-       WHERE payload->>'reportSaved' = 'true'
-         AND updated_at < NOW() - INTERVAL '24 hours'`,
-    );
   }
 }
 

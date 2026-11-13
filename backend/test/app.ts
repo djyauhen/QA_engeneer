@@ -65,6 +65,7 @@ export async function createTestApp(options?: {
     visualChromePath: '',
     bcryptRounds: 4,
     poolMax: 10,
+    fingerprintKey: 'test-fingerprint-key',
     aioPreviewCampaignUuid: '',
     aioPreviewSourceUuid: '',
     aioPreviewDomainUuid: '',

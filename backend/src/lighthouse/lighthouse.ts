@@ -1,8 +1,8 @@
 import { spawn, SpawnOptions } from 'child_process';
-import fs from 'fs';
 import path from 'path';
 import { AppConfig } from '../config';
 import { LighthouseMetrics } from '../reports/report.types';
+import { resolveChromeExecutable } from '../stand/chrome-path';
 
 export abstract class LighthouseRunner {
   abstract run(url: string, formFactor: 'mobile' | 'desktop'): Promise<LighthouseMetrics>;
@@ -38,9 +38,9 @@ export class CliLighthouseRunner extends LighthouseRunner {
   }
 
   async run(url: string, formFactor: 'mobile' | 'desktop'): Promise<LighthouseMetrics> {
+    const chrome = resolveChromeExecutable(this.config.lighthouseChromePath);
+    if (!chrome) throw new Error('Chrome не найден');
     const args = [
-      '--yes',
-      'lighthouse',
       url,
       '--quiet',
       `--chrome-flags=--headless${this.config.lighthouseNoSandbox ? ' --no-sandbox' : ''}`,
@@ -48,11 +48,9 @@ export class CliLighthouseRunner extends LighthouseRunner {
       `--form-factor=${formFactor}`,
       '--output=json',
       '--output-path=stdout',
+      `--chrome-path=${chrome}`,
     ];
     if (formFactor === 'desktop') args.push('--preset=desktop');
-    if (this.config.lighthouseChromePath) {
-      args.push(`--chrome-path=${this.config.lighthouseChromePath}`);
-    }
     const stdout = await exec(args);
     return parseLighthouse(stdout);
   }
@@ -65,43 +63,19 @@ export interface LighthouseSpawnSpec {
 }
 
 /**
- * `spawn('npx', { shell: false })` fails on Windows because npx is npx.cmd.
- * Prefer node plus the npm cli script so a Chrome path with spaces stays one argument.
- * The cmd.exe fallback is only used when that script is not next to node.
+ * Runs the lighthouse CLI installed in backend/node_modules. `npx` is not used:
+ * on Windows it is npx.cmd and would pull an unpinned copy.
  */
 export function lighthouseSpawnSpec(
-  npxArgs: string[],
+  cliArgs: string[],
   env: {
-    platform?: NodeJS.Platform;
     execPath?: string;
-    fileExists?: (candidate: string) => boolean;
-    comSpec?: string;
+    cliPath?: string;
   } = {},
 ): LighthouseSpawnSpec {
-  const platform = env.platform ?? process.platform;
-  if (platform !== 'win32') {
-    return { command: 'npx', args: npxArgs, options: { shell: false } };
-  }
   const execPath = env.execPath ?? process.execPath;
-  const fileExists = env.fileExists ?? fs.existsSync;
-  const npxCli = path.win32.join(path.win32.dirname(execPath), 'node_modules', 'npm', 'bin', 'npx-cli.js');
-  if (fileExists(npxCli)) {
-    return { command: execPath, args: [npxCli, ...npxArgs], options: { shell: false } };
-  }
-  const comSpec = env.comSpec || process.env.ComSpec || 'cmd.exe';
-  const inner = ['npx.cmd', ...npxArgs].map(quoteCmdArg).join(' ');
-  return {
-    command: comSpec,
-    args: ['/d', '/s', '/c', `"${inner}"`],
-    options: { shell: false, windowsVerbatimArguments: true },
-  };
-}
-
-function quoteCmdArg(value: string): string {
-  if (/[\0\r\n]/.test(value)) throw new Error('Сбой Lighthouse');
-  const escaped = value.replace(/%/g, '%%').replace(/"/g, '""');
-  if (value.length === 0 || /[\s"&<>|^%]/.test(value)) return `"${escaped}"`;
-  return value;
+  const cliPath = env.cliPath ?? path.join(__dirname, '..', '..', 'node_modules', 'lighthouse', 'cli', 'index.js');
+  return { command: execPath, args: [cliPath, ...cliArgs], options: { shell: false } };
 }
 
 interface LighthouseAuditDetails {

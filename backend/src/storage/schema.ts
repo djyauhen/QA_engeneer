@@ -4,6 +4,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('ТЛ', 'QA'))
   )`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT FALSE`,
   `CREATE TABLE IF NOT EXISTS catalog_cache (
     id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     rows JSONB NOT NULL,

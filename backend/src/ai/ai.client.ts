@@ -6,19 +6,19 @@ import { previewShotLabel, previewShotLabels } from '../stand/preview-slices';
 import { CommentAvatarOccurrence, MaterialImage, PersonClaim } from './materials';
 import { FactSheet, FxRates } from './facts';
 import { LANDING_FOOTER_REF, OUTLET_FOOTER_REF, OUTLET_HEADER_REF } from './outlets';
+import { categorySystemMessage } from './qa-category-instruction';
 import {
   CategoryPart,
   QA_CATEGORY_COUNT,
   attachmentLabels,
-  categorySystemPrompt,
   categoryUsesVision,
   mergeCategoryParts,
 } from './qa-categories';
 import { QaReportFields, mapCategoryResponse } from './qa-response';
 
 export const DEFAULT_DEEPSEEK_API_BASE = 'https://api.deepseek.com';
-export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
-/** Thinking stays on, but the default high-effort budget is 64K tokens and outlives a Vercel function. */
+export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-pro';
+/** The high 64K thinking budget is not used. Effort stays low. */
 export const DEEPSEEK_REASONING_EFFORT = 'low';
 export const DEEPSEEK_MAX_OUTPUT_TOKENS = 12288;
 /** One checklist item is one completion. A second try covers a timeout, an empty body, or a missing status. */
@@ -309,7 +309,7 @@ function buildBundle(input: AiInput): ReviewBundle {
 
 function buildCategoryRequest(bundle: ReviewBundle, category: number, model: string): DeepSeekChatRequest {
   // No web_search: chat completions accepts only function tools, and the model does not run them.
-  // Responses API web_search is server-side for deepseek-v4-pro and ignored on deepseek-flash.
+  // Responses API web_search is a different API and is not used for this check.
   const labels = attachmentLabels(category, bundle.available, { content: bundle.contentRefs, comment: bundle.commentRefs });
   const labelSet = new Set(labels);
   const images = bundle.images.filter((image) => labelSet.has(image.ref));
@@ -350,7 +350,7 @@ function buildCategoryRequest(bundle: ReviewBundle, category: number, model: str
     max_tokens: DEEPSEEK_MAX_OUTPUT_TOKENS,
     response_format: { type: 'json_object' },
     messages: [
-      { role: 'system', content: categorySystemPrompt(category) },
+      { role: 'system', content: categorySystemMessage(category) },
       {
         role: 'user',
         content: labels.length
@@ -422,12 +422,14 @@ function outletNote(bundle: ReviewBundle): string {
 function factNote(bundle: ReviewBundle, category: number): string {
   const geo = (bundle.input.countries ?? []).filter(Boolean).join(', ') || 'страницы';
   if (category === 3 || category === 4) {
+    const picked =
+      'Если fact_sheet.person есть, это ныне живущий человек, чьё гражданство совпало с этим GEO; его уже нашли поиском. Умершего тёзку и человека из другой страны в карточку не кладут.';
     const person = bundle.input.factSheet?.person;
     if (person) {
       const citizenship = (person.citizenship ?? []).join(', ') || 'не указано';
-      return `Категория ${category}: знаменитость для GEO ${geo} сверяется с карточкой fact_sheet.person (${person.name}, гражданство: ${citizenship}).`;
+      return `Категория ${category}: знаменитость для GEO ${geo} сверяется с карточкой fact_sheet.person (${person.name}, гражданство: ${citizenship}). ${picked}`;
     }
-    return `Категория ${category}: карточки fact_sheet.person нет. Человека не объявляй несуществующим и не пиши «fact_sheet.person отсутствует». Пустая карточка не запрещает закрыть пункт по тексту и фото. Не ставь N/A только из-за пустой карточки. Сайт отсюда не открывается: возраст, должность и гражданство без карточки не выдумывай, это clarifications.`;
+    return `Категория ${category}: карточки fact_sheet.person нет. Человека не объявляй несуществующим и не пиши «fact_sheet.person отсутствует». Пустая карточка не запрещает закрыть пункт по тексту и фото. Не ставь N/A только из-за пустой карточки. Сайт отсюда не открывается: возраст, должность и гражданство без карточки не выдумывай, это clarifications. ${picked}`;
   }
   if (category === 5) return 'Валюту против GEO проверяй без курса. Сумму в USD не переводи.';
   if (category === 6) {
@@ -502,6 +504,9 @@ async function runPool<T, R>(items: readonly T[], limit: number, task: (item: T)
 }
 
 export function createAiClient(config: AppConfig): AiClient {
-  if (config.aiMode === 'real' && config.aiApiKey) return new DeepSeekAiClient(config);
+  if (config.aiMode === 'real' && !config.aiApiKey) {
+    throw new Error('DEEPSEEK_API_KEY is required');
+  }
+  if (config.aiMode === 'real') return new DeepSeekAiClient(config);
   return new StubAiClient();
 }

@@ -1,9 +1,19 @@
 import { randomUUID } from 'crypto';
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { ACTIVE_CHECKS_REPO, LEASE_MS } from '../tokens';
+import { ACTIVE_CHECKS_REPO, LEASE_MS, LEASE_RENEW_MS } from '../tokens';
 import { ActiveChecksRepo } from '../storage/repos';
 import { CheckRecord } from './check.record';
 import { toSnapshot } from './snapshot';
+
+export function leaseShouldRenew(check: {
+  running: boolean;
+  detached: boolean;
+  aborted: boolean;
+  reportSaved: boolean;
+}): boolean {
+  if (check.detached || check.aborted || check.reportSaved) return false;
+  return check.running;
+}
 
 export function leaseDeadline(now = Date.now()): string {
   return new Date(now + LEASE_MS).toISOString();
@@ -18,6 +28,7 @@ export class CheckStore implements OnModuleDestroy {
   private readonly byId = new Map<string, CheckRecord>();
   private readonly tails = new Map<string, Promise<void>>();
   private readonly actionTimers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly leaseTimers = new Map<string, ReturnType<typeof setInterval>>();
   private continueListener: ((check: CheckRecord) => void) | null = null;
 
   constructor(@Inject(ACTIVE_CHECKS_REPO) private readonly active: ActiveChecksRepo) {}
@@ -45,6 +56,7 @@ export class CheckStore implements OnModuleDestroy {
     this.bind(check);
     this.byId.set(check.id, check);
     this.armActionsPoll(check);
+    this.armLeaseRenew(check);
     this.schedulePersist(check);
   }
 
@@ -61,6 +73,7 @@ export class CheckStore implements OnModuleDestroy {
     }
     this.byId.delete(id);
     this.clearActions(id);
+    this.clearLease(id);
     await this.active.releaseLease(id, this.leaseOwner);
   }
 
@@ -71,6 +84,8 @@ export class CheckStore implements OnModuleDestroy {
   onModuleDestroy(): void {
     for (const timer of this.actionTimers.values()) clearInterval(timer);
     this.actionTimers.clear();
+    for (const timer of this.leaseTimers.values()) clearInterval(timer);
+    this.leaseTimers.clear();
     for (const check of this.byId.values()) check.dispose();
     this.byId.clear();
   }
@@ -79,7 +94,10 @@ export class CheckStore implements OnModuleDestroy {
     check.attach({
       persist: () => this.schedulePersist(check),
       pullDecision: () => this.pullDecision(check),
-      onAbort: () => this.clearActions(check.id),
+      onAbort: () => {
+        this.clearActions(check.id);
+        this.clearLease(check.id);
+      },
     });
   }
 
@@ -91,6 +109,27 @@ export class CheckStore implements OnModuleDestroy {
     check.armClearPending();
     await this.enqueueAndWait(check);
     return pending;
+  }
+
+  renewRunningLease(check: CheckRecord): void {
+    if (!leaseShouldRenew(check)) {
+      if (check.detached || check.aborted || check.reportSaved) this.clearLease(check.id);
+      return;
+    }
+    this.schedulePersist(check);
+  }
+
+  private armLeaseRenew(check: CheckRecord): void {
+    const timer = setInterval(() => this.renewRunningLease(check), LEASE_RENEW_MS);
+    timer.unref?.();
+    this.leaseTimers.set(check.id, timer);
+  }
+
+  private clearLease(id: string): void {
+    const timer = this.leaseTimers.get(id);
+    if (!timer) return;
+    clearInterval(timer);
+    this.leaseTimers.delete(id);
   }
 
   private armActionsPoll(check: CheckRecord): void {

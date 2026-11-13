@@ -6,7 +6,7 @@ import { EMPTY, Subject, Subscription } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { ApiService } from '../core/api.service';
 import { errorText } from '../core/http-error';
-import { shouldPoll } from '../core/format';
+import { isLandingPreviewUrl, openLandingPreview, shouldPoll } from '../core/format';
 import {
   AI_GATE_TEXT,
   REPLACED_STAND,
@@ -88,6 +88,9 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
           }
           @if (current.stand_url) {
             <a class="secondary link" routerLink="/checks/{{ current.check_id }}/stand">Стенд</a>
+          }
+          @if (previewable(current.stand_url)) {
+            <button type="button" class="secondary" (click)="preview(current.stand_url)">Preview</button>
           }
         </p>
       }
@@ -179,6 +182,14 @@ export class ProgressComponent {
 
   reportReady(view: CheckView): boolean {
     return view.steps.some((step) => step.name === 'report' && step.state === 'done');
+  }
+
+  previewable(url: string | null | undefined): boolean {
+    return isLandingPreviewUrl(url);
+  }
+
+  preview(url: string | null | undefined): void {
+    openLandingPreview(url);
   }
 
   body(view: CheckView): ReportBody {

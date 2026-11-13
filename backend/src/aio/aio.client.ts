@@ -34,7 +34,10 @@ export class AioDownloadError extends Error {
   }
 }
 
-const MAX_DOWNLOAD_BYTES = 80 * 1024 * 1024;
+export const MAX_DOWNLOAD_BYTES = 80 * 1024 * 1024;
+/** Unpacked landing cap. Wider than the 80 MiB zip so images can expand, still finite. */
+export const MAX_UNPACK_BYTES = 512 * 1024 * 1024;
+export const MAX_UNPACK_ENTRIES = 5_000;
 const DOWNLOAD_TIMEOUT_MS = 60_000;
 
 export abstract class AioClient {

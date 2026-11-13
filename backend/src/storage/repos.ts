@@ -7,12 +7,15 @@ export interface StoredUser {
   login: string;
   password_hash: string;
   role: string;
+  disabled: boolean;
 }
 
 export interface UsersRepo {
   insert(user: StoredUser): Promise<void>;
   findByLogin(login: string): Promise<StoredUser | null>;
-  list(): Promise<Array<{ login: string; role: string }>>;
+  list(): Promise<Array<{ login: string; role: string; disabled: boolean }>>;
+  setDisabled(login: string, disabled: boolean): Promise<void>;
+  setPasswordHash(login: string, passwordHash: string): Promise<void>;
 }
 
 export interface CatalogRepo {
@@ -174,5 +177,6 @@ export interface Repos {
   activeChecks: ActiveChecksRepo;
   archives: CheckArchivesRepo;
   loginAttempts: LoginAttemptsRepo;
+  ping(): Promise<void>;
   close(): Promise<void>;
 }

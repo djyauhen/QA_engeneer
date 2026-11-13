@@ -44,20 +44,22 @@ const GENERAL_BY_CATEGORY: Record<number, Array<(typeof GENERAL_KEYS)[number]>> 
 };
 
 /**
- * Chat completions on the configured model (deepseek-flash) does not browse.
- * Official DeepSeek docs: /chat/completions tools are functions only, and the model does not run them.
- * Responses API web_search runs on the server for deepseek-v4-pro and is ignored for deepseek-flash.
- * Vision for this check stays on flash, so these prompts must not ask the model to open a page.
+ * Chat completions, including deepseek-v4-pro, does not browse.
+ * Each of points 2–4 has its own offline sentence. Do not copy one sentence into another point.
  */
-const NO_LIVE_WEB =
-  'Этот вызов страницу не загружает и поиск не выполняет. Не ссылайся на сайт, который ты якобы открыл, и не выдумывай источник. Чего нет во вложениях и в переданных полях — clarifications, не факт.';
+const OUTLET_OFFLINE = 'Сайт издания этот вызов не открывает. Эталон шапки и футера — вложенные кадры.';
+const PERSON_OFFLINE = 'Биографию в сети не ищи. Источник сведений о человеке — fact_sheet.person.';
+const FAME_OFFLINE = 'Гражданство и известность в сети не ищи. Источник для этого пункта — fact_sheet.person.';
 
 function answerContract(category: number): string {
+  const title = QA_CATEGORY_TITLES[category];
+  if (!title) throw new Error(`unknown category ${category}`);
   const keys = GENERAL_BY_CATEGORY[category] ?? [];
   const general = keys.length ? `,"general":{${keys.map((key) => `"${key}":""`).join(',')}}` : '';
   const images = category === 3 ? ',"image_checks":[{"ref":"","match":"match|mismatch|uncertain","note":""}]' : '';
   const lines = [
-    'Ответ — один JSON-объект и ничего больше. Другие пункты чеклиста не возвращай.',
+    `Ответ пункта ${category}. ${title}.`,
+    'Один JSON-объект и ничего больше. Другие пункты чеклиста не возвращай.',
     `{"status":"PASS"|"FAIL"|"N/A","note":""${general},"findings":[{"file":"","quote":"","screenshot_ref":"","priority":"critical|major|minor","where":"","problem":"","expected":""}],"clarifications":[""]${images}}`,
     'PASS — проверено, подтверждённой ошибки нет. FAIL — только вместе с finding: file, quote дословно из page_text, screenshot_ref только из attachments_order. N/A — по этим материалам пункт не закрыть; это не ошибка. screenshot_ref не бывает base64, outlet_header и outlet_footer.',
   ];
@@ -84,7 +86,7 @@ const CATEGORY_PROMPTS: Record<number, string> = {
     'Сверь только шапку и футер лендинга с оформлением издания: логотип, состав и порядок элементов шапки, блоки футера, общее визуальное сходство этих зон. Внешнее сходство не доказывает, что страница опубликована этим СМИ. Если оформление может выдать ленд за публикацию издания, это FAIL.',
     'Доказательство — вложенные кадры. outlet_header и outlet_footer — шапка и футер официальной главной, их нельзя ставить в screenshot_ref. Шапка ленда — первый кадр preview, если он есть, иначе desktop. Футер ленда — последний кадр preview, иначе landing_footer, иначе текст page_text.',
     'PASS — шапка и футер совпадают с приложенным эталоном. FAIL — есть конкретное отличие; quote из page_text, screenshot_ref — кадр ленда. Нет outlet_header или outlet_footer — N/A и совпадение не утверждай. Нет кадра ленда — визуальный FAIL не ставь и кадр не описывай.',
-    NO_LIVE_WEB,
+    OUTLET_OFFLINE,
     'Кадры превью ленда уже в сообщении, повторно их не скачивай. Не проверяй текст статьи, персонажа, депозит и комментарии.',
     'general.outlet — название издания.',
     answerContract(2),
@@ -94,7 +96,7 @@ const CATEGORY_PROMPTS: Record<number, string> = {
     'Опорное имя — main_person_claim.from_land_name, иначе resolved. Оба пустые — персонажа не выдумывай, статус N/A. conflict или другое имя в page_text — FAIL, quote из page_text, expected — имя из названия ленда.',
     'Проверь написание имени по всей странице. Если в fact_sheet.person есть возраст на дату проверки или должность, сверь их с текстом. Прямое противоречие карточке — FAIL, expected — формулировка из карточки. Чего в карточке нет, не называй верным и не делай FAIL: строка в clarifications.',
     'Пустая карточка не запрещает проверку имени по тексту и фото и не означает, что человека нет. Не пиши «fact_sheet.person отсутствует» как причину N/A. Возраст, пол и должность без карточки не подтверждай и не опровергай.',
-    NO_LIVE_WEB,
+    PERSON_OFFLINE,
     'Фото: кадры preview и вложения не kind comment. Совпало лицо, имя на картинке и подпись — не ошибка, image_checks match. Другой человек — mismatch и FAIL. Лица не видно — uncertain и clarifications, не FAIL. Личность не определяй только по фотографии, если имя не задано названием ленда. Аватар комментария — не этот персонаж.',
     'Не проверяй, уместен ли человек для страны: это другой пункт. Не проверяй депозит, оффер и телефон.',
     'general.main_person — имя.',
@@ -103,9 +105,9 @@ const CATEGORY_PROMPTS: Record<number, string> = {
   4: [
     'Пункт 4. Соответствие персонажа GEO.',
     'Проверь, уместно ли упоминание знаменитости из названия ленда для GEO. Смотри гражданство и известность, контекст публикации и связь с аудиторией. Знаменитость не обязана быть гражданином страны. Иностранное происхождение само по себе не ошибка, если page_text объясняет появление.',
-    'fact_sheet.person (citizenship, description, extract) — приложенный источник. Карточка подтверждает человека и связь со страной — PASS. Страна карточки противоречит GEO, а текст не объясняет, зачем здесь иностранная знаменитость — FAIL, quote из page_text.',
+    'fact_sheet.person (citizenship, description, extract) — приложенный источник. Если fact_sheet.person есть, это ныне живущий человек, чьё гражданство совпало с этим GEO; его уже нашли поиском. Умершего тёзку и человека из другой страны в карточку не кладут. Карточка подтверждает человека и связь со страной — PASS. Страна карточки противоречит GEO, а текст не объясняет, зачем здесь иностранная знаменитость — FAIL, quote из page_text.',
     'Пустой fact_sheet не запрещает закрыть пункт и не означает, что человека нет. Не ставь N/A только из-за пустой карточки. Не уверен, кто это — clarifications, не N/A. Не предлагай придумывать подтверждение участия знаменитости.',
-    NO_LIVE_WEB,
+    FAME_OFFLINE,
     'Не сверяй орфографию имени, возраст и фото: это другой пункт. Не проверяй депозит и шапку.',
     answerContract(4),
   ].join('\n\n'),

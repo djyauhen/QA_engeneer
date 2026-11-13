@@ -7,6 +7,7 @@ import { EMPTY, Subject, Subscription } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { ApiService } from '../core/api.service';
 import { errorText } from '../core/http-error';
+import { isLandingPreviewUrl, openLandingPreview, standSandbox } from '../core/format';
 import { STAND_BEFORE_ACTIONS, STAND_URL_CAPTION, CheckView } from '../core/models';
 import { SessionStore } from '../core/session.store';
 
@@ -26,7 +27,12 @@ import { SessionStore } from '../core/session.store';
       }
       @if (standUrl()) {
         <p class="hint">{{ caption }}</p>
-        <a class="stand-url" [href]="standUrl()" target="_blank" rel="noopener noreferrer">{{ standUrl() }}</a>
+        <div class="stand-actions">
+          <a class="stand-url" [href]="standUrl()" target="_blank" rel="noopener noreferrer">{{ standUrl() }}</a>
+          @if (previewable(standUrl())) {
+            <button type="button" class="secondary" (click)="preview(standUrl())">Preview</button>
+          }
+        </div>
         @if (frame(); as src) {
           <iframe
             class="stand-frame"
@@ -97,7 +103,15 @@ export class StandComponent {
   }
 
   sandbox(): string {
-    return this.actionsAllowed() ? 'allow-forms allow-scripts' : '';
+    return standSandbox(this.actionsAllowed());
+  }
+
+  previewable(url: string | null | undefined): boolean {
+    return isLandingPreviewUrl(url);
+  }
+
+  preview(url: string | null | undefined): void {
+    openLandingPreview(url);
   }
 
   allow(): void {

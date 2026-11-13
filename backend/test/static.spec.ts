@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { defaultRules } from '../src/rules/rules';
+import { safeResolveUnderLanding } from '../src/static/landing-utils';
 import { EXPECTED_SVG_SCRIPT_SHA256, runStaticChecks, STATIC_CHECK_NAMES } from '../src/static/static-checks';
 import { configuredStandFormHtml, dialCodeForCountries, resolveStandFormHtml, standFormHtml } from '../src/stand/form-html';
 import { applyCdnMacro, transformHtml } from '../src/stand/transform';
@@ -45,6 +46,132 @@ describe('static checks', () => {
     expect(items.map((item) => item.name)).not.toContain('overall_status');
     expect(EXPECTED_SVG_SCRIPT_SHA256).toBe('1fdc077086ee808c187d7a613348f197ba0f15625c70090b2d43e8983ad4ff50');
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('resolves {{cdn}} links to files under the landing root', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-static-'));
+    const landing = path.join(root, 'landing');
+    fs.mkdirSync(path.join(landing, 'js'), { recursive: true });
+    fs.mkdirSync(path.join(landing, 'css'), { recursive: true });
+    fs.writeFileSync(
+      path.join(landing, 'index.html'),
+      '<html><head><link rel="stylesheet" href="{{cdn}}/css/app.css"><script src="{{cdn}}/js/app.js"></script><script src="{{cdn}}js/app.js"></script></head><body></body></html>',
+    );
+    fs.writeFileSync(path.join(landing, 'favicon.ico'), 'ico');
+    fs.writeFileSync(path.join(landing, 'js', 'app.js'), 'var local = 1;\n');
+    fs.writeFileSync(path.join(landing, 'css', 'app.css'), 'body{color:#111}\n');
+    try {
+      const items = await runStaticChecks(root, defaultRules());
+      const linked = items.find((item) => item.name === STATIC_CHECK_NAMES.linked);
+      expect(linked?.status).toBe('passed');
+      expect(linked?.findings ?? []).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still reports a missing file when {{cdn}} points at nothing on disk', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-static-'));
+    const landing = path.join(root, 'landing');
+    fs.mkdirSync(path.join(landing, 'css'), { recursive: true });
+    fs.writeFileSync(
+      path.join(landing, 'index.html'),
+      '<html><head><script src="{{cdn}}/missing.js"></script></head><body></body></html>',
+    );
+    fs.writeFileSync(path.join(landing, 'favicon.ico'), 'ico');
+    fs.writeFileSync(path.join(landing, 'css', 'app.css'), 'body{color:#111}\n');
+    try {
+      const items = await runStaticChecks(root, defaultRules());
+      const linked = items.find((item) => item.name === STATIC_CHECK_NAMES.linked);
+      const text = linked?.findings.map((finding) => finding.text).join('\n') ?? '';
+      expect(linked?.status).toBe('failed');
+      expect(text).toContain('файл не найден');
+      expect(text).toContain('missing.js');
+      expect(text).not.toContain('недопустимый путь');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still fails the cdn prefix check when a css or js url does not start with {{cdn}}/', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-static-'));
+    const landing = path.join(root, 'landing');
+    fs.mkdirSync(path.join(landing, 'css'), { recursive: true });
+    fs.mkdirSync(path.join(landing, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(landing, 'index.html'), '<html><head></head><body></body></html>');
+    fs.writeFileSync(path.join(landing, 'favicon.ico'), 'ico');
+    const css = '.bad{background:url(images/a.png)}.ok{background:url({{cdn}}/images/ok.png)}';
+    fs.writeFileSync(path.join(landing, 'css', 'app.css'), css);
+    fs.writeFileSync(path.join(landing, 'js', 'app.js'), 'var broken = "images/b.png"; var fine = "{{cdn}}/images/ok.webp";');
+    try {
+      const items = await runStaticChecks(root, defaultRules());
+      const cdn = items.find((item) => item.name === STATIC_CHECK_NAMES.cdn);
+      const text = cdn?.findings.map((finding) => finding.text).join('\n') ?? '';
+      expect(cdn?.status).toBe('failed');
+      expect(text).toContain('images/a.png');
+      expect(text).toContain('images/b.png');
+      expect(text).toContain('не начинается с «{{cdn}}/»');
+      expect(text).not.toContain('{{cdn}}/images/ok.png');
+      expect(text).not.toContain('{{cdn}}/images/ok.webp');
+      expect(fs.readFileSync(path.join(landing, 'css', 'app.css'), 'utf8')).toBe(css);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('finds a favicon and an svg referenced with {{cdn}}, and still flags ?v on that path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-static-'));
+    const landing = path.join(root, 'landing');
+    fs.mkdirSync(path.join(landing, 'js'), { recursive: true });
+    fs.mkdirSync(path.join(landing, 'css'), { recursive: true });
+    fs.writeFileSync(
+      path.join(landing, 'index.html'),
+      '<html><head><link rel="icon" href="{{cdn}}/favicon.ico"><script src="{{cdn}}/js/app.js?v=1"></script></head><body><img src="{{cdn}}/guard.svg"></body></html>',
+    );
+    fs.writeFileSync(path.join(landing, 'css', 'app.css'), 'body{color:#111}\n');
+    fs.writeFileSync(path.join(landing, 'favicon.ico'), 'ico');
+    fs.writeFileSync(path.join(landing, 'guard.svg'), '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+    fs.writeFileSync(path.join(landing, 'js', 'app.js'), 'var local = 1;\n');
+    try {
+      const items = await runStaticChecks(root, defaultRules());
+      const favicon = items.find((item) => item.name === STATIC_CHECK_NAMES.favicon);
+      const svg = items.find((item) => item.name === STATIC_CHECK_NAMES.svg);
+      const cache = items.find((item) => item.name === STATIC_CHECK_NAMES.cache);
+      const linked = items.find((item) => item.name === STATIC_CHECK_NAMES.linked);
+      const svgText = svg?.findings.map((finding) => finding.text).join('\n') ?? '';
+      const cacheText = cache?.findings.map((finding) => finding.text).join('\n') ?? '';
+      expect(favicon?.status).toBe('passed');
+      expect(linked?.status).toBe('passed');
+      expect(svgText).not.toContain('не найден на диске');
+      expect(svgText).toContain('не содержит защитный скрипт');
+      expect(cache?.status).toBe('failed');
+      expect(cacheText).toContain('{{cdn}}/js/app.js?v=1');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('safeResolveUnderLanding', () => {
+  const landing = path.join(os.tmpdir(), 'qa-cdn-landing');
+
+  it('maps a leading {{cdn}} onto the landing root and leaves other references alone', () => {
+    expect(safeResolveUnderLanding(landing, '{{cdn}}/images/a.png')).toBe(path.resolve(landing, 'images', 'a.png'));
+    expect(safeResolveUnderLanding(landing, '{{cdn}}images/a.png')).toBe(path.resolve(landing, 'images', 'a.png'));
+    expect(safeResolveUnderLanding(landing, '{{cdn}}/./js/app.js')).toBe(path.resolve(landing, 'js', 'app.js'));
+    expect(safeResolveUnderLanding(landing, '{{cdn}}./js/app.js')).toBe(path.resolve(landing, 'js', 'app.js'));
+    expect(safeResolveUnderLanding(landing, './{{cdn}}/js/app.js')).toBe(path.resolve(landing, 'js', 'app.js'));
+    expect(safeResolveUnderLanding(landing, '{{cdn}}/js/app.js?v=1#section')).toBe(path.resolve(landing, 'js', 'app.js'));
+    expect(safeResolveUnderLanding(landing, '{{cdn}}/js/app.js#section?v=1')).toBe(path.resolve(landing, 'js', 'app.js'));
+    expect(safeResolveUnderLanding(landing, '{cdn}/js/app.js')).toBe(path.resolve(landing, '{cdn}', 'js', 'app.js'));
+    expect(safeResolveUnderLanding(landing, 'https://cdn.example/{{cdn}}/a.js')).toBeNull();
+    expect(safeResolveUnderLanding(landing, '//cdn.example/a.js')).toBeNull();
+    expect(safeResolveUnderLanding(landing, 'data:image/png;base64,aaaa')).toBeNull();
+    expect(safeResolveUnderLanding(landing, '{{cdn}}https://evil.test/a.js')).toBeNull();
+    expect(safeResolveUnderLanding(landing, '{{cdn}}//evil.test/a.js')).toBeNull();
+    expect(safeResolveUnderLanding(landing, '{{cdn}}/../../secret.js')).toBeNull();
+    expect(safeResolveUnderLanding(landing, '{{cdn}}')).toBeNull();
+    expect(safeResolveUnderLanding(landing, '{{cdn}}/')).toBeNull();
   });
 });
 

@@ -21,6 +21,7 @@ import { DUPLICATE_LOGIN, ENV_ACCOUNT, ROLE_QA, ROLE_TL, Role, UserRow } from '.
             <th class="col-login">Логин</th>
             <th class="col-role">Роль</th>
             <th>Источник</th>
+            <th>Действия</th>
           </tr>
         </thead>
         <tbody>
@@ -31,6 +32,33 @@ import { DUPLICATE_LOGIN, ENV_ACCOUNT, ROLE_QA, ROLE_TL, Role, UserRow } from '.
               <td>
                 @if (user.source === 'environment') {
                   <span class="chip">{{ envLabel }}</span>
+                } @else if (user.disabled) {
+                  <span class="chip">Заблокирован</span>
+                }
+              </td>
+              <td>
+                @if (user.source !== 'environment') {
+                  <div class="user-actions">
+                    <button
+                      type="button"
+                      class="quiet"
+                      [disabled]="busy() === user.login"
+                      (click)="toggleBlock(user)"
+                    >
+                      {{ user.disabled ? 'Разблокировать' : 'Заблокировать' }}
+                    </button>
+                    <form class="user-actions" (submit)="changePassword($event, user.login)">
+                      <label class="visually-hidden" [attr.for]="'pw-' + user.login">Новый пароль для {{ user.login }}</label>
+                      <input
+                        [id]="'pw-' + user.login"
+                        type="password"
+                        autocomplete="new-password"
+                        [value]="draft(user.login)"
+                        (input)="setDraft(user.login, inputValue($event))"
+                      />
+                      <button type="submit" class="quiet" [disabled]="busy() === user.login">Сменить пароль</button>
+                    </form>
+                  </div>
                 }
               </td>
             </tr>
@@ -71,6 +99,9 @@ import { DUPLICATE_LOGIN, ENV_ACCOUNT, ROLE_QA, ROLE_TL, Role, UserRow } from '.
         }
         <button type="submit" class="primary" [disabled]="creating()">Создать</button>
       </form>
+      @if (actionError()) {
+        <p class="alert error" role="alert">{{ actionError() }}</p>
+      }
     }
   `,
 })
@@ -88,6 +119,9 @@ export class UsersComponent {
   readonly qa = ROLE_QA;
   readonly envLabel = ENV_ACCOUNT;
   readonly inputValue = inputValue;
+  readonly busy = signal('');
+  readonly actionError = signal('');
+  private readonly drafts = signal<Record<string, string>>({});
 
   constructor() {
     this.reload();
@@ -127,6 +161,54 @@ export class UsersComponent {
           return;
         }
         this.createError.set(errorText(error, 'Не удалось создать пользователя.'));
+      },
+    });
+  }
+
+  draft(login: string): string {
+    return this.drafts()[login] ?? '';
+  }
+
+  setDraft(login: string, value: string): void {
+    this.drafts.update((current) => ({ ...current, [login]: value }));
+  }
+
+  toggleBlock(user: UserRow): void {
+    if (this.busy()) return;
+    this.actionError.set('');
+    this.busy.set(user.login);
+    this.api.setUserBlocked(user.login, !user.disabled).subscribe({
+      next: () => {
+        this.busy.set('');
+        this.reload();
+      },
+      error: (error: unknown) => {
+        this.busy.set('');
+        this.actionError.set(errorText(error, 'Не удалось изменить блокировку.'));
+      },
+    });
+  }
+
+  changePassword(event: Event, login: string): void {
+    event.preventDefault();
+    const password = this.draft(login);
+    this.actionError.set('');
+    if (password.length < 8) {
+      this.actionError.set('Пароль должен быть не короче 8 символов.');
+      return;
+    }
+    if (this.busy()) return;
+    this.busy.set(login);
+    this.api.setUserPassword(login, password).subscribe({
+      next: () => {
+        this.busy.set('');
+        this.setDraft(login, '');
+        this.reload();
+      },
+      error: (error: unknown) => {
+        this.busy.set('');
+        this.setDraft(login, '');
+        this.actionError.set(errorText(error, 'Не удалось сменить пароль.'));
       },
     });
   }

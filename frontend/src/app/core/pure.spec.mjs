@@ -5,11 +5,15 @@ import {
   errorText,
   formatMetric,
   isImageSource,
+  isLandingPreviewUrl,
   lighthouseImageSrc,
+  openLandingPreview,
   qaCategoryLabel,
   qaPriorityText,
   qaStatusText,
   shouldPoll,
+  shouldClearSession,
+  standSandbox,
 } from './format.ts';
 import { ACCESS_DENIED } from './models.ts';
 
@@ -185,3 +189,95 @@ describe('formatMetric', () => {
     assert.equal(formatMetric(undefined), 'нет данных');
   });
 });
+
+describe('session and stand sandbox', () => {
+  it('clears a stored session only after 401 and keeps the iframe off the API origin', () => {
+    assert.equal(shouldClearSession(401), true);
+    assert.equal(shouldClearSession(500), false);
+    assert.equal(shouldClearSession(503), false);
+    assert.equal(shouldClearSession(undefined), false);
+    assert.equal(standSandbox(true).includes('allow-same-origin'), false);
+    assert.equal(standSandbox(true), 'allow-forms allow-scripts');
+    assert.equal(standSandbox(false), '');
+  });
+});
+
+describe('openLandingPreview', () => {
+  const features = 'popup,width=1280,height=900';
+
+  it('opens http and https in the named window and focuses it', () => {
+    const events = [];
+    withPreviewWindow(
+      {
+        open(url, name, windowFeatures) {
+          events.push(['open', url, name, windowFeatures]);
+          return {
+            focus() {
+              events.push(['focus', url]);
+            },
+          };
+        },
+      },
+      () => {
+        openLandingPreview('https://stand.example/preview/1');
+        openLandingPreview('http://stand.example/preview/2');
+      },
+    );
+    assert.deepEqual(events, [
+      ['open', 'https://stand.example/preview/1', 'qa-landing-preview', features],
+      ['focus', 'https://stand.example/preview/1'],
+      ['open', 'http://stand.example/preview/2', 'qa-landing-preview', features],
+      ['focus', 'http://stand.example/preview/2'],
+    ]);
+  });
+
+  it('does not open javascript or an empty string', () => {
+    let calls = 0;
+    withPreviewWindow(
+      {
+        open() {
+          calls += 1;
+          return { focus() { calls += 1; } };
+        },
+      },
+      () => {
+        openLandingPreview('javascript:alert(1)');
+        openLandingPreview('');
+        openLandingPreview(undefined);
+        openLandingPreview(null);
+      },
+    );
+    assert.equal(calls, 0);
+    assert.equal(isLandingPreviewUrl('https://stand.example/preview'), true);
+    assert.equal(isLandingPreviewUrl('http://stand.example/preview'), true);
+    assert.equal(isLandingPreviewUrl('javascript:alert(1)'), false);
+    assert.equal(isLandingPreviewUrl(''), false);
+  });
+
+  it('stays quiet when the popup is blocked', () => {
+    const events = [];
+    withPreviewWindow(
+      {
+        open(url, name, windowFeatures) {
+          events.push(['open', url, name, windowFeatures]);
+          return null;
+        },
+      },
+      () => {
+        openLandingPreview('https://stand.example/preview');
+      },
+    );
+    assert.deepEqual(events, [['open', 'https://stand.example/preview', 'qa-landing-preview', features]]);
+  });
+});
+
+function withPreviewWindow(windowStub, run) {
+  const previous = globalThis.window;
+  globalThis.window = windowStub;
+  try {
+    run();
+  } finally {
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
+  }
+}

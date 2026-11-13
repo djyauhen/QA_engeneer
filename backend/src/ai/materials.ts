@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { safeResolveUnderLanding } from '../static/landing-utils';
+import { safeResolveUnderLanding, stripLandingCdnMacro } from '../static/landing-utils';
 import { transformHtml } from '../stand/transform';
 
 export const MAX_PAGE_TEXT_CHARS = 200_000;
@@ -293,7 +293,9 @@ function sniffMime(buffer: Buffer, ext: string): ImageMime | null {
 
 function resolveImageFile(landingFolder: string, raw: string): string | null {
   let ref = decodeEntities(raw.trim());
-  ref = ref.replace(/^\{\{[^}]*\}\}\/?/, '');
+  const withoutCdn = stripLandingCdnMacro(ref);
+  // Other leading {{...}} macros stay a single strip. Do not run that strip after {{cdn}}, or a second macro would be eaten.
+  ref = withoutCdn === ref || withoutCdn.startsWith('//') ? ref.replace(/^\{\{[^}]*\}\}\/?/, '') : withoutCdn;
   ref = ref.split('#')[0].split('?')[0].trim();
   ref = ref.replace(/^\.\//, '');
   if (/^\/(?!\/)/.test(ref)) ref = ref.replace(/^\/+/, '');

@@ -104,6 +104,17 @@ export class ApiService {
     return this.http.post<{ login: string; role: string }>(this.url('/admin/users'), body);
   }
 
+  setUserBlocked(login: string, disabled: boolean): Observable<{ login: string; disabled: boolean }> {
+    return this.http.post<{ login: string; disabled: boolean }>(
+      this.url(`/admin/users/${encodeURIComponent(login)}/block`),
+      { disabled },
+    );
+  }
+
+  setUserPassword(login: string, password: string): Observable<{ ok: true }> {
+    return this.http.post<{ ok: true }>(this.url(`/admin/users/${encodeURIComponent(login)}/password`), { password });
+  }
+
   private url(path: string): string {
     return `${this.base}${path}`;
   }

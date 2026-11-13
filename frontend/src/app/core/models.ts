@@ -254,6 +254,7 @@ export interface UserRow {
   login: string;
   role: string;
   source: 'environment' | 'neon';
+  disabled: boolean;
 }
 
 export interface ReportBody {

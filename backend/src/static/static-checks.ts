@@ -12,15 +12,18 @@ import {
 import {
   formatLinesSuffix,
   getAllFilesByExtensions,
+  getAllFilesByExtensionsAsync,
   lineNumberAtIndex,
   linesForRegexMatches,
   linesForSubstring,
+  readFileUtf8,
   readFileUtf8Safe,
   relFromLanding,
   resolveLandingFolder,
   safeResolveUnderLanding,
   isPathInsideRoot,
   walkFilesByExtensions,
+  walkFilesByExtensionsAsync,
 } from './landing-utils';
 
 export const EXPECTED_SVG_SCRIPT_SHA256 =
@@ -78,30 +81,39 @@ function toFinding(text: string): { text: string; file?: string } {
 }
 
 export async function runStaticChecks(projectPath: string, rules: AdminRules): Promise<StaticItem[]> {
-  const structure = checkStructure(projectPath);
+  const structure = await checkStructure(projectPath);
   if (structure.status === 'failed') return [structure];
   const rest = await Promise.all([
-    Promise.resolve(checkPhp(projectPath)),
-    Promise.resolve(checkImages(projectPath, rules)),
-    Promise.resolve(checkLinkedFiles(projectPath)),
-    Promise.resolve(checkExternal(projectPath, rules)),
-    Promise.resolve(checkDates(projectPath)),
-    Promise.resolve(checkUtf8(projectPath)),
-    Promise.resolve(checkFavicon(projectPath)),
-    Promise.resolve(checkStealer(projectPath, rules)),
-    Promise.resolve(checkStyleTags(projectPath)),
-    Promise.resolve(checkLegacy(projectPath, rules)),
-    Promise.resolve(checkFormMacros(projectPath, rules)),
-    Promise.resolve(checkTracker(projectPath)),
-    Promise.resolve(checkSvg(projectPath)),
-    Promise.resolve(checkCacheBuster(projectPath)),
-    Promise.resolve(checkLargeScripts(projectPath, rules)),
-    Promise.resolve(checkCss(projectPath, rules)),
-    Promise.resolve(checkUnwanted(projectPath, rules)),
-    Promise.resolve(checkBase64(projectPath, rules)),
-    Promise.resolve(checkCdn(projectPath)),
+    checkPhp(projectPath),
+    checkImages(projectPath, rules),
+    checkLinkedFiles(projectPath),
+    checkExternal(projectPath, rules),
+    checkDates(projectPath),
+    checkUtf8(projectPath),
+    checkFavicon(projectPath),
+    checkStealer(projectPath, rules),
+    checkStyleTags(projectPath),
+    checkLegacy(projectPath, rules),
+    checkFormMacros(projectPath, rules),
+    checkTracker(projectPath),
+    checkSvg(projectPath),
+    checkCacheBuster(projectPath),
+    checkLargeScripts(projectPath, rules),
+    checkCss(projectPath, rules),
+    checkUnwanted(projectPath, rules),
+    checkBase64(projectPath, rules),
+    checkCdn(projectPath),
   ]);
   return [structure, ...rest];
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.promises.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const IGNORED = ['.DS_Store', 'Thumbs.db', '.idea', '.vscode', 'node_modules'];
@@ -120,12 +132,12 @@ const ALLOWED_EXT: Record<string, string[]> = {
   favicon: ['.ico', '.png', '.svg', '.jpg', '.jpeg', '.webp'],
 };
 
-function listAssetFiles(folderPath: string, label: string): { files: string[]; error: string | null } {
+async function listAssetFiles(folderPath: string, label: string): Promise<{ files: string[]; error: string | null }> {
   const files: string[] = [];
-  const walk = (dir: string, prefix: string): string | null => {
+  const walk = async (dir: string, prefix: string): Promise<string | null> => {
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOTDIR' || code === 'ENOENT' || code === 'EPERM') {
@@ -138,7 +150,7 @@ function listAssetFiles(folderPath: string, label: string): { files: string[]; e
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        const nested = walk(full, rel);
+        const nested = await walk(full, rel);
         if (nested) return nested;
       } else if (entry.isFile()) {
         files.push(rel);
@@ -146,14 +158,14 @@ function listAssetFiles(folderPath: string, label: string): { files: string[]; e
     }
     return null;
   };
-  return { files, error: walk(folderPath, '') };
+  return { files, error: await walk(folderPath, '') };
 }
 
-function checkStructure(projectPath: string): StaticItem {
+async function checkStructure(projectPath: string): Promise<StaticItem> {
   const errors: string[] = [];
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.structure, 'failed', resolved.errors);
-  const contents = fs.readdirSync(resolved.landingFolder);
+  const contents = await fs.promises.readdir(resolved.landingFolder);
   const filtered = contents.filter((entry) => !IGNORED.includes(entry));
   if (!REQUIRED_FILES.some((file) => filtered.includes(file))) {
     errors.push('В папке лендинга отсутствуют файлы index.html или index.php');
@@ -164,7 +176,7 @@ function checkStructure(projectPath: string): StaticItem {
   for (const folder of [...REQUIRED_FOLDERS, ...OPTIONAL_FOLDERS]) {
     if (!filtered.includes(folder)) continue;
     const folderPath = path.join(resolved.landingFolder, folder);
-    const listed = listAssetFiles(folderPath, folder);
+    const listed = await listAssetFiles(folderPath, folder);
     if (listed.error) {
       errors.push(listed.error);
       continue;
@@ -179,11 +191,18 @@ function checkStructure(projectPath: string): StaticItem {
       errors.push(`В папке ${folder} обнаружены файлы с неподходящими расширениями: ${invalid.join(', ')}`);
     }
   }
-  const faviconFound = ['', 'img', 'images'].some((folder) => {
+  let faviconFound = false;
+  for (const folder of ['', 'img', 'images']) {
     const folderPath = folder ? path.join(resolved.landingFolder, folder) : resolved.landingFolder;
-    if (!fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) return false;
-    return fs.readdirSync(folderPath).some((file) => ALLOWED_EXT.favicon.includes(path.extname(file).toLowerCase()));
-  });
+    if (!(await fileExists(folderPath))) continue;
+    const stats = await fs.promises.stat(folderPath);
+    if (!stats.isDirectory()) continue;
+    const names = await fs.promises.readdir(folderPath);
+    if (names.some((file) => ALLOWED_EXT.favicon.includes(path.extname(file).toLowerCase()))) {
+      faviconFound = true;
+      break;
+    }
+  }
   if (!faviconFound) errors.push('Фавикон отсутствует в корне или в папках img/images.');
   const allowed = new Set([
     ...REQUIRED_FILES,
@@ -198,13 +217,13 @@ function checkStructure(projectPath: string): StaticItem {
   return item(STATIC_CHECK_NAMES.structure, errors.length ? 'failed' : 'passed', errors);
 }
 
-function checkPhp(projectPath: string): StaticItem {
+async function checkPhp(projectPath: string): Promise<StaticItem> {
   const errors: string[] = [];
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.php, 'failed', resolved.errors);
-  walkFilesByExtensions(resolved.landingFolder, ['.html', '.php'], (filePath) => {
+  await walkFilesByExtensionsAsync(resolved.landingFolder, ['.html', '.php'], async (filePath) => {
     const rel = relFromLanding(resolved.landingFolder, filePath);
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       return;
@@ -217,14 +236,14 @@ function checkPhp(projectPath: string): StaticItem {
   return item(STATIC_CHECK_NAMES.php, errors.length ? 'failed' : 'passed', errors);
 }
 
-function checkImages(projectPath: string, rules: AdminRules): StaticItem {
+async function checkImages(projectPath: string, rules: AdminRules): Promise<StaticItem> {
   const errors: string[] = [];
   const warnings: string[] = [];
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.images, 'failed', resolved.errors);
   const failedBytes = rules.image_failed_kb * 1024;
   const warningBytes = rules.image_warning_kb * 1024;
-  for (const imagePath of getAllFilesByExtensions(resolved.landingFolder, [
+  for (const imagePath of await getAllFilesByExtensionsAsync(resolved.landingFolder, [
     '.jpg',
     '.jpeg',
     '.png',
@@ -233,7 +252,7 @@ function checkImages(projectPath: string, rules: AdminRules): StaticItem {
     '.svg',
     '.avif',
   ])) {
-    const size = fs.statSync(imagePath).size;
+    const size = (await fs.promises.stat(imagePath)).size;
     const rel = relFromLanding(resolved.landingFolder, imagePath);
     if (size > failedBytes) errors.push(`${rel} — размер больше ${rules.image_failed_kb} KB (${(size / 1024).toFixed(1)} KB)`);
     else if (size > warningBytes) {
@@ -251,13 +270,13 @@ function checkImages(projectPath: string, rules: AdminRules): StaticItem {
  * Chrome is not required here: the same tags are read from the file. Tags injected only
  * after client-side script execution are not visible to this parser.
  */
-function checkLinkedFiles(projectPath: string): StaticItem {
+async function checkLinkedFiles(projectPath: string): Promise<StaticItem> {
   const errors: string[] = [];
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.linked, 'failed', resolved.errors);
-  const indexFile = fs.readdirSync(resolved.landingFolder).find((file) => REQUIRED_FILES.includes(file));
+  const indexFile = (await fs.promises.readdir(resolved.landingFolder)).find((file) => REQUIRED_FILES.includes(file));
   if (!indexFile) return item(STATIC_CHECK_NAMES.linked, 'failed', ['Не найден файл index.html или index.php']);
-  const read = readFileUtf8Safe(path.join(resolved.landingFolder, indexFile));
+  const read = await readFileUtf8(path.join(resolved.landingFolder, indexFile));
   const source = read.ok ? read.content : '';
   const tagRe = /<(link|script)\b([^>]*)>/gi;
   let match: RegExpExecArray | null;
@@ -275,21 +294,21 @@ function checkLinkedFiles(projectPath: string): StaticItem {
       errors.push(`${tag.toUpperCase()}: ${file} — недопустимый путь (выход за пределы лендинга или абсолютный URL пути)${lineSuffix}`);
       continue;
     }
-    if (!fs.existsSync(safePath)) {
+    if (!await fileExists(safePath)) {
       errors.push(`${tag.toUpperCase()}: ${file} — файл не найден (${relFromLanding(resolved.landingFolder, safePath)})${lineSuffix}`);
     }
   }
   return item(STATIC_CHECK_NAMES.linked, errors.length ? 'failed' : 'passed', errors);
 }
 
-function checkExternal(projectPath: string, rules: AdminRules): StaticItem {
+async function checkExternal(projectPath: string, rules: AdminRules): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.external, 'failed', resolved.errors);
   const errors: string[] = [];
   const httpRegex = /https?:\/\/[^\s"'<>]+/g;
-  for (const file of getAllFilesByExtensions(resolved.landingFolder, ['.html', '.php', '.css', '.js'])) {
+  for (const file of await getAllFilesByExtensionsAsync(resolved.landingFolder, ['.html', '.php', '.css', '.js'])) {
     const rel = relFromLanding(resolved.landingFolder, file);
-    const read = readFileUtf8Safe(file);
+    const read = await readFileUtf8(file);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       continue;
@@ -306,12 +325,12 @@ function checkExternal(projectPath: string, rules: AdminRules): StaticItem {
   return item(STATIC_CHECK_NAMES.external, errors.length ? 'failed' : 'passed', errors);
 }
 
-function checkDates(projectPath: string): StaticItem {
+async function checkDates(projectPath: string): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.dates, 'failed', [resolved.errors.join('; ')]);
-  const indexFile = fs.readdirSync(resolved.landingFolder).find((file) => file === 'index.html' || file === 'index.php');
+  const indexFile = (await fs.promises.readdir(resolved.landingFolder)).find((file) => file === 'index.html' || file === 'index.php');
   if (!indexFile) return item(STATIC_CHECK_NAMES.dates, 'failed', ['Файл index.html или index.php не найден']);
-  const read = readFileUtf8Safe(path.join(resolved.landingFolder, indexFile));
+  const read = await readFileUtf8(path.join(resolved.landingFolder, indexFile));
   if (!read.ok) return item(STATIC_CHECK_NAMES.dates, 'failed', [`Не удалось прочитать ${indexFile}`]);
   const withoutSvg = read.content.replace(/<svg[\s\S]*?<\/svg>/gi, '');
   const withoutAttributes = withoutSvg.replace(/<[^>]*=["'].*?\b\d+[./\s]\d+.*?["'][^>]*>/gi, '');
@@ -330,19 +349,21 @@ function checkDates(projectPath: string): StaticItem {
   ]);
 }
 
-function checkUtf8(projectPath: string): StaticItem {
+async function checkUtf8(projectPath: string): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.utf8, 'failed', resolved.errors);
-  const indexFiles = ['index.html', 'index.php']
-    .map((name) => path.join(resolved.landingFolder, name))
-    .filter((filePath) => fs.existsSync(filePath));
+  const indexFiles: string[] = [];
+  for (const name of ['index.html', 'index.php']) {
+    const filePath = path.join(resolved.landingFolder, name);
+    if (await fileExists(filePath)) indexFiles.push(filePath);
+  }
   if (indexFiles.length === 0) {
     return item(STATIC_CHECK_NAMES.utf8, 'failed', ['Файл index.html или index.php не найден']);
   }
   const errors: string[] = [];
   for (const filePath of indexFiles) {
     const fileName = path.basename(filePath);
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (!read.ok) {
       errors.push(`${fileName}: не удалось прочитать файл`);
       continue;
@@ -403,12 +424,12 @@ function collectMeta(content: string): Array<{ tag: string; line: number }> {
   return tags;
 }
 
-function checkFavicon(projectPath: string): StaticItem {
+async function checkFavicon(projectPath: string): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.favicon, 'warning', [resolved.errors.join('; ')]);
-  const indexFile = fs.readdirSync(resolved.landingFolder).find((file) => file === 'index.html' || file === 'index.php');
+  const indexFile = (await fs.promises.readdir(resolved.landingFolder)).find((file) => file === 'index.html' || file === 'index.php');
   if (!indexFile) return item(STATIC_CHECK_NAMES.favicon, 'failed', ['Файл index.html или index.php не найден']);
-  const read = readFileUtf8Safe(path.join(resolved.landingFolder, indexFile));
+  const read = await readFileUtf8(path.join(resolved.landingFolder, indexFile));
   if (!read.ok) return item(STATIC_CHECK_NAMES.favicon, 'failed', [`Не удалось прочитать ${indexFile}`]);
   const warnings: string[] = [];
   const linkRe = /<link\s+[^>]*rel=["'](?:icon|shortcut icon)["'][^>]*>/i;
@@ -427,11 +448,11 @@ function checkFavicon(projectPath: string): StaticItem {
     const sanitized = faviconPath.split('?')[0];
     let exists = false;
     const rootResolved = safeResolveUnderLanding(resolved.landingFolder, sanitized);
-    if (rootResolved && fs.existsSync(rootResolved)) exists = true;
+    if (rootResolved && await fileExists(rootResolved)) exists = true;
     else {
       for (const folder of ['img', 'images']) {
         const folderPath = path.resolve(resolved.landingFolder, folder, path.basename(sanitized));
-        if (isPathInsideRoot(resolved.landingFolder, folderPath) && fs.existsSync(folderPath)) {
+        if (isPathInsideRoot(resolved.landingFolder, folderPath) && await fileExists(folderPath)) {
           exists = true;
           break;
         }
@@ -451,33 +472,33 @@ function fileMarkers(rules: AdminRules): string[] {
   return rules.forbidden_script_markers.filter((marker) => /^[^<>\s]+\.[a-z0-9]+$/i.test(marker));
 }
 
-function checkStealer(projectPath: string, rules: AdminRules): StaticItem {
+async function checkStealer(projectPath: string, rules: AdminRules): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.stealer, 'failed', [resolved.errors.join('; ')]);
-  const indexFile = fs.readdirSync(resolved.landingFolder).find((file) => file === 'index.html' || file === 'index.php');
+  const indexFile = (await fs.promises.readdir(resolved.landingFolder)).find((file) => file === 'index.html' || file === 'index.php');
   if (!indexFile) return item(STATIC_CHECK_NAMES.stealer, 'failed', ['Файл index.html или index.php не найден']);
   const forbidden = new Set(fileMarkers(rules).map((name) => name.toLowerCase()));
   const errors: string[] = [];
-  const walk = (dir: string) => {
-    for (const itemName of fs.readdirSync(dir)) {
+  const walk = async (dir: string): Promise<void> => {
+    for (const itemName of await fs.promises.readdir(dir)) {
       const itemPath = path.join(dir, itemName);
-      if (fs.statSync(itemPath).isDirectory()) walk(itemPath);
+      if ((await fs.promises.stat(itemPath)).isDirectory()) await walk(itemPath);
       else if (forbidden.has(itemName.toLowerCase())) {
         errors.push(`Запрещённый файл стиллера: ${relFromLanding(resolved.landingFolder, itemPath)}`);
       }
     }
   };
-  walk(resolved.landingFolder);
+  await walk(resolved.landingFolder);
   return item(STATIC_CHECK_NAMES.stealer, errors.length ? 'failed' : 'passed', errors);
 }
 
-function checkStyleTags(projectPath: string): StaticItem {
+async function checkStyleTags(projectPath: string): Promise<StaticItem> {
   const errors: string[] = [];
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.style, 'failed', resolved.errors);
-  walkFilesByExtensions(resolved.landingFolder, ['.html', '.php'], (filePath) => {
+  await walkFilesByExtensionsAsync(resolved.landingFolder, ['.html', '.php'], async (filePath) => {
     const rel = relFromLanding(resolved.landingFolder, filePath);
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       return;
@@ -490,13 +511,13 @@ function checkStyleTags(projectPath: string): StaticItem {
   return item(STATIC_CHECK_NAMES.style, errors.length ? 'failed' : 'passed', errors);
 }
 
-function checkLegacy(projectPath: string, rules: AdminRules): StaticItem {
+async function checkLegacy(projectPath: string, rules: AdminRules): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.legacy, 'failed', resolved.errors);
   const errors: string[] = [];
-  for (const filePath of getAllFilesByExtensions(resolved.landingFolder, ['.html', '.php', '.js', '.css'])) {
+  for (const filePath of await getAllFilesByExtensionsAsync(resolved.landingFolder, ['.html', '.php', '.js', '.css'])) {
     const rel = relFromLanding(resolved.landingFolder, filePath);
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       continue;
@@ -513,16 +534,18 @@ function checkLegacy(projectPath: string, rules: AdminRules): StaticItem {
   return item(STATIC_CHECK_NAMES.legacy, errors.length ? 'failed' : 'passed', errors);
 }
 
-function checkFormMacros(projectPath: string, rules: AdminRules): StaticItem {
+async function checkFormMacros(projectPath: string, rules: AdminRules): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.form, 'failed', resolved.errors);
   const errors: string[] = [];
-  const indexFiles = ['index.html', 'index.php']
-    .map((name) => path.join(resolved.landingFolder, name))
-    .filter((filePath) => fs.existsSync(filePath));
+  const indexFiles: string[] = [];
+  for (const name of ['index.html', 'index.php']) {
+    const filePath = path.join(resolved.landingFolder, name);
+    if (await fileExists(filePath)) indexFiles.push(filePath);
+  }
   let indexContent = '';
   for (const filePath of indexFiles) {
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (read.ok) indexContent += read.content;
   }
   const hasForm = indexContent.includes('{{form}}');
@@ -555,10 +578,10 @@ const TRACKER_MACROS = [
   '{{aio:macros:tracker_protection_3}}',
 ];
 
-function checkTracker(projectPath: string): StaticItem {
+async function checkTracker(projectPath: string): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.tracker, 'failed', resolved.errors);
-  const htmlFiles = getAllFilesByExtensions(resolved.landingFolder, ['.html']);
+  const htmlFiles = await getAllFilesByExtensionsAsync(resolved.landingFolder, ['.html']);
   if (htmlFiles.length === 0) {
     return item(STATIC_CHECK_NAMES.tracker, 'failed', [
       'HTML-файлы не найдены: требуются макросы tracker_protection_1/2/3 в одном файле',
@@ -567,7 +590,7 @@ function checkTracker(projectPath: string): StaticItem {
   const partial: string[] = [];
   for (const filePath of htmlFiles) {
     const rel = relFromLanding(resolved.landingFolder, filePath);
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (!read.ok) {
       partial.push(`${rel}: не удалось прочитать файл`);
       continue;
@@ -587,12 +610,12 @@ function checkTracker(projectPath: string): StaticItem {
   ]);
 }
 
-function checkSvg(projectPath: string): StaticItem {
+async function checkSvg(projectPath: string): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.svg, 'failed', resolved.errors);
-  const indexFile = fs.readdirSync(resolved.landingFolder).find((file) => file === 'index.html' || file === 'index.php');
+  const indexFile = (await fs.promises.readdir(resolved.landingFolder)).find((file) => file === 'index.html' || file === 'index.php');
   if (!indexFile) return item(STATIC_CHECK_NAMES.svg, 'failed', ['Файл index.html или index.php не найден']);
-  const indexRead = readFileUtf8Safe(path.join(resolved.landingFolder, indexFile));
+  const indexRead = await readFileUtf8(path.join(resolved.landingFolder, indexFile));
   if (!indexRead.ok) return item(STATIC_CHECK_NAMES.svg, 'failed', [`${indexFile}: не удалось прочитать файл`]);
   const refs = new Set<string>();
   const refRe = /[^\s"'<>]+\.svg(?:\?[^\s"'<>]*)?/gi;
@@ -607,11 +630,11 @@ function checkSvg(projectPath: string): StaticItem {
   for (const reference of refs) {
     const svgPath = safeResolveUnderLanding(resolved.landingFolder, reference);
     const rel = reference.split('?')[0].replace(/^\.\//, '');
-    if (!svgPath || !fs.existsSync(svgPath)) {
+    if (!svgPath || !await fileExists(svgPath)) {
       errors.push(`${indexFile}: SVG из index не найден на диске: ${rel}`);
       continue;
     }
-    const read = readFileUtf8Safe(svgPath);
+    const read = await readFileUtf8(svgPath);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       continue;
@@ -659,7 +682,7 @@ function isExternalOrIgnored(value: string): boolean {
   return false;
 }
 
-function checkCacheBuster(projectPath: string): StaticItem {
+async function checkCacheBuster(projectPath: string): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.cache, 'failed', resolved.errors);
   const errors: string[] = [];
@@ -681,9 +704,9 @@ function checkCacheBuster(projectPath: string): StaticItem {
       );
     }
   };
-  for (const filePath of getAllFilesByExtensions(resolved.landingFolder, ['.html', '.php'])) {
+  for (const filePath of await getAllFilesByExtensionsAsync(resolved.landingFolder, ['.html', '.php'])) {
     const rel = relFromLanding(resolved.landingFolder, filePath);
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       continue;
@@ -694,9 +717,9 @@ function checkCacheBuster(projectPath: string): StaticItem {
     while ((match = re.exec(read.content)) !== null) refs.push({ value: match[2].trim(), index: match.index });
     push(rel, read.content, refs);
   }
-  for (const filePath of getAllFilesByExtensions(resolved.landingFolder, ['.css'])) {
+  for (const filePath of await getAllFilesByExtensionsAsync(resolved.landingFolder, ['.css'])) {
     const rel = relFromLanding(resolved.landingFolder, filePath);
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       continue;
@@ -704,9 +727,9 @@ function checkCacheBuster(projectPath: string): StaticItem {
     push(rel, read.content, collectCssRefs(read.content));
   }
   const jsRe = new RegExp(`(['"\`])([^'"\`\\r\\n]*?\\.(?:${resourceExt})(?:\\?[^'"\`\\r\\n]*)?)\\1`, 'gi');
-  for (const filePath of getAllFilesByExtensions(resolved.landingFolder, ['.js'])) {
+  for (const filePath of await getAllFilesByExtensionsAsync(resolved.landingFolder, ['.js'])) {
     const rel = relFromLanding(resolved.landingFolder, filePath);
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       continue;
@@ -734,14 +757,14 @@ function collectCssRefs(content: string): Array<{ value: string; index: number }
   return refs;
 }
 
-function checkLargeScripts(projectPath: string, rules: AdminRules): StaticItem {
+async function checkLargeScripts(projectPath: string, rules: AdminRules): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.scripts, 'failed', resolved.errors);
   const errors: string[] = [];
   const scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
-  walkFilesByExtensions(resolved.landingFolder, ['.html', '.php'], (filePath) => {
+  await walkFilesByExtensionsAsync(resolved.landingFolder, ['.html', '.php'], async (filePath) => {
     const rel = relFromLanding(resolved.landingFolder, filePath);
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       return;
@@ -761,16 +784,16 @@ function checkLargeScripts(projectPath: string, rules: AdminRules): StaticItem {
   return item(STATIC_CHECK_NAMES.scripts, errors.length ? 'failed' : 'passed', errors);
 }
 
-function checkCss(projectPath: string, rules: AdminRules): StaticItem {
+async function checkCss(projectPath: string, rules: AdminRules): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.css, 'failed', [resolved.errors.join('; ')]);
   const warnings: string[] = [];
   const errors: string[] = [];
-  const walk = (dir: string) => {
-    for (const itemName of fs.readdirSync(dir)) {
+  const walk = async (dir: string): Promise<void> => {
+    for (const itemName of await fs.promises.readdir(dir)) {
       const itemPath = path.join(dir, itemName);
-      const stats = fs.statSync(itemPath);
-      if (stats.isDirectory()) walk(itemPath);
+      const stats = await fs.promises.stat(itemPath);
+      if (stats.isDirectory()) await walk(itemPath);
       else if (path.extname(itemPath).toLowerCase() === '.css') {
         const sizeKb = stats.size / 1024;
         const rel = relFromLanding(resolved.landingFolder, itemPath);
@@ -782,7 +805,7 @@ function checkCss(projectPath: string, rules: AdminRules): StaticItem {
       }
     }
   };
-  walk(resolved.landingFolder);
+  await walk(resolved.landingFolder);
   if (errors.length) return item(STATIC_CHECK_NAMES.css, 'failed', [`CSS превышает ${rules.css_failed_kb} KB: ${errors.join('; ')}`]);
   if (warnings.length) {
     return item(STATIC_CHECK_NAMES.css, 'warning', [`CSS ${rules.css_ok_kb}–${rules.css_failed_kb} KB (предупреждение): ${warnings.join('; ')}`]);
@@ -790,7 +813,7 @@ function checkCss(projectPath: string, rules: AdminRules): StaticItem {
   return item(STATIC_CHECK_NAMES.css, 'passed', []);
 }
 
-function checkUnwanted(projectPath: string, rules: AdminRules): StaticItem {
+async function checkUnwanted(projectPath: string, rules: AdminRules): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.unwanted, 'failed', resolved.errors);
   const errors: string[] = [];
@@ -807,9 +830,9 @@ function checkUnwanted(projectPath: string, rules: AdminRules): StaticItem {
       const tag = marker.slice(1);
       return { name: tag, regex: new RegExp(`<${tag}\\b[^>]*>`, 'gi') };
     });
-  for (const file of getAllFilesByExtensions(resolved.landingFolder, ['.html', '.php'])) {
+  for (const file of await getAllFilesByExtensionsAsync(resolved.landingFolder, ['.html', '.php'])) {
     const rel = relFromLanding(resolved.landingFolder, file);
-    const read = readFileUtf8Safe(file);
+    const read = await readFileUtf8(file);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       continue;
@@ -827,7 +850,7 @@ function checkUnwanted(projectPath: string, rules: AdminRules): StaticItem {
   return item(STATIC_CHECK_NAMES.unwanted, errors.length ? 'failed' : 'passed', errors);
 }
 
-function checkBase64(projectPath: string, rules: AdminRules): StaticItem {
+async function checkBase64(projectPath: string, rules: AdminRules): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.base64, 'failed', resolved.errors);
   const errors: string[] = [];
@@ -835,9 +858,9 @@ function checkBase64(projectPath: string, rules: AdminRules): StaticItem {
     rules.forbidden_script_markers.includes('base64,') ? { name: 'base64', regex: /base64,/gi } : null,
     rules.forbidden_script_markers.includes('atob') ? { name: 'atob', regex: /\batob\b/gi } : null,
   ].filter((pattern): pattern is { name: string; regex: RegExp } => pattern != null);
-  for (const file of getAllFilesByExtensions(resolved.landingFolder, ['.html', '.php', '.js', '.css'])) {
+  for (const file of await getAllFilesByExtensionsAsync(resolved.landingFolder, ['.html', '.php', '.js', '.css'])) {
     const rel = relFromLanding(resolved.landingFolder, file);
-    const read = readFileUtf8Safe(file);
+    const read = await readFileUtf8(file);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       continue;
@@ -852,7 +875,7 @@ function checkBase64(projectPath: string, rules: AdminRules): StaticItem {
   return item(STATIC_CHECK_NAMES.base64, errors.length ? 'failed' : 'passed', errors);
 }
 
-function checkCdn(projectPath: string): StaticItem {
+async function checkCdn(projectPath: string): Promise<StaticItem> {
   const resolved = resolveLandingFolder(projectPath);
   if (!resolved.ok) return item(STATIC_CHECK_NAMES.cdn, 'failed', resolved.errors);
   const errors: string[] = [];
@@ -861,9 +884,9 @@ function checkCdn(projectPath: string): StaticItem {
   const resourceExt =
     'png|jpe?g|webp|gif|svg|avif|bmp|ico|mp4|webm|m4v|mov|ogv|mp3|wav|m4a|ogg|flac|woff2?|ttf|otf|eot|pdf';
   const jsRe = new RegExp(`(['"\`])([^'"\`\\r\\n]*?\\.(?:${resourceExt})(?:\\?[^'"\`\\r\\n]*)?)\\1`, 'gi');
-  for (const filePath of getAllFilesByExtensions(resolved.landingFolder, [...styleExt, ...scriptExt])) {
+  for (const filePath of await getAllFilesByExtensionsAsync(resolved.landingFolder, [...styleExt, ...scriptExt])) {
     const rel = relFromLanding(resolved.landingFolder, filePath);
-    const read = readFileUtf8Safe(filePath);
+    const read = await readFileUtf8(filePath);
     if (!read.ok) {
       errors.push(`${rel}: не удалось прочитать файл`);
       continue;

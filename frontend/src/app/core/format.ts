@@ -223,6 +223,41 @@ export function metricValue(metrics: LighthouseMetrics | null, key: LighthouseMe
   return formatMetric(metrics[key], key);
 }
 
+export function standSandbox(actionsAllowed: boolean): string {
+  return actionsAllowed ? 'allow-forms allow-scripts' : '';
+}
+
+const HTTP_URL = /^https?:\/\//i;
+
+/**
+ * Live local stand address that may be opened for visual preview.
+ * The string must start with http:// or https://, and the parsed scheme must be http or https.
+ */
+export function isLandingPreviewUrl(value: string | null | undefined): value is string {
+  if (typeof value !== 'string' || !HTTP_URL.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Opens the local stand in one named browser window. A later call reuses that window.
+ * Empty strings, non-http(s) schemes, and a blocked popup do nothing.
+ */
+export function openLandingPreview(url: string | null | undefined): void {
+  if (!isLandingPreviewUrl(url)) return;
+  const opened = window.open(url, 'qa-landing-preview', 'popup,width=1280,height=900');
+  if (opened === null) return;
+  opened.focus();
+}
+
+export function shouldClearSession(status: number | undefined): boolean {
+  return status === 401;
+}
+
 export function shouldPoll(steps: StepSnapshot[]): boolean {
   const report = steps.find((step) => step.name === 'report');
   if (report?.state === 'done' || report?.state === 'failed') return false;

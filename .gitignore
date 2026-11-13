@@ -8,5 +8,4 @@ backend/data/
 .vercel
 .DS_Store
 Thumbs.db
-backend/test/
-docs/
+docs/logs.json

@@ -11,6 +11,7 @@ import {
   DEEPSEEK_REASONING_EFFORT,
 } from '../src/ai/ai.client';
 import { MaterialImage } from '../src/ai/materials';
+import { categorySystemMessage } from '../src/ai/qa-category-instruction';
 import { GAP_NOTE, QA_CATEGORY_COUNT, categorySystemPrompt } from '../src/ai/qa-categories';
 import { ADDENDUM, QA_INSTRUCTION } from '../src/ai/qa-instruction';
 import { PREVIEW_SHOT, captureStandJpeg, wantsVisualCapture } from '../src/stand/capture';
@@ -48,6 +49,7 @@ function deepseekConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     visualChromePath: '',
     bcryptRounds: 4,
     poolMax: 10,
+    fingerprintKey: 'test-fingerprint-key',
     aioPreviewCampaignUuid: '',
     aioPreviewSourceUuid: '',
     aioPreviewDomainUuid: '',
@@ -179,7 +181,11 @@ describe('DeepSeek chat completions client', () => {
     expect(calls[0].url).not.toMatch(/[?&]key=/);
     expect(headerValue(calls[0].init?.headers, 'authorization')).toBe('Bearer test-deepseek-placeholder');
     const body = JSON.parse(String(callFor(calls, 1).init?.body)) as Record<string, unknown>;
-    expect(body.model).toBe('deepseek-flash');
+    expect(body.model).toBe('deepseek-v4-pro');
+    for (const call of calls) {
+      const categoryBody = JSON.parse(String(call.init?.body)) as { model?: string };
+      expect(categoryBody.model).toBe('deepseek-v4-pro');
+    }
     expect(body.stream).toBe(false);
     expect(body.thinking).toEqual({ type: 'enabled' });
     expect(body.reasoning_effort).toBe(DEEPSEEK_REASONING_EFFORT);
@@ -188,16 +194,40 @@ describe('DeepSeek chat completions client', () => {
     expect(body.tools).toBeUndefined();
     expect(JSON.stringify(body)).not.toContain('web_search');
     for (const category of [2, 3, 4]) {
-      const categoryBody = JSON.parse(String(callFor(calls, category).init?.body)) as Record<string, unknown>;
+      const categoryBody = JSON.parse(String(callFor(calls, category).init?.body)) as {
+        tools?: unknown;
+        messages: Array<{ role: string; content: string }>;
+      };
       expect(categoryBody.tools).toBeUndefined();
       expect(JSON.stringify(categoryBody)).not.toContain('web_search');
-      expect(categorySystemPrompt(category)).toContain('Этот вызов страницу не загружает');
+      const offlinePhrase = {
+        2: 'Сайт издания этот вызов не открывает',
+        3: 'Биографию в сети не ищи',
+        4: 'Гражданство и известность в сети не ищи',
+      }[category];
+      expect(categorySystemPrompt(category)).toContain(offlinePhrase);
+      expect(categorySystemPrompt(category)).not.toContain('Этот вызов страницу не загружает');
       expect(categorySystemPrompt(category)).not.toContain('Интернет не открывай');
+      const system = categoryBody.messages[0].content;
+      expect(categoryBody.messages[0].role).toBe('system');
+      expect(system).toBe(categorySystemMessage(category));
+      expect(system).toContain('ИНСТРУКЦИЯ');
+      expect(system).toContain(offlinePhrase);
+      expect(system).toContain(categorySystemPrompt(category));
+      expect(system).not.toContain('web_search');
+      expect(system).not.toContain('открой сайт');
+      expect(system).not.toContain('найди официальный сайт');
+      expect(system).not.toContain('используй интернет');
+      expect(system).not.toContain('Если доступен интернет');
+      expect(system).not.toContain('по надёжным открытым источникам');
     }
     const messages = body.messages as Array<{ role: string; content: string }>;
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe('system');
-    expect(messages[0].content).toBe(categorySystemPrompt(1));
+    expect(messages[0].content).toBe(categorySystemMessage(1));
+    expect(messages[0].content).toContain('ИНСТРУКЦИЯ');
+    expect(messages[0].content).toContain('\n\nПРОМПТ\n\n');
+    expect(messages[0].content).toContain(categorySystemPrompt(1));
     expect(messages[0].content).not.toContain('ровно 11');
     expect(messages[0].content).not.toContain('11. Телефонный код формы');
     expect(ADDENDUM).toContain('"report_markdown","general","checks","findings","clarifications","image_checks"');
@@ -603,11 +633,11 @@ describe('DeepSeek chat completions client', () => {
     expect(result.report?.clarifications).toContain('Категория 8. Актуальность дат: проверка не выполнена, пункт не закрыт.');
   });
 
-  it('createAiClient stays stub when AI_MODE is not real or the key is empty', () => {
+  it('createAiClient stays stub when AI_MODE is not real and refuses real without a key', () => {
     expect(createAiClient(deepseekConfig({ aiMode: 'stub', aiApiKey: 'test-deepseek-placeholder' }))).toBeInstanceOf(
       StubAiClient,
     );
-    expect(createAiClient(deepseekConfig({ aiMode: 'real', aiApiKey: '' }))).toBeInstanceOf(StubAiClient);
+    expect(() => createAiClient(deepseekConfig({ aiMode: 'real', aiApiKey: '' }))).toThrow(/DEEPSEEK_API_KEY is required/);
   });
 
   it('createAiClient uses DeepSeek when real and a key is set', () => {
@@ -686,13 +716,14 @@ describe('AI config defaults', () => {
     TL_LOGIN: 'env-tl',
     TL_PASSWORD: 'env-tl-pass',
     AIO_TOKEN: 'test-aio-token-value',
+    FINGERPRINT_KEY: 'test-fingerprint-key',
     STORAGE: 'memory',
   };
 
   it('defaults to stub DeepSeek model without requiring a live key', () => {
     const config = loadConfig(required);
     expect(config.aiMode).toBe('stub');
-    expect(config.aiModel).toBe('deepseek-flash');
+    expect(config.aiModel).toBe('deepseek-v4-pro');
     expect(config.aiBaseUrl).toBe(DEFAULT_DEEPSEEK_API_BASE);
     expect(config.aiApiKey).toBe('');
     expect(config.visualMode).toBe('stub');
@@ -772,7 +803,6 @@ describe('AI config defaults', () => {
       VISUAL_CHROME_PATH: '"D:\\browser\\chrome.exe"',
       LIGHTHOUSE_CHROME_PATH: 'C:\\chrome\\chrome.exe',
       LIGHTHOUSE_MODE: 'yes',
-      VERCEL: '1',
     });
     expect(own.lighthouseMode).toBe('stub');
     expect(own.lighthouseChromePath).toBe('C:\\chrome\\chrome.exe');
@@ -807,7 +837,7 @@ describe('AI config defaults', () => {
     });
     expect(ignored.aiApiKey).toBe('');
     expect(ignored.aiBaseUrl).toBe(DEFAULT_DEEPSEEK_API_BASE);
-    expect(ignored.aiModel).toBe('deepseek-flash');
+    expect(ignored.aiModel).toBe('deepseek-v4-pro');
 
     const fallback = loadConfig({
       ...required,

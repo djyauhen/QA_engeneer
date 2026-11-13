@@ -2,48 +2,14 @@
 
 Два независимых npm-пакета в одном репозитории, без корневого `package.json`.
 
-- `frontend/` — Angular 21 (`qa-assistant`). В dev `apiBaseUrl` пустой: запросы идут через прокси dev-сервера на порт Nest. Production-сборка подставляет origin API из `API_BASE_URL`.
-- `backend/` — NestJS. Postgres (Neon), сессии в таблице `sessions`, файлы проверки в `WORK_DIR` и zip в `check_archives`. Точка входа — `src/main.ts`: `bootstrap()` вызывает `app.listen()`.
+- `frontend/` — Angular 21 (`qa-assistant`). В dev `apiBaseUrl` пустой: запросы идут через прокси dev-сервера на порт Nest. Production-сборка подставляет origin API из `API_BASE_URL` (по умолчанию `https://bdc-it.uk`).
+- `backend/` — NestJS. Postgres (Neon), сессии в таблице `sessions`, файлы проверки в `WORK_DIR` и zip в `check_archives`. Точка входа — `src/main.ts`: `bootstrap()` вызывает `app.listen()` на `127.0.0.1` (порт `PORT`, по умолчанию 3000).
 
-## Два проекта Vercel
+## Прод
 
-Оба проекта создаются из ветки `main` одного и того же GitHub-репозитория. У каждого свой Root Directory.
+Один прод — VPS. Сборка, nginx и TLS описаны в [DEPLOY.md](DEPLOY.md). Публичный адрес: `https://bdc-it.uk`. API снаружи не публикуется: процесс слушает `127.0.0.1:3000`, nginx проксирует на него.
 
-### Фронтенд
-
-- **Root Directory:** `frontend`
-- **Framework Preset:** Other
-- **Node.js:** 22.x
-- Команды сборки и каталог артефакта берутся из `frontend/vercel.json`: `node scripts/apply-api-base.mjs && npm run build`, выход `dist/qa-assistant/browser`, SPA fallback на `index.html`.
-
-Переменная сборки `API_BASE_URL` — origin бэкенд-проекта, без завершающего слэша. Секреты API в проект фронтенда не добавляйте.
-
-### Бэкенд
-
-- **Root Directory:** `backend`
-- **Framework Preset:** NestJS. Vercel находит `src/main.ts` и запускает существующий `bootstrap()` / `app.listen()` одной Function.
-- Поля Install, Build и Output не переопределяйте.
-
-Переменные окружения — из `backend/.env.example`, на проекте бэкенда. Дополнительно:
-
-- `FRONTEND_ORIGIN` — origin фронтенд-проекта (несколько значений через запятую, без завершающего слэша).
-- `LIGHTHOUSE_MODE=stub`
-- `CATALOG_AUTO_REFRESH=0`
-- `PUBLIC_BASE_URL` — origin бэкенд-проекта (ссылки превью), не origin фронтенда.
-
-### Порядок
-
-1. Сначала задеплойте API.
-2. Скопируйте URL API в `API_BASE_URL` проекта фронтенда и задеплойте фронтенд заново.
-3. Задайте на API `FRONTEND_ORIGIN` (origin фронтенда) и `PUBLIC_BASE_URL` (origin API) и задеплойте API заново.
-
-### Сессия
-
-Логин возвращает `session_id` в JSON. Перехватчик Angular отправляет его заголовком `X-Session-Id`. Общая cookie на два домена не нужна. CORS бэкенда разрешает этот заголовок и `credentials`. Локально, пока `FRONTEND_ORIGIN` пуст, бэкенд отражает origin запроса. На Vercel пустой `FRONTEND_ORIGIN` не даёт процессу стартовать. Когда переменная задана, разрешены только перечисленные origin.
-
-### Ограничения на Vercel
-
-Сессии лежат в Neon и переживают холодный старт. Проверка на решении человека завершает вызов функции и продолжается со следующего запроса: zip хранится в `check_archives`, превью поднимает его на текущем инстансе. Lighthouse и Chrome на Vercel недоступны, режим остаётся `stub`. Интервал обновления каталога между запросами не тикает.
+Логин возвращает `session_id` в JSON. Перехватчик Angular отправляет его заголовком `X-Session-Id`. Пока `FRONTEND_ORIGIN` пуст, бэкенд отражает origin запроса. Когда переменная задана, разрешены только перечисленные origin.
 
 ## Локальный запуск
 

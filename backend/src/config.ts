@@ -1,5 +1,3 @@
-import os from 'os';
-import path from 'path';
 import { Role } from './roles';
 import { configuredStandFormHtml } from './stand/form-html';
 
@@ -40,6 +38,8 @@ export interface AppConfig {
   visualChromePath: string;
   bcryptRounds: number;
   poolMax: number;
+  /** HMAC key for the env team-lead password fingerprint. Not stored in sessions. */
+  fingerprintKey: string;
 }
 
 export interface SessionUser {
@@ -49,7 +49,7 @@ export interface SessionUser {
 }
 
 export function secretList(config: AppConfig): string[] {
-  return [config.aioToken, config.tlPassword, config.tlLogin, config.aiApiKey, config.databaseUrl, config.aioTenantId].filter(
+  return [config.aioToken, config.tlPassword, config.tlLogin, config.aiApiKey, config.databaseUrl, config.aioTenantId, config.fingerprintKey].filter(
     (value) => typeof value === 'string' && value.length >= 8,
   );
 }
@@ -78,12 +78,25 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   if (storage === 'neon' && !databaseUrl) {
     throw new Error('DATABASE_URL is required');
   }
-  if (env.VERCEL === '1' && storage === 'neon' && parseFrontendOrigin(env.FRONTEND_ORIGIN).length === 0) {
+  const port = Number(env.PORT ?? 3000);
+  const publicBaseUrl = (env.PUBLIC_BASE_URL ?? `http://127.0.0.1:${Number.isFinite(port) ? port : 3000}`).replace(
+    /\/$/,
+    '',
+  );
+  const frontendOrigin = parseFrontendOrigin(env.FRONTEND_ORIGIN);
+  if (frontendOrigin.length === 0 && !isLoopbackUrl(publicBaseUrl)) {
     throw new Error('FRONTEND_ORIGIN is required');
   }
-  const port = Number(env.PORT ?? 3000);
+  const fingerprintKey = unwrapEnv(env.FINGERPRINT_KEY);
+  if (!fingerprintKey) {
+    throw new Error('FINGERPRINT_KEY is required');
+  }
+  if (env.AI_MODE === 'real' && !(unwrapEnv(env.DEEPSEEK_API_KEY) || unwrapEnv(env.AI_API_KEY))) {
+    throw new Error('DEEPSEEK_API_KEY is required');
+  }
   const lighthouseChromePath = unwrapEnv(env.LIGHTHOUSE_CHROME_PATH);
   const visualChromePath = unwrapEnv(env.VISUAL_CHROME_PATH);
+  const chromePath = unwrapEnv(env.CHROME_PATH);
   return {
     storage,
     databaseUrl,
@@ -98,40 +111,40 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     tlPassword,
     workDir: resolveWorkDir(env),
     port: Number.isFinite(port) ? port : 3000,
-    publicBaseUrl: (env.PUBLIC_BASE_URL ?? `http://127.0.0.1:${Number.isFinite(port) ? port : 3000}`).replace(
-      /\/$/,
-      '',
-    ),
-    frontendOrigin: parseFrontendOrigin(env.FRONTEND_ORIGIN),
+    publicBaseUrl,
+    frontendOrigin,
     standFormHtml: configuredStandFormHtml(env.STAND_FORM_HTML),
     standBrandName: env.STAND_BRAND_NAME ?? 'Brand',
     standCdnBase: env.STAND_CDN_BASE ?? '',
-    catalogAutoRefresh: env.VERCEL === '1' ? false : env.CATALOG_AUTO_REFRESH !== '0',
+    catalogAutoRefresh: env.CATALOG_AUTO_REFRESH !== '0',
     aioNotifyPollMs: positiveInt(env.AIO_NOTIFY_POLL_MS, 2000),
     aioNotifyPollsPerAttempt: positiveInt(env.AIO_NOTIFY_POLLS_PER_ATTEMPT, 5),
     aiMode: env.AI_MODE === 'real' ? 'real' : 'stub',
     aiBaseUrl: (unwrapEnv(env.AI_BASE_URL) || 'https://api.deepseek.com').replace(/\/$/, ''),
     aiApiKey: unwrapEnv(env.DEEPSEEK_API_KEY) || unwrapEnv(env.AI_API_KEY),
-    aiModel: unwrapEnv(env.AI_MODEL) || 'deepseek-flash',
+    aiModel: unwrapEnv(env.AI_MODEL) || 'deepseek-v4-pro',
     lighthouseMode: env.LIGHTHOUSE_MODE === 'real' ? 'real' : 'stub',
-    lighthouseChromePath: lighthouseChromePath || visualChromePath,
+    lighthouseChromePath: lighthouseChromePath || visualChromePath || chromePath,
     lighthouseNoSandbox: env.LIGHTHOUSE_NO_SANDBOX === '1',
     visualMode: env.VISUAL_MODE === 'real' ? 'real' : 'stub',
-    visualChromePath: visualChromePath || lighthouseChromePath,
+    visualChromePath: visualChromePath || lighthouseChromePath || chromePath,
     bcryptRounds: positiveInt(env.BCRYPT_ROUNDS, 10),
-    poolMax: env.VERCEL === '1' ? 1 : 10,
+    poolMax: 10,
+    fingerprintKey,
   };
 }
 
 function resolveWorkDir(env: NodeJS.ProcessEnv): string {
-  const configured = env.WORK_DIR?.trim() || './data/workdir';
-  if (env.VERCEL !== '1') return configured;
-  const tmp = os.tmpdir();
-  if (path.isAbsolute(configured)) {
-    const rel = path.relative(tmp, configured);
-    if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return configured;
+  return env.WORK_DIR?.trim() || './data/workdir';
+}
+
+export function isLoopbackUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return false;
   }
-  return path.join(tmp, 'qa-workdir');
 }
 
 function parseFrontendOrigin(raw: string | undefined): string[] {
@@ -149,6 +162,13 @@ function unwrapEnv(value: string | undefined): string {
     if ((quote === '"' || quote === "'") && text.endsWith(quote)) text = text.slice(1, -1).trim();
   }
   return text;
+}
+
+/** Public TLS ends at nginx. The Node process stays on loopback. */
+export function listenHost(env: NodeJS.ProcessEnv): string {
+  const host = unwrapEnv(env.LISTEN_HOST);
+  if (!host || host === '127.0.0.1' || host === 'localhost' || host === '::1') return '127.0.0.1';
+  throw new Error('LISTEN_HOST must be 127.0.0.1');
 }
 
 function positiveInt(raw: string | undefined, fallback: number): number {

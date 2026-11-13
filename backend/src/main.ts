@@ -1,23 +1,18 @@
 import 'reflect-metadata';
 import fs from 'fs';
 import path from 'path';
-import { Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { Request, Response } from 'express';
 import { createAiClient } from './ai/ai.client';
 import { HttpAioClient } from './aio/aio.client';
 import { AppModule } from './app.module';
-import { loadConfig } from './config';
-import { configureApp, corsOrigin } from './configure-app';
+import { listenHost, loadConfig } from './config';
+import { configureApp } from './configure-app';
 import { createLighthouseRunner } from './lighthouse/lighthouse';
 import { nestLogger } from './logger';
 import { Runtime } from './runtime.module';
 import { createPostgresRepos } from './storage/postgres-repos';
 import { createMemoryRepos } from './storage/memory-repos';
 import { AioStaticChecks } from './static/static-checks';
-
-@Module({})
-class StartupFailureModule {}
 
 async function buildRuntime(): Promise<Runtime> {
   const config = loadConfig(process.env);
@@ -59,37 +54,14 @@ async function bootstrap(): Promise<void> {
   loadLocalEnv();
   try {
     const runtime = await buildRuntime();
+    await runtime.repos.ping();
     const app = await NestFactory.create(AppModule.register(runtime), { logger: nestLogger(runtime.config) });
     configureApp(app);
-    await app.listen(runtime.config.port);
+    await app.listen(runtime.config.port, listenHost(process.env));
   } catch (error) {
     console.error(`startup failed: ${safeError(error)}`);
-    if (isConfigError(error)) process.exit(1);
-    await listenAfterStartupFailure();
+    process.exit(1);
   }
-}
-
-async function listenAfterStartupFailure(): Promise<void> {
-  const app = await NestFactory.create(StartupFailureModule, { logger: false });
-  app.enableCors({
-    origin: corsOrigin([]),
-    credentials: true,
-    allowedHeaders: ['Content-Type', 'X-Session-Id', 'Authorization'],
-  });
-  app.use((_req: Request, res: Response) => {
-    res.status(503).json({ error: 'startup_failed' });
-  });
-  await app.listen(listenPort());
-}
-
-function listenPort(): number {
-  const port = Number(process.env.PORT ?? 3000);
-  return Number.isFinite(port) && port > 0 ? port : 3000;
-}
-
-function isConfigError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : '';
-  return message.includes('is required') || message.includes('are required');
 }
 
 function safeError(error: unknown): string {

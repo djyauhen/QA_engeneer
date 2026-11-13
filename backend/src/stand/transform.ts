@@ -13,8 +13,27 @@ export function transformHtml(
   const injection = `<script>window.__CDN_BASE__=${JSON.stringify(options.cdnBase)};</script>`;
   if (/<head[^>]*>/i.test(out)) out = out.replace(/<head[^>]*>/i, (match) => `${match}${injection}`);
   else out = injection + out;
-  if (options.isolated) out = isolate(out);
-  return out;
+  if (options.isolated) return isolate(out);
+  return absolutizeRelativeUrls(out, options.cdnBase);
+}
+
+/** Absolute stand URLs so a sandboxed opaque iframe can still load the landing. */
+export function absolutizeRelativeUrls(html: string, base: string): string {
+  const root = base.replace(/\/$/, '');
+  return html.replace(/\s(?:src|href|poster|action)\s*=\s*(['"])([^'"]+)\1/gi, (match, _quote: string, value: string) => {
+    if (!isRelativeAsset(value)) return match;
+    const path = value.replace(/^\.?\//, '');
+    return match.replace(value, `${root}/${path}`);
+  });
+}
+
+function isRelativeAsset(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('data:') || trimmed.startsWith('mailto:') || trimmed.startsWith('javascript:')) {
+    return false;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith('//')) return false;
+  return true;
 }
 
 function isolate(html: string): string {

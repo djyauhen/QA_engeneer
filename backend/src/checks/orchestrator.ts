@@ -12,7 +12,7 @@ import { AioClient, AioDownloadError } from '../aio/aio.client';
 import { CostsService } from '../admin/admin.services';
 import { RulesService } from '../admin/admin.services';
 import { AppConfig, previewLinkConfigured } from '../config';
-import { unpackZip } from '../files/unpack';
+import { unpackZip, UNPACK_TOO_LARGE } from '../files/unpack';
 import { WorkdirService } from '../files/workdir.service';
 import { LighthouseRunner } from '../lighthouse/lighthouse';
 import { cloneRules, effectiveLanguages, expectFormMacroForLander } from '../rules/rules';
@@ -284,10 +284,7 @@ export class CheckOrchestrator {
   private async captureVisual(check: CheckRecord, standOk: boolean): Promise<Buffer | null> {
     if (!standOk || !wantsVisualCapture(this.config.visualMode, check.standUrl)) return null;
     const chromePath = resolveChromeExecutable(this.config.visualChromePath);
-    if (!chromePath) {
-      this.logger.error('visual capture skipped: chrome not found');
-      return null;
-    }
+    if (!chromePath) throw new Error('Chrome не найден');
     try {
       return await captureStandJpeg(check.standUrl as string, chromePath);
     } catch (error) {
@@ -330,6 +327,7 @@ export class CheckOrchestrator {
             person: materials?.person.resolved ?? null,
             checkDate,
             languages: check.card.languages,
+            countries: check.card.countries,
           })
         : Promise.resolve(null);
     let reference: OutletReferenceShots | null = null;
@@ -542,7 +540,7 @@ export class CheckOrchestrator {
     } catch (error) {
       if (isAbort(error) || check.aborted) throw error instanceof Error ? error : abortError();
       check.lighthouseBlock = { status: LH_STATUS_ERROR, mobile: null, desktop: null, mode: 'real' };
-      check.step('lighthouse', 'failed', 'Ошибка Lighthouse после повторов');
+      check.step('lighthouse', 'failed', lighthouseFailure(error));
     }
   }
 
@@ -601,6 +599,7 @@ function permanentUnpackError(error: unknown): boolean {
   if (
     error.message === 'no-zip' ||
     error.message === 'Недопустимый путь в архиве' ||
+    error.message === UNPACK_TOO_LARGE ||
     error.message === 'Не удалось определить каталог ленда'
   ) {
     return true;
@@ -613,7 +612,7 @@ function unpackFailureText(error: unknown): string {
   const base = 'Сбой распаковки после повторов';
   if (!(error instanceof Error)) return base;
   if (error.message === 'no-zip') return `${base}: нет архива`;
-  if (error.message === 'Недопустимый путь в архиве' || error.message === 'Не удалось определить каталог ленда') {
+  if (error.message === 'Недопустимый путь в архиве' || error.message === UNPACK_TOO_LARGE || error.message === 'Не удалось определить каталог ленда') {
     return `${base}: ${error.message}`;
   }
   const code = (error as NodeJS.ErrnoException).code;
@@ -652,5 +651,11 @@ function downloadFailureText(error: unknown): string {
     return `${base}: сеть`;
   }
   if (error instanceof Error && error.message === 'no-file') return `${base}: нет файла`;
+  return base;
+}
+
+function lighthouseFailure(error: unknown): string {
+  const base = 'Ошибка Lighthouse после повторов';
+  if (error instanceof Error && error.message === 'Chrome не найден') return `${base}: Chrome не найден`;
   return base;
 }

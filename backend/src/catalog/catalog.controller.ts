@@ -1,5 +1,5 @@
 import { Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
-import { SessionGuard } from '../auth/guards';
+import { SessionGuard, TlGuard } from '../auth/guards';
 import { CatalogService } from './catalog.service';
 
 @Controller('catalog')
@@ -14,6 +14,7 @@ export class CatalogController {
 
   @Post('refresh')
   @HttpCode(200)
+  @UseGuards(TlGuard)
   refresh() {
     return this.catalog.refresh();
   }

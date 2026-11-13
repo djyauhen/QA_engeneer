@@ -47,7 +47,7 @@ describe('session and users', () => {
     const stored = ctx.users.rows.find((row) => row.login === 'qa-1');
     expect(stored?.role).toBe('QA');
     expect(stored?.password_hash).not.toBe('qa-pass-value');
-    expect(Object.keys(stored ?? {}).sort()).toEqual(['login', 'password_hash', 'role']);
+    expect(Object.keys(stored ?? {}).sort()).toEqual(['disabled', 'login', 'password_hash', 'role']);
 
     const duplicateEnv = await request(http.getHttpServer())
       .post('/admin/users')
@@ -59,8 +59,8 @@ describe('session and users', () => {
       .get('/admin/users')
       .set('x-session-id', login.body.session_id);
     expect(list.status).toBe(200);
-    expect(list.body.users[0]).toEqual({ login: 'env-tl', role: 'ТЛ', source: 'environment' });
-    expect(list.body.users[1]).toEqual({ login: 'qa-1', role: 'QA', source: 'neon' });
+    expect(list.body.users[0]).toEqual({ login: 'env-tl', role: 'ТЛ', source: 'environment', disabled: false });
+    expect(list.body.users[1]).toEqual({ login: 'qa-1', role: 'QA', source: 'neon', disabled: false });
     expect(JSON.stringify(list.body)).not.toContain('qa-pass-value');
     expect(JSON.stringify(list.body)).not.toContain('password');
 

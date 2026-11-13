@@ -14,11 +14,12 @@ export async function captureStandJpeg(url: string, chromePath: string): Promise
   const browser = await puppeteer.launch({
     executablePath,
     headless: true,
+    args: process.platform === 'linux' ? ['--no-sandbox', '--disable-dev-shm-usage'] : [],
   });
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1350, height: 940 });
-    await page.goto(url);
+    await page.goto(url, { waitUntil: 'load', timeout: 30_000 });
     const shot = await page.screenshot({ type: 'jpeg', quality: 60 });
     return Buffer.from(shot);
   } finally {

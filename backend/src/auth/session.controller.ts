@@ -62,10 +62,8 @@ export class SessionController {
   }
 }
 
-function clientAddress(req: Request): string {
-  const forwarded = req.header('x-forwarded-for');
-  if (forwarded) return forwarded.split(',')[0]?.trim() || 'unknown';
-  return req.ip || req.socket.remoteAddress || 'unknown';
+export function clientAddress(req: Request): string {
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 function parseCredentials(body: unknown): { login: string; password: string } {
