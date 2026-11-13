@@ -166,7 +166,7 @@ import { SessionStore } from '../core/session.store';
 export class LaunchComponent {
   private readonly api = inject(ApiService);
   private readonly router = inject(Router);
-  private readonly session = inject(SessionStore);
+  readonly session = inject(SessionStore);
   readonly tl = ROLE_TL;
   readonly items = signal<CatalogItem[]>([]);
   readonly catalogQuery = signal<CatalogQuery | null>(null);
