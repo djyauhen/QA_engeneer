@@ -31,6 +31,8 @@ export interface AppConfig {
   aiBaseUrl: string;
   aiApiKey: string;
   aiModel: string;
+  /** Reads frames. Checklist verdicts stay on aiModel. */
+  aiVisionModel: string;
   lighthouseMode: 'stub' | 'real';
   lighthouseChromePath: string;
   lighthouseNoSandbox: boolean;
@@ -123,6 +125,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     aiBaseUrl: (unwrapEnv(env.AI_BASE_URL) || 'https://api.deepseek.com').replace(/\/$/, ''),
     aiApiKey: unwrapEnv(env.DEEPSEEK_API_KEY) || unwrapEnv(env.AI_API_KEY),
     aiModel: unwrapEnv(env.AI_MODEL) || 'deepseek-v4-pro',
+    aiVisionModel: unwrapEnv(env.AI_VISION_MODEL) || 'deepseek-flash',
     lighthouseMode: env.LIGHTHOUSE_MODE === 'real' ? 'real' : 'stub',
     lighthouseChromePath: lighthouseChromePath || visualChromePath || chromePath,
     lighthouseNoSandbox: env.LIGHTHOUSE_NO_SANDBOX === '1',

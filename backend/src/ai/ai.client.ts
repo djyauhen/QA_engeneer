@@ -10,14 +10,24 @@ import { categorySystemMessage } from './qa-category-instruction';
 import {
   CategoryPart,
   QA_CATEGORY_COUNT,
+  VISION_CATEGORIES,
   attachmentLabels,
   categoryUsesVision,
   mergeCategoryParts,
 } from './qa-categories';
-import { QaReportFields, mapCategoryResponse } from './qa-response';
+import {
+  QaReportFields,
+  VisualObservation,
+  imageChecksFromObservations,
+  mapCategoryResponse,
+  parseVisualObservations,
+  readGuestRefs,
+} from './qa-response';
 
 export const DEFAULT_DEEPSEEK_API_BASE = 'https://api.deepseek.com';
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-pro';
+/** Reads frames. deepseek-v4-pro accepts image_url and discards the pixels. */
+export const DEFAULT_DEEPSEEK_VISION_MODEL = 'deepseek-flash';
 /** The high 64K thinking budget is not used. Effort stays low. */
 export const DEEPSEEK_REASONING_EFFORT = 'low';
 export const DEEPSEEK_MAX_OUTPUT_TOKENS = 12288;
@@ -25,6 +35,17 @@ export const DEEPSEEK_MAX_OUTPUT_TOKENS = 12288;
 export const CATEGORY_ATTEMPTS = 2;
 export const CATEGORY_CONCURRENCY = 3;
 export const CATEGORY_TIMEOUT_MS = 120_000;
+
+const VISION_SYSTEM = [
+  'Ты только глаза. Статус PASS, FAIL или N/A не ставь. Отчёт пункта не пиши.',
+  'На каждый приложенный кадр — одна запись. ref обязателен и берётся только из labels. Порядок записей — как у кадров.',
+  'visible_text — текст, который читается на кадре: шапка, плашка, форма, аватар. visible_name — имя, написанное на кадре. note — короткое наблюдение на русском, без вердикта.',
+  'person_match — только про человека из main_person_name: match, mismatch или uncertain. Других людей не оценивай.',
+  'Имени нет — person_match не ставь и лицо не узнавай.',
+  'Лица не видно — face_visible false и person_match uncertain.',
+  'Фразу «без визуального осмотра» не пиши.',
+  'Ответ — один JSON и ничего больше: {"observations":[{"ref":"","visible_text":"","visible_name":"","face_visible":false,"person_match":"match|mismatch|uncertain","note":""}]}',
+].join('\n');
 
 export interface AiInput {
   /** Legacy file dump; no longer sent to the model (page_text replaces it). */
@@ -163,7 +184,10 @@ export class DeepSeekAiClient extends AiClient {
     try {
       const bundle = buildBundle(input);
       const usage: Record<string, number> = {};
-      const parts = await runPool(CATEGORIES, CATEGORY_CONCURRENCY, (category) => this.categoryPart(bundle, category, usage));
+      const observations = await this.visualPass(bundle, usage);
+      const parts = await runPool(CATEGORIES, CATEGORY_CONCURRENCY, (category) =>
+        this.categoryPart(bundle, category, usage, observations),
+      );
       const parsed = mergeCategoryParts(parts, {
         pageText: input.pageText,
         screenshots: bundle.screenshots,
@@ -188,20 +212,27 @@ export class DeepSeekAiClient extends AiClient {
     }
   }
 
-  private async categoryPart(bundle: ReviewBundle, category: number, usage: Record<string, number>): Promise<CategoryPart> {
+  private async categoryPart(
+    bundle: ReviewBundle,
+    category: number,
+    usage: Record<string, number>,
+    observations: readonly VisualObservation[],
+  ): Promise<CategoryPart> {
     let lastDetail = 'empty';
     for (let attempt = 1; attempt <= CATEGORY_ATTEMPTS; attempt += 1) {
       try {
-        const completion = await this.openai.chat.completions.create(buildCategoryRequest(bundle, category, this.model()), {
-          timeout: CATEGORY_TIMEOUT_MS,
-        });
+        const completion = await this.openai.chat.completions.create(
+          buildCategoryRequest(bundle, category, this.model(), observations),
+          { timeout: CATEGORY_TIMEOUT_MS },
+        );
         absorbUsage(usage, plainUsage(completion.usage));
         const content = completion.choices[0]?.message?.content;
         if (typeof content !== 'string' || !content.trim()) {
           lastDetail = 'empty';
           continue;
         }
-        const mapped = mapCategoryResponse(category, parseJsonContent(content), {
+        const parsed = parseJsonContent(content);
+        const mapped = mapCategoryResponse(category, parsed, {
           pageText: bundle.input.pageText,
           screenshots: bundle.screenshots,
         });
@@ -209,7 +240,9 @@ export class DeepSeekAiClient extends AiClient {
           lastDetail = 'no_status';
           continue;
         }
-        return { category, accepted: true, result: mapped.result, ...(mapped.imageChecks !== undefined ? { imageChecks: mapped.imageChecks } : {}) };
+        // Correspondence is decided by the vision pass. Pro image_checks are ignored.
+        if (category === 3) return { category, accepted: true, result: mapped.result, imageChecks: imageChecksFor(bundle, parsed, observations) };
+        return { category, accepted: true, result: mapped.result };
       } catch (error) {
         lastDetail = error instanceof SyntaxError ? 'invalid_json' : aiFailureLabel(error);
       }
@@ -218,8 +251,38 @@ export class DeepSeekAiClient extends AiClient {
     return { category, accepted: false };
   }
 
+  /** Eyes only. A failed pass leaves an empty note list and does not cancel the checklist. */
+  private async visualPass(bundle: ReviewBundle, usage: Record<string, number>): Promise<VisualObservation[]> {
+    const labels = visionLabels(bundle);
+    if (!labels.length) return [];
+    const personName = celebrityName(bundle.input.person);
+    let lastDetail = 'empty';
+    for (let attempt = 1; attempt <= CATEGORY_ATTEMPTS; attempt += 1) {
+      try {
+        const completion = await this.openai.chat.completions.create(buildVisionRequest(bundle, labels, this.visionModel()), {
+          timeout: CATEGORY_TIMEOUT_MS,
+        });
+        absorbUsage(usage, plainUsage(completion.usage), false);
+        const content = completion.choices[0]?.message?.content;
+        if (typeof content !== 'string' || !content.trim()) {
+          lastDetail = 'empty';
+          continue;
+        }
+        return parseVisualObservations(parseJsonContent(content), labels, personName);
+      } catch (error) {
+        lastDetail = error instanceof SyntaxError ? 'invalid_json' : aiFailureLabel(error);
+      }
+    }
+    logAiFailure(`vision: ${lastDetail}`);
+    return [];
+  }
+
   private model(): string {
     return this.config.aiModel || DEFAULT_DEEPSEEK_MODEL;
+  }
+
+  private visionModel(): string {
+    return this.config.aiVisionModel || DEFAULT_DEEPSEEK_VISION_MODEL;
   }
 }
 
@@ -307,13 +370,19 @@ function buildBundle(input: AiInput): ReviewBundle {
   };
 }
 
-function buildCategoryRequest(bundle: ReviewBundle, category: number, model: string): DeepSeekChatRequest {
+function buildCategoryRequest(
+  bundle: ReviewBundle,
+  category: number,
+  model: string,
+  observations: readonly VisualObservation[],
+): DeepSeekChatRequest {
   // No web_search: chat completions accepts only function tools, and the model does not run them.
   // Responses API web_search is a different API and is not used for this check.
+  // Pixels are not attached here. Vision categories receive visual_observations instead.
   const labels = attachmentLabels(category, bundle.available, { content: bundle.contentRefs, comment: bundle.commentRefs });
   const labelSet = new Set(labels);
   const images = bundle.images.filter((image) => labelSet.has(image.ref));
-  const userPayload = {
+  const userPayload: Record<string, unknown> = {
     category,
     check_date: bundle.checkDate,
     land_name: bundle.input.name,
@@ -341,6 +410,7 @@ function buildCategoryRequest(bundle: ReviewBundle, category: number, model: str
     })),
     attachments_order: labels,
   };
+  if (categoryUsesVision(category)) userPayload.visual_observations = observationsFor(labels, observations);
   const userText = [JSON.stringify(userPayload), ...categoryNotes(bundle, category, labels), 'ПРОВЕРЯЙ'].filter(Boolean).join('\n');
   return {
     model,
@@ -351,20 +421,79 @@ function buildCategoryRequest(bundle: ReviewBundle, category: number, model: str
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: categorySystemMessage(category) },
+      { role: 'user', content: userText },
+    ],
+  };
+}
+
+function buildVisionRequest(bundle: ReviewBundle, labels: readonly string[], model: string): DeepSeekChatRequest {
+  const personName = celebrityName(bundle.input.person);
+  const userText = [
+    JSON.stringify({ labels, main_person_name: personName || null }),
+    'Кадры приложены в порядке labels. Верни observations только по этим меткам.',
+  ].join('\n');
+  return {
+    model,
+    stream: false,
+    thinking: { type: 'enabled' },
+    reasoning_effort: DEEPSEEK_REASONING_EFFORT,
+    max_tokens: DEEPSEEK_MAX_OUTPUT_TOKENS,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: VISION_SYSTEM },
       {
         role: 'user',
-        content: labels.length
-          ? [
-              { type: 'text', text: userText },
-              ...labels.map((label) => ({
-                type: 'image_url' as const,
-                image_url: { url: bundle.modelShots[label] },
-              })),
-            ]
-          : userText,
+        content: [
+          { type: 'text', text: userText },
+          ...labels.map((label) => ({
+            type: 'image_url' as const,
+            image_url: { url: bundle.modelShots[label] },
+          })),
+        ],
       },
     ],
   };
+}
+
+function celebrityName(person: AiInput['person']): string {
+  return person?.from_land_name?.trim() || person?.resolved?.trim() || '';
+}
+
+function visionLabels(bundle: ReviewBundle): string[] {
+  const kinds = { content: bundle.contentRefs, comment: bundle.commentRefs };
+  const want = new Set<string>();
+  for (const category of VISION_CATEGORIES) {
+    for (const label of attachmentLabels(category, bundle.available, kinds)) want.add(label);
+  }
+  return bundle.available.filter((label) => want.has(label));
+}
+
+function observationsFor(labels: readonly string[], observations: readonly VisualObservation[]): VisualObservation[] {
+  const byRef = new Map(observations.map((item) => [item.ref, item]));
+  const picked: VisualObservation[] = [];
+  for (const label of labels) {
+    const found = byRef.get(label);
+    if (found) picked.push(found);
+  }
+  return picked;
+}
+
+function isPreviewLabel(label: string): boolean {
+  return label === 'preview' || /^preview_\d+$/.test(label);
+}
+
+function imageChecksFor(bundle: ReviewBundle, parsed: unknown, observations: readonly VisualObservation[]) {
+  const labels = attachmentLabels(3, bundle.available, { content: bundle.contentRefs, comment: bundle.commentRefs });
+  const claimed = new Set(
+    bundle.images.filter((image) => image.kind !== 'comment' && image.claims_person).map((image) => image.ref),
+  );
+  return imageChecksFromObservations({
+    observations,
+    guestRefs: readGuestRefs(parsed),
+    celebrityName: celebrityName(bundle.input.person),
+    claimedRefs: labels.filter((label) => claimed.has(label)),
+    previewRefs: labels.filter(isPreviewLabel),
+  });
 }
 
 function categoryNotes(bundle: ReviewBundle, category: number, labels: string[]): string[] {
@@ -381,7 +510,7 @@ function attachmentNote(labels: string[]): string {
   if (!labels.length) {
     return 'Изображения не приложены: не делай выводов об их содержимом, в screenshot_ref ставь короткую метку места на странице.';
   }
-  return `Изображения приложены к сообщению в порядке attachments_order (${labels.join(', ')}). В screenshot_ref ставь только метку из этого списка. ${OUTLET_HEADER_REF} и ${OUTLET_FOOTER_REF} в screenshot_ref не ставь, никогда не base64 и не описание.`;
+  return `Пикселей в этом сообщении нет. Видимое содержимое — visual_observations по меткам attachments_order (${labels.join(', ')}). В screenshot_ref ставь только метку из этого списка. ${OUTLET_HEADER_REF} и ${OUTLET_FOOTER_REF} в screenshot_ref не ставь, никогда не base64 и не описание.`;
 }
 
 function previewNote(bundle: ReviewBundle, category: number): string {
@@ -390,12 +519,12 @@ function previewNote(bundle: ReviewBundle, category: number): string {
   if (labels.length) {
     const first = labels[0];
     const last = labels[labels.length - 1];
-    const base = `Кадры ${labels.join(', ')} — страница landing_preview_url, уже снятая нашим браузером сверху вниз. ${first} — верх и шапка, ${last} — низ и футер. Эти кадры уже приложены к сообщению, повторно превью не скачивай.`;
+    const base = `Кадры ${labels.join(', ')} — страница landing_preview_url, уже снятая нашим браузером сверху вниз. ${first} — верх и шапка, ${last} — низ и футер. Пикселей в этом вызове нет: смотри visual_observations. Повторно превью не скачивай.`;
     if (category === 2) {
       return `${base} Шапка ленда — ${first}, футер ленда — ${last}. Эталон издания — outlet_header и outlet_footer, только если эти метки есть в attachments_order. Если их нет — N/A, не FAIL.`;
     }
     if (category === 3) {
-      return `${base} Ссылку сам не открывай. Сверь лицо, имя на картинке и подпись с персонажем из названия ленда. Совпало — не ошибка. Другой человек — FAIL. Лица не видно — clarifications, не FAIL.`;
+      return `${base} Ссылку сам не открывай. Сверь лицо, имя на картинке и подпись с персонажем из названия ленда только там, где страница подаёт кадр как этого человека. Совпало лицо, имя на картинке и подпись — не ошибка. Кадр подан как он, а лицо или имя другие — FAIL. Лица не видно — clarifications, не FAIL. Исключение гостю интервью: если page_text называет второго участника гостем, читателем или пользователем платформы, а в записи его имя, его история или его транзакции — не FAIL и метка кадра в guest_refs. Имя из названия ленда не обязано быть на каждом кадре. Имя в записи другое, чем у этого гостя в page_text, — FAIL.`;
     }
     if (category === 9) {
       return `${base} Явный конфликт пола аватара и имени — minor. Одно реальное фото у разных имён или одно имя с разными фото — major. Заглушка и невидимый аватар — не FAIL.`;
@@ -418,7 +547,7 @@ function outletNote(bundle: ReviewBundle): string {
     : bundle.landingFooter
       ? LANDING_FOOTER_REF
       : 'текст page_text';
-  return `Категория 2: сравни шапку ленда (${header}) с ${OUTLET_HEADER_REF} и футер ленда (${footer}) с ${OUTLET_FOOTER_REF}. Это уже снятые кадры официальной главной ${bundle.outlet.name} (${bundle.outlet.url}). Совпадение утверждай только по этим кадрам.`;
+  return `Категория 2: сравни шапку ленда (${header}) с ${OUTLET_HEADER_REF} и футер ленда (${footer}) с ${OUTLET_FOOTER_REF}. Это уже снятые кадры официальной главной ${bundle.outlet.name} (${bundle.outlet.url}). Совпадение утверждай только по visual_observations этих меток.`;
 }
 
 function factNote(bundle: ReviewBundle, category: number): string {
@@ -457,13 +586,15 @@ function correspondenceNote(bundle: ReviewBundle, labels: string[]): string {
   const bits: string[] = [];
   if (claimed.length) {
     bits.push(
-      `Проверь соответствие изображений ${claimed.map((image) => image.ref).join(', ')} персонажу из названия ленда и верни image_checks (match, mismatch или uncertain) по каждому.`,
+      `Проверь соответствие изображений ${claimed.map((image) => image.ref).join(', ')} персонажу из названия ленда по visual_observations. В guest_refs перечисли метки, которые page_text подаёт как гостя, читателя или пользователя платформы. Со знаменитостью сверяй только кадр, поданный как этот человек. Имя в записи другое, чем у этого гостя в page_text, — FAIL.`,
     );
   }
   const personName = bundle.input.person?.from_land_name?.trim() || bundle.input.person?.resolved?.trim() || '';
   if (personName) {
     const frames = bundle.previewLabels.length ? bundle.previewLabels.join(', ') : 'preview и фото';
-    bits.push(`Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text и на кадрах ${frames}. Сверь лицо, имя на картинке и подпись.`);
+    bits.push(
+      `Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text. На кадрах ${frames} оно не обязано быть на каждом кадре: креатив гостя не сверяй с «${personName}». Сверь лицо, имя на картинке и подпись там, где кадр подан как этот человек.`,
+    );
   }
   return bits.join('\n');
 }
@@ -479,7 +610,7 @@ function parseJsonContent(content: string): unknown {
   return JSON.parse(trimmed);
 }
 
-function absorbUsage(total: Record<string, number>, usage: Record<string, unknown> | null): void {
+function absorbUsage(total: Record<string, number>, usage: Record<string, unknown> | null, countCategory = true): void {
   if (!usage) return;
   let counted = false;
   for (const [key, value] of Object.entries(usage)) {
@@ -487,7 +618,7 @@ function absorbUsage(total: Record<string, number>, usage: Record<string, unknow
     total[key] = (total[key] ?? 0) + value;
     counted = true;
   }
-  if (counted) total.category_calls = (total.category_calls ?? 0) + 1;
+  if (counted && countCategory) total.category_calls = (total.category_calls ?? 0) + 1;
 }
 
 async function runPool<T, R>(items: readonly T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {

@@ -58,6 +58,7 @@ export async function createTestApp(options?: {
     aiBaseUrl: '',
     aiApiKey: '',
     aiModel: 'deepseek-flash',
+    aiVisionModel: 'deepseek-flash',
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
     lighthouseNoSandbox: false,

@@ -204,6 +204,31 @@ describe('buildAiMaterials', () => {
     expect(result.person.conflict).toBe(true);
   });
 
+  it('keeps a pipe-separated outlet out of the person and does not conflict with the same name later on the page', () => {
+    write('index.html', '<h1>Index Zid Vijesti Sport</h1><p>Josip Kelemen o novom prijedlogu.</p>');
+    const result = buildAiMaterials(dir, 'HR|VI|Templ1|Index|Josip Kelemen|250$', '2026-10-26');
+    expect(result.pageText.startsWith('Index Zid Vijesti Sport')).toBe(true);
+    expect(result.pageText).toContain('Josip Kelemen');
+    expect(result.person).toEqual({
+      from_land_name: 'Josip Kelemen',
+      from_page_text: 'Josip Kelemen',
+      resolved: 'Josip Kelemen',
+      conflict: false,
+    });
+  });
+
+  it('flags a different h1 person when the pipe-separated land name is absent from the page', () => {
+    write('index.html', '<h1>Donald Tusk speaks</h1><p>Index Zid Vijesti Sport</p>');
+    const result = buildAiMaterials(dir, 'HR|VI|Templ1|Index|Josip Kelemen|250$', '2026-10-26');
+    expect(result.pageText).not.toContain('Josip Kelemen');
+    expect(result.person.from_land_name).toBe('Josip Kelemen');
+    expect(result.person.resolved).toBe('Josip Kelemen');
+    expect(result.person.conflict).toBe(true);
+    expect(result.person.from_page_text).toBe('Donald Tusk');
+    expect(result.person.from_page_text).not.toBe('Index Josip Kelemen');
+    expect(result.person.from_page_text?.startsWith('Index')).toBe(false);
+  });
+
   it('falls back to the page text person when the land name has none', () => {
     write('index.html', '<h1>lead</h1><p>Interview with Maria Skłodowska today</p>');
     const result = buildAiMaterials(dir, 'demo', '2026-10-26');

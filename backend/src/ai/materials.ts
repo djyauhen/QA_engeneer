@@ -249,10 +249,55 @@ function personKey(name: string): string {
   return tokens(name).join(' ').toLowerCase();
 }
 
+// Pipe fields stay separate (GEO|…|Outlet|Person|Amount). Without a pipe, only underscores are normalized.
+function personFromLand(landName: string): { name: string | null; outlet: string | null } {
+  const raw = landName ?? '';
+  if (!raw.includes('|')) {
+    return { name: NAME_RE.exec(collapse(raw.replace(/_/g, ' ')))?.[0] ?? null, outlet: null };
+  }
+  const segments = raw.split('|').map((segment) => collapse(segment.replace(/_/g, ' ')));
+  let name: string | null = null;
+  let outlet: string | null = null;
+  for (let i = 0; i < segments.length; i += 1) {
+    const match = NAME_RE.exec(segments[i])?.[0] ?? null;
+    if (!match) continue;
+    name = match;
+    outlet = segments[i - 1] || null;
+  }
+  return { name, outlet };
+}
+
+function nameOccurs(text: string, name: string): boolean {
+  const parts = tokens(name);
+  if (!parts.length || !text) return false;
+  const body = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s-]+');
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, 'u').test(text);
+}
+
+function scanPerson(text: string, person: string | null, outlet: string | null): string | null {
+  if (!text) return null;
+  const re = new RegExp(NAME_RE.source, 'gu');
+  const outletKey = outlet ? collapse(outlet).toLowerCase() : '';
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const found = match[0];
+    const first = tokens(found)[0]?.toLowerCase() ?? '';
+    // Outlet label plus section names (Index Zid Vijesti Sport) is not a person. Keep looking.
+    if (outletKey && first === outletKey && !(person && personKey(found) === personKey(person))) continue;
+    return found;
+  }
+  return null;
+}
+
+function pagePerson(h1: string | null, pageText: string, person: string | null, outlet: string | null): string | null {
+  if (person && ((h1 && nameOccurs(h1, person)) || nameOccurs(pageText, person))) return person;
+  return scanPerson(h1 ?? '', person, outlet) ?? scanPerson(pageText, person, outlet);
+}
+
 function resolvePerson(landName: string, h1: string | null, pageText: string): PersonClaim {
-  const normalizedLand = collapse((landName ?? '').replace(/[_|]/g, ' '));
-  let fromLand = NAME_RE.exec(normalizedLand)?.[0] ?? null;
-  const fromPage = (h1 && NAME_RE.exec(h1)?.[0]) || NAME_RE.exec(pageText)?.[0] || null;
+  const landHit = personFromLand(landName);
+  let fromLand = landHit.name;
+  const fromPage = pagePerson(h1, pageText, fromLand, landHit.outlet);
   if (fromLand && fromPage) {
     // The land name often ends with the offer (PL_Andrzej_Duda_Mifix); keep only the part the page confirms.
     const land = tokens(fromLand);

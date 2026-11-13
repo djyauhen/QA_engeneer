@@ -172,6 +172,140 @@ export function mapCategoryResponse(
   return { accepted: true, result, ...(imageChecks !== undefined ? { imageChecks } : {}) };
 }
 
+export type PersonMatch = 'match' | 'mismatch' | 'uncertain';
+
+/** What the vision model read on one frame. Not a checklist verdict. */
+export interface VisualObservation {
+  ref: string;
+  visible_text: string;
+  visible_name: string;
+  face_visible: boolean;
+  person_match?: PersonMatch;
+  note: string;
+}
+
+const PERSON_MATCHES = new Set<PersonMatch>(['match', 'mismatch', 'uncertain']);
+
+function asText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** The eyes model is told not to use this sentence. Drop it if it slips through. */
+function dropBlindPhrase(value: string): string {
+  return value.replace(/без\s+визуального\s+осмотра/gi, ' ').replace(/ {2,}/g, ' ').trim();
+}
+
+function personMatchToken(value: unknown): PersonMatch | undefined {
+  if (typeof value !== 'string') return undefined;
+  const token = value.trim().toLowerCase();
+  return PERSON_MATCHES.has(token as PersonMatch) ? (token as PersonMatch) : undefined;
+}
+
+/**
+ * Keeps observations whose ref was actually sent.
+ * No celebrity name: person_match is omitted and the face is not treated as an identity.
+ * No visible face: person_match is uncertain when a name was given.
+ */
+export function parseVisualObservations(parsed: unknown, labels: readonly string[], personName: string): VisualObservation[] {
+  const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  if (!Array.isArray(body.observations)) throw new SyntaxError('observations');
+  const allowed = new Set(labels);
+  const seen = new Set<string>();
+  const name = personName.trim();
+  const out: VisualObservation[] = [];
+  for (const entry of body.observations) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const item = entry as Record<string, unknown>;
+    const ref = asText(item.ref);
+    if (!ref || !allowed.has(ref) || seen.has(ref)) continue;
+    seen.add(ref);
+    const faceVisible = item.face_visible === true;
+    let personMatch: PersonMatch | undefined;
+    if (name) personMatch = faceVisible ? personMatchToken(item.person_match) : 'uncertain';
+    const observation: VisualObservation = {
+      ref,
+      visible_text: dropBlindPhrase(asText(item.visible_text)),
+      visible_name: dropBlindPhrase(asText(item.visible_name)),
+      face_visible: faceVisible,
+      note: dropBlindPhrase(asText(item.note)),
+    };
+    if (personMatch) observation.person_match = personMatch;
+    out.push(observation);
+  }
+  return out;
+}
+
+export function readGuestRefs(parsed: unknown): string[] {
+  const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  if (!Array.isArray(body.guest_refs)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of body.guest_refs) {
+    const ref = asText(entry);
+    if (!ref || seen.has(ref)) continue;
+    seen.add(ref);
+    out.push(ref);
+  }
+  return out;
+}
+
+export interface ImageCheckEntry {
+  ref: string;
+  match: PersonMatch;
+  note?: string;
+}
+
+export interface ImageCheckBuildInput {
+  observations: readonly VisualObservation[];
+  guestRefs: readonly string[];
+  /** from_land_name, otherwise resolved. Empty when the land names nobody. */
+  celebrityName: string;
+  /** Content frames with claims_person that already belong to this check, in attachment order. */
+  claimedRefs: readonly string[];
+  /** Preview frames that already belong to this check. Included only when the vision pass set person_match. */
+  previewRefs: readonly string[];
+}
+
+function samePersonName(visible: string, celebrity: string): boolean {
+  const left = normalizeWhitespace(visible).toLocaleLowerCase();
+  const right = normalizeWhitespace(celebrity).toLocaleLowerCase();
+  return left.length > 0 && left === right;
+}
+
+/**
+ * Category 3 image_checks for enforceImageCorrespondence.
+ * match is copied from the vision person_match. guest_refs softens mismatch and uncertain to match,
+ * except when visible_name is the celebrity. The checklist model's image_checks are not an input:
+ * that model cannot raise a verdict to mismatch.
+ */
+export function imageChecksFromObservations(input: ImageCheckBuildInput): ImageCheckEntry[] {
+  const byRef = new Map<string, VisualObservation>();
+  for (const observation of input.observations) {
+    const ref = observation.ref.trim();
+    if (!ref || byRef.has(ref)) continue;
+    byRef.set(ref, observation);
+  }
+  const claimed = new Set(input.claimedRefs);
+  const preview = new Set(input.previewRefs);
+  const guests = new Set(input.guestRefs.map((ref) => ref.trim()).filter((ref) => ref.length > 0));
+  const order = [...input.claimedRefs, ...input.previewRefs.filter((ref) => !claimed.has(ref))];
+  const checks: ImageCheckEntry[] = [];
+  const seen = new Set<string>();
+  for (const ref of order) {
+    if (seen.has(ref)) continue;
+    const observation = byRef.get(ref);
+    const raw = observation?.person_match;
+    if (!observation || !raw || !PERSON_MATCHES.has(raw)) continue;
+    if (!claimed.has(ref) && !preview.has(ref)) continue;
+    seen.add(ref);
+    const locked = samePersonName(observation.visible_name, input.celebrityName);
+    const soften = guests.has(ref) && !locked && (raw === 'mismatch' || raw === 'uncertain');
+    const note = observation.note.trim();
+    checks.push(note ? { ref, match: soften ? 'match' : raw, note } : { ref, match: soften ? 'match' : raw });
+  }
+  return checks;
+}
+
 /** Image the model was asked to match to a named public person. */
 export interface CorrespondenceImage {
   ref: string;

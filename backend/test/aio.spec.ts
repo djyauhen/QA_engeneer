@@ -32,6 +32,7 @@ function config(overrides: Partial<AppConfig> = {}): AppConfig {
     aiBaseUrl: '',
     aiApiKey: '',
     aiModel: 'deepseek-flash',
+    aiVisionModel: 'deepseek-flash',
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
     lighthouseNoSandbox: false,

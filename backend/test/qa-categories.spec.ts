@@ -11,7 +11,7 @@ import {
   gapClarification,
   mergeCategoryParts,
 } from '../src/ai/qa-categories';
-import { mapCategoryResponse } from '../src/ai/qa-response';
+import { imageChecksFromObservations, mapCategoryResponse, parseVisualObservations, readGuestRefs } from '../src/ai/qa-response';
 
 const order = ['desktop', 'preview', 'preview_2', 'landing_footer', 'outlet_header', 'outlet_footer', 'I1', 'I2'];
 const kinds = { content: ['I1'], comment: ['I2'] };
@@ -68,6 +68,8 @@ describe('per-category prompts', () => {
     expect(prompts[0]).not.toContain('ПРОВЕРКА ТЕЛЕФОННОГО КОДА');
     expect(prompts[1]).toContain('outlet_header');
     expect(prompts[1]).toContain('отсутствие кадра ошибкой не считай');
+    expect(prompts[1]).toContain('Пикселей в этом вызове нет');
+    expect(prompts[1]).toContain('visual_observations');
     expect(prompts[1]).not.toContain('вложенные кадры');
     expect(prompts[1]).toContain(OFFLINE_PHRASE[2]);
     expect(prompts[1]).not.toContain('Ссылку сам не открывай');
@@ -76,9 +78,14 @@ describe('per-category prompts', () => {
     expect(prompts[2]).toContain('Прямое противоречие extract');
     expect(prompts[2]).toContain('сводками поиска');
     expect(prompts[2]).toContain(OFFLINE_PHRASE[3]);
-    expect(prompts[2]).toContain('image_checks');
+    expect(prompts[2]).toContain('guest_refs');
+    expect(prompts[2]).toContain('visual_observations');
+    expect(prompts[2]).toContain('Пикселей в этом вызове нет');
+    expect(prompts[2]).toContain('Возраст, пол и должность без карточки не подтверждай и не опровергай.');
+    expect(prompts[2]).not.toContain('image_checks');
     expect(prompts[2]).toContain('Пустая карточка не запрещает');
     expect(prompts[2]).toContain('не означает, что человека нет');
+    expect(prompts[2]).toContain('гостя интервью');
     expect(prompts[3]).toContain('Иностранное происхождение');
     expect(prompts[3]).toContain('Википедии или поиском до вызова');
     expect(prompts[3]).toContain('citizenship, description и extract');
@@ -93,8 +100,12 @@ describe('per-category prompts', () => {
     expect(prompts[6]).toContain('Quifix');
     expect(prompts[7]).toContain('check_date');
     expect(prompts[8]).toContain('Заглушка');
+    expect(prompts[8]).toContain('Пикселей в этом вызове нет');
     expect(prompts[8]).not.toContain('image_checks');
     expect(prompts[9]).toContain('подпись');
+    expect(prompts[9]).toContain('Пикселей в этом вызове нет');
+    expect(prompts[0]).not.toContain('visual_observations');
+    expect(prompts[3]).not.toContain('visual_observations');
     expect(prompts[10]).toContain('+48');
     expect(prompts[10]).toContain('существует ли номер');
     for (const category of [2, 3, 4]) {
@@ -136,6 +147,116 @@ describe('vision attachments', () => {
       'outlet_footer',
     ]);
     expect(attachmentLabels(5, order, kinds)).toEqual([]);
+  });
+});
+
+describe('vision observations become category 3 image checks', () => {
+  const celebrity = 'Andrzej Duda';
+
+  it('keeps a vision verdict and drops frames that are not part of the check', () => {
+    expect(
+      imageChecksFromObservations({
+        observations: [
+          { ref: 'I1', visible_text: '', visible_name: 'Другой', face_visible: true, person_match: 'mismatch', note: 'другой' },
+          { ref: 'preview', visible_text: 'шапка', visible_name: 'Andrzej Duda', face_visible: true, person_match: 'match', note: 'он' },
+          { ref: 'I2', visible_text: '', visible_name: '', face_visible: true, person_match: 'mismatch', note: 'аватар' },
+          { ref: 'preview_2', visible_text: '', visible_name: '', face_visible: false, note: 'без лица' },
+          { ref: 'desktop', visible_text: 'логотип', visible_name: '', face_visible: false, person_match: 'uncertain', note: 'шапка' },
+        ],
+        guestRefs: [],
+        celebrityName: celebrity,
+        claimedRefs: ['I1'],
+        previewRefs: ['preview', 'preview_2'],
+      }),
+    ).toEqual([
+      { ref: 'I1', match: 'mismatch', note: 'другой' },
+      { ref: 'preview', match: 'match', note: 'он' },
+    ]);
+  });
+
+  it('softens a guest mismatch or uncertain to match unless the visible name is the celebrity', () => {
+    const mismatch = {
+      ref: 'I1',
+      visible_text: '',
+      face_visible: true as const,
+      person_match: 'mismatch' as const,
+      note: 'чужой',
+    };
+    expect(
+      imageChecksFromObservations({
+        observations: [{ ...mismatch, visible_name: 'Марта Гость' }],
+        guestRefs: [' I1 '],
+        celebrityName: celebrity,
+        claimedRefs: ['I1'],
+        previewRefs: [],
+      }),
+    ).toEqual([{ ref: 'I1', match: 'match', note: 'чужой' }]);
+    expect(
+      imageChecksFromObservations({
+        observations: [{ ref: 'preview', visible_text: '', visible_name: '', face_visible: false, person_match: 'uncertain', note: 'лица нет' }],
+        guestRefs: ['preview'],
+        celebrityName: celebrity,
+        claimedRefs: [],
+        previewRefs: ['preview'],
+      }),
+    ).toEqual([{ ref: 'preview', match: 'match', note: 'лица нет' }]);
+    expect(
+      imageChecksFromObservations({
+        observations: [{ ...mismatch, visible_name: '  ANDRZEJ   duda ' }],
+        guestRefs: ['I1'],
+        celebrityName: celebrity,
+        claimedRefs: ['I1'],
+        previewRefs: [],
+      }),
+    ).toEqual([{ ref: 'I1', match: 'mismatch', note: 'чужой' }]);
+    expect(
+      imageChecksFromObservations({
+        observations: [{ ...mismatch, visible_name: '' }],
+        guestRefs: ['I1'],
+        celebrityName: celebrity,
+        claimedRefs: ['I1'],
+        previewRefs: [],
+      }),
+    ).toEqual([{ ref: 'I1', match: 'match', note: 'чужой' }]);
+  });
+
+  it('reads only labeled frames and does not recognize a face when the land names nobody', () => {
+    expect(readGuestRefs({ guest_refs: [' I1 ', 'I1', '', 3] })).toEqual(['I1']);
+    expect(readGuestRefs({})).toEqual([]);
+    expect(readGuestRefs({ guest_refs: 'I1' })).toEqual([]);
+    expect(
+      parseVisualObservations(
+        {
+          observations: [
+            { ref: 'I1', visible_text: 'шапка', visible_name: '', face_visible: false, person_match: 'match', note: 'далеко' },
+            { ref: 'NOPE', visible_text: 'чужая метка', visible_name: '', face_visible: true, person_match: 'mismatch', note: '' },
+          ],
+        },
+        ['I1'],
+        celebrity,
+      ),
+    ).toEqual([
+      { ref: 'I1', visible_text: 'шапка', visible_name: '', face_visible: false, person_match: 'uncertain', note: 'далеко' },
+    ]);
+    const unnamed = parseVisualObservations(
+      {
+        observations: [
+          {
+            ref: 'I1',
+            visible_text: 'без визуального осмотра',
+            visible_name: 'Имя',
+            face_visible: true,
+            person_match: 'mismatch',
+            note: 'видно без визуального осмотра',
+          },
+        ],
+      },
+      ['I1'],
+      '',
+    );
+    expect(unnamed).toEqual([{ ref: 'I1', visible_text: '', visible_name: 'Имя', face_visible: true, note: 'видно' }]);
+    expect(unnamed[0].person_match).toBeUndefined();
+    expect(() => parseVisualObservations({ note: 'пусто' }, ['I1'], celebrity)).toThrow(SyntaxError);
   });
 });
 
