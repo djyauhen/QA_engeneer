@@ -289,7 +289,22 @@ function scanPerson(text: string, person: string | null, outlet: string | null):
   return null;
 }
 
+function nameTokenSlice(whole: string, part: string): boolean {
+  const haystack = tokens(whole);
+  const needle = tokens(part).map((token) => token.toLowerCase());
+  if (!needle.length || needle.length > haystack.length) return false;
+  for (let i = 0; i + needle.length <= haystack.length; i += 1) {
+    if (needle.every((token, j) => haystack[i + j].toLowerCase() === token)) return true;
+  }
+  return false;
+}
+
 function pagePerson(h1: string | null, pageText: string, person: string | null, outlet: string | null): string | null {
+  // h1 that is a contiguous slice of the land name (often shorter, without the offer) is the page person.
+  if (person && h1) {
+    const fromHeading = scanPerson(h1, person, outlet);
+    if (fromHeading && nameTokenSlice(person, fromHeading)) return fromHeading;
+  }
   if (person && ((h1 && nameOccurs(h1, person)) || nameOccurs(pageText, person))) return person;
   return scanPerson(h1 ?? '', person, outlet) ?? scanPerson(pageText, person, outlet);
 }
