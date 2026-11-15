@@ -190,9 +190,24 @@ describe('DeepSeek chat completions client', () => {
     const body = JSON.parse(String(callFor(calls, 1).init?.body)) as Record<string, unknown>;
     expect(body.model).toBe('deepseek-v4-pro');
     for (const call of calls) {
-      const categoryBody = JSON.parse(String(call.init?.body)) as { model?: string };
-      expect(categoryBody.model).toBe('deepseek-v4-pro');
+      const category = categoryOf(call.init);
+      const categoryBody = JSON.parse(String(call.init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      const flash = [2, 3, 5, 6, 7, 9, 10].includes(category);
+      const multipart = [2, 3, 9, 10].includes(category);
+      expect(categoryBody.model).toBe(flash ? 'deepseek-flash' : 'deepseek-v4-pro');
       expect(String(call.init?.body)).not.toContain('image_url');
+      if (multipart) expect(Array.isArray(categoryBody.messages[1].content)).toBe(true);
+      else expect(typeof categoryBody.messages[1].content).toBe('string');
+    }
+    for (const category of [5, 6, 7]) {
+      const text = callText(calls, category);
+      expect(text).toContain('Кадров контента нет. Суди только по page_text');
+      expect(text).not.toContain('Пикселей в этом сообщении нет');
+      expect(userJson(text).attachments_order).toEqual([]);
+      expect(userJson(text).visual_observations).toEqual([]);
     }
     expect(body.stream).toBe(false);
     expect(body.thinking).toEqual({ type: 'enabled' });
@@ -253,7 +268,7 @@ describe('DeepSeek chat completions client', () => {
     expect(result.report?.checks?.find((check) => check.category === 1)?.status).toBe('FAIL');
   });
 
-  it('reads frames once with flash and keeps checklist calls on the text model', async () => {
+  it('reads frames with flash and attaches those frames on vision checklist calls', async () => {
     const calls: Array<{ init?: RequestInit }> = [];
     const fetchImpl: typeof fetch = async (_url, init) => {
       calls.push({ init });
@@ -288,13 +303,44 @@ describe('DeepSeek chat completions client', () => {
     expect(visionParts[1].image_url?.url).toBe(desktopShotDataUrl(jpeg));
     const seen = userJson(callText(calls, 2)).visual_observations;
     expect(seen).toEqual([{ ref: 'desktop', visible_text: 'Hello', visible_name: '', face_visible: false, note: 'шапка' }]);
-    for (const category of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
-      const body = JSON.parse(String(callFor(calls, category).init?.body)) as { model?: string };
-      expect(body.model).toBe('deepseek-v4-pro');
-      expect(JSON.stringify(body)).not.toContain('image_url');
+    const desktopUrl = desktopShotDataUrl(jpeg);
+    for (const category of [1, 4, 8, 11]) {
+      const parsed = JSON.parse(String(callFor(calls, category).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(parsed.model).toBe('deepseek-v4-pro');
+      expect(JSON.stringify(parsed)).not.toContain('image_url');
+      expect(typeof parsed.messages[1].content).toBe('string');
+      expect(callText(calls, category)).not.toContain('visual_observations');
+    }
+    for (const category of [5, 6, 7]) {
+      const parsed = JSON.parse(String(callFor(calls, category).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(parsed.model).toBe('deepseek-flash');
+      expect(JSON.stringify(parsed)).not.toContain('image_url');
+      expect(typeof parsed.messages[1].content).toBe('string');
       const text = callText(calls, category);
-      if ([2, 3, 9, 10].includes(category)) expect(text).toContain('visual_observations');
-      else expect(text).not.toContain('visual_observations');
+      expect(text).toContain('Кадров контента нет. Суди только по page_text');
+      expect(text).not.toContain('Пикселей в этом сообщении нет');
+      expect(userJson(text).attachments_order).toEqual([]);
+      expect(userJson(text).visual_observations).toEqual([]);
+    }
+    for (const category of [2, 3, 9, 10]) {
+      const parsed = JSON.parse(String(callFor(calls, category).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(parsed.model).toBe('deepseek-flash');
+      const parts = parsed.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+      expect(parts.map((part) => part.type)).toEqual(['text', 'image_url']);
+      expect(parts[1].image_url?.url).toBe(desktopUrl);
+      expect(userJson(callText(calls, category)).attachments_order).toEqual(['desktop']);
+      expect(callText(calls, category)).toContain('visual_observations');
+      expect(callText(calls, category)).not.toContain('Пикселей в этом сообщении нет');
+      expect(callText(calls, category)).toContain('Кадры следуют в порядке attachments_order (desktop)');
     }
     const categoryTwo = callText(calls, 2);
     expect(userJson(categoryTwo).attachments_order).toEqual(['desktop']);
@@ -376,6 +422,13 @@ describe('DeepSeek chat completions client', () => {
     expect(userJson(callText(calls, 2)).visual_observations).toEqual([desktopNote]);
     expect(userJson(callText(calls, 9)).visual_observations).toEqual([desktopNote]);
     expect(userJson(callText(calls, 10)).visual_observations).toEqual([desktopNote, heroNote]);
+    expect(userJson(callText(calls, 5)).visual_observations).toEqual([heroNote]);
+    expect(userJson(callText(calls, 6)).visual_observations).toEqual([heroNote]);
+    expect(userJson(callText(calls, 7)).visual_observations).toEqual([heroNote]);
+    expect(userJson(callText(calls, 5)).attachments_order).toEqual(['I1']);
+    expect(callText(calls, 5)).toContain('Кадры следуют в порядке attachments_order (I1)');
+    expect(callText(calls, 5)).not.toContain('Пикселей в этом сообщении нет');
+    expect(callText(calls, 5)).not.toContain('Кадров контента нет');
     expect(userJson(callText(calls, 1))).not.toHaveProperty('visual_observations');
     expect(payload.images).toEqual([
       {
@@ -399,6 +452,30 @@ describe('DeepSeek chat completions client', () => {
     expect(parts.map((part) => part.type)).toEqual(['text', 'image_url', 'image_url']);
     expect(parts[1].image_url?.url).toBe(desktopShotDataUrl(jpeg));
     expect(parts[2].image_url?.url).toBe(heroUrl);
+    const desktopUrl = desktopShotDataUrl(jpeg);
+    const checklistFrames: Record<number, string[]> = {
+      2: [desktopUrl],
+      3: [desktopUrl, heroUrl],
+      5: [heroUrl],
+      6: [heroUrl],
+      7: [heroUrl],
+      9: [desktopUrl],
+      10: [desktopUrl, heroUrl],
+    };
+    for (const [category, urls] of Object.entries(checklistFrames)) {
+      const parsed = JSON.parse(String(callFor(calls, Number(category)).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(parsed.model).toBe('deepseek-flash');
+      const checklistParts = parsed.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+      expect(checklistParts.map((part) => part.type)).toEqual(['text', ...urls.map(() => 'image_url')]);
+      urls.forEach((url, index) => expect(checklistParts[index + 1].image_url?.url).toBe(url));
+    }
+    for (const category of [1, 4, 8, 11]) {
+      expect(JSON.parse(String(callFor(calls, category).init?.body)).model).toBe('deepseek-v4-pro');
+      expect(String(callFor(calls, category).init?.body)).not.toContain('image_url');
+    }
     expect(result.findings).toEqual([
       {
         file: 'index.html',
@@ -577,15 +654,43 @@ describe('DeepSeek chat completions client', () => {
     expect(broken.calls.filter((call) => isVisionCall(call.init))).toHaveLength(2);
     expect(broken.calls.filter((call) => Number.isInteger(categoryOf(call.init)))).toHaveLength(QA_CATEGORY_COUNT);
     expect(callText(broken.calls, 3)).toContain('"visual_observations":[]');
-    expect(String(callFor(broken.calls, 3).init?.body)).not.toContain('image_url');
+    const heroUrl = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
+    const expectCategoryThreePixels = (reviewed: Array<{ init?: RequestInit }>) => {
+      const parsed = JSON.parse(String(callFor(reviewed, 3).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(parsed.model).toBe('deepseek-flash');
+      const parts = parsed.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+      expect(parts.map((part) => part.type)).toEqual(['text', 'image_url']);
+      expect(parts[1].image_url?.url).toBe(heroUrl);
+    };
+    expectCategoryThreePixels(thrown.calls);
+    expectCategoryThreePixels(broken.calls);
+    for (const category of [1, 4, 8, 11]) {
+      expect(JSON.parse(String(callFor(broken.calls, category).init?.body)).model).toBe('deepseek-v4-pro');
+      expect(String(callFor(broken.calls, category).init?.body)).not.toContain('image_url');
+    }
+    for (const category of [5, 6, 7]) {
+      const parsed = JSON.parse(String(callFor(broken.calls, category).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(parsed.model).toBe('deepseek-flash');
+      const parts = parsed.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+      expect(parts.map((part) => part.type)).toEqual(['text', 'image_url']);
+      expect(parts[1].image_url?.url).toBe(heroUrl);
+      expect(userJson(callText(broken.calls, category)).attachments_order).toEqual(['I1']);
+    }
 
     const empty = await run(async () => jsonResponse(completionBody('   ')));
     expect(empty.calls.filter((call) => isVisionCall(call.init))).toHaveLength(2);
     expect(empty.calls.filter((call) => Number.isInteger(categoryOf(call.init)))).toHaveLength(QA_CATEGORY_COUNT);
     expect(empty.result.report?.checks).toHaveLength(11);
+    expectCategoryThreePixels(empty.calls);
   });
 
-  it('sends a landing image to flash and not to the checklist call', async () => {
+  it('sends a landing image to flash and to the category 3 checklist call', async () => {
     const calls: Array<{ init?: RequestInit }> = [];
     const fetchImpl: typeof fetch = async (_url, init) => {
       calls.push({ init });
@@ -593,16 +698,195 @@ describe('DeepSeek chat completions client', () => {
       return jsonResponse(completionBody('{"findings":[]}'));
     };
     await new DeepSeekAiClient(deepseekConfig(), fetchImpl).review({ ...sampleInput, images: [heroImage] });
+    const heroUrl = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
     const vision = JSON.parse(String(calls[0].init?.body)) as { model?: string; messages: Array<{ content: unknown }> };
     expect(vision.model).toBe('deepseek-flash');
-    const parts = vision.messages[1].content as Array<{ type: string }>;
+    const parts = vision.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
     expect(parts.map((part) => part.type)).toEqual(['text', 'image_url']);
+    expect(parts[1].image_url?.url).toBe(heroUrl);
     const categoryThree = callText(calls, 3);
     expect(userJson(categoryThree).attachments_order).toEqual(['I1']);
     expect(categoryThree).toContain('visual_observations');
-    expect(String(callFor(calls, 3).init?.body)).not.toContain('image_url');
-    const textOnly = JSON.parse(String(callFor(calls, 1).init?.body)) as { messages: Array<{ content: unknown }> };
-    expect(typeof textOnly.messages[1].content).toBe('string');
+    const categoryThreeBody = JSON.parse(String(callFor(calls, 3).init?.body)) as {
+      model?: string;
+      messages: Array<{ content: unknown }>;
+    };
+    expect(categoryThreeBody.model).toBe('deepseek-flash');
+    const threeParts = categoryThreeBody.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+    expect(threeParts.map((part) => part.type)).toEqual(['text', 'image_url']);
+    expect(threeParts[1].image_url?.url).toBe(heroUrl);
+    const categoryTenBody = JSON.parse(String(callFor(calls, 10).init?.body)) as {
+      model?: string;
+      messages: Array<{ content: unknown }>;
+    };
+    expect(categoryTenBody.model).toBe('deepseek-flash');
+    const tenParts = categoryTenBody.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+    expect(tenParts.map((part) => part.type)).toEqual(['text', 'image_url']);
+    expect(tenParts[1].image_url?.url).toBe(heroUrl);
+    expect(JSON.parse(String(callFor(calls, 2).init?.body)).model).toBe('deepseek-flash');
+    expect(String(callFor(calls, 2).init?.body)).not.toContain('image_url');
+    expect(JSON.parse(String(callFor(calls, 9).init?.body)).model).toBe('deepseek-flash');
+    expect(String(callFor(calls, 9).init?.body)).not.toContain('image_url');
+    for (const category of [5, 6, 7]) {
+      const parsed = JSON.parse(String(callFor(calls, category).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(parsed.model).toBe('deepseek-flash');
+      const parts = parsed.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+      expect(parts.map((part) => part.type)).toEqual(['text', 'image_url']);
+      expect(parts[1].image_url?.url).toBe(heroUrl);
+      expect(userJson(callText(calls, category)).attachments_order).toEqual(['I1']);
+      expect(callText(calls, category)).not.toContain('Пикселей в этом сообщении нет');
+    }
+    for (const category of [1, 4, 8, 11]) {
+      const textOnly = JSON.parse(String(callFor(calls, category).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(textOnly.model).toBe('deepseek-v4-pro');
+      expect(typeof textOnly.messages[1].content).toBe('string');
+      expect(String(callFor(calls, category).init?.body)).not.toContain('image_url');
+    }
+  });
+
+  it('gives deposit and offer checks content frames on flash and leaves the other frame sets unchanged', async () => {
+    const calls: Array<{ init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      calls.push({ init });
+      if (isVisionCall(init)) {
+        return jsonResponse(
+          completionBody(
+            JSON.stringify({
+              observations: [
+                { ref: 'desktop', visible_text: 'шапка', visible_name: '', face_visible: false, note: 'шапка' },
+                { ref: 'preview', visible_text: 'EUR 250', visible_name: '', face_visible: false, note: 'превью' },
+                { ref: 'landing_footer', visible_text: 'низ', visible_name: '', face_visible: false, note: 'футер' },
+                { ref: 'outlet_header', visible_text: 'логотип', visible_name: '', face_visible: false, note: 'издание' },
+                { ref: 'outlet_footer', visible_text: 'копирайт', visible_name: '', face_visible: false, note: 'издание' },
+                { ref: 'I1', visible_text: '250 EUR Quifix', visible_name: '', face_visible: false, note: 'креатив' },
+                { ref: 'I2', visible_text: '', visible_name: 'Анна', face_visible: true, note: 'аватар' },
+              ],
+            }),
+          ),
+        );
+      }
+      return jsonResponse(completionBody(JSON.stringify(passAnswer())));
+    };
+    const desktop = Buffer.from([0xff, 0xd8, 0xff, 0x21]);
+    const preview = Buffer.from([0xff, 0xd8, 0xff, 0x22]);
+    const landingFooter = Buffer.from([0xff, 0xd8, 0xff, 0x23]);
+    const header = Buffer.from([0xff, 0xd8, 0xff, 0x24]);
+    const footer = Buffer.from([0xff, 0xd8, 0xff, 0x25]);
+    const commentBytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(16, 2)]);
+    const commentImage: MaterialImage = {
+      ...heroImage,
+      ref: 'I2',
+      file: 'images/avatar.png',
+      alt: 'avatar',
+      caption: '',
+      context: 'Анна',
+      kind: 'comment',
+      claims_person: null,
+      buffer: commentBytes,
+    };
+    await new DeepSeekAiClient(deepseekConfig(), fetchImpl).review({
+      ...sampleInput,
+      pageText: 'депозит 250 EUR на Quifix',
+      screenshot: desktop,
+      previewShots: [preview],
+      landingFooter,
+      outlet: { name: 'NOS', url: 'https://nos.nl', header, footer },
+      images: [heroImage, commentImage],
+    });
+    expect(calls.filter((call) => isVisionCall(call.init))).toHaveLength(1);
+    const heroUrl = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
+    const commentUrl = `data:image/png;base64,${commentBytes.toString('base64')}`;
+    const vision = JSON.parse(String(calls[0].init?.body)) as {
+      model?: string;
+      messages: Array<{ content: unknown }>;
+    };
+    expect(vision.model).toBe('deepseek-flash');
+    const visionParts = vision.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+    expect(visionParts.slice(1).map((part) => part.image_url?.url)).toEqual([
+      desktopShotDataUrl(desktop),
+      desktopShotDataUrl(preview),
+      desktopShotDataUrl(landingFooter),
+      desktopShotDataUrl(header),
+      desktopShotDataUrl(footer),
+      heroUrl,
+      commentUrl,
+    ]);
+    const contentNote = {
+      ref: 'I1',
+      visible_text: '250 EUR Quifix',
+      visible_name: '',
+      face_visible: false,
+      note: 'креатив',
+    };
+    for (const category of [5, 6, 7]) {
+      const parsed = JSON.parse(String(callFor(calls, category).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(parsed.model).toBe('deepseek-flash');
+      const parts = parsed.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+      expect(parts.map((part) => part.type)).toEqual(['text', 'image_url']);
+      expect(parts[1].image_url?.url).toBe(heroUrl);
+      const body = JSON.stringify(parsed);
+      expect(body).not.toContain(commentUrl);
+      expect(body).not.toContain(desktopShotDataUrl(desktop));
+      expect(body).not.toContain(desktopShotDataUrl(preview));
+      expect(body).not.toContain(desktopShotDataUrl(landingFooter));
+      expect(body).not.toContain(desktopShotDataUrl(header));
+      expect(body).not.toContain(desktopShotDataUrl(footer));
+      const text = callText(calls, category);
+      expect(userJson(text).attachments_order).toEqual(['I1']);
+      expect(userJson(text).visual_observations).toEqual([contentNote]);
+      expect(userJson(text).outlet).toBeNull();
+      expect(userJson(text).landing_footer_ref).toBeNull();
+      expect(userJson(text).images).toEqual([expect.objectContaining({ ref: 'I1', kind: 'content' })]);
+      expect(text).toContain('Кадры следуют в порядке attachments_order (I1)');
+      expect(text).not.toContain('Пикселей в этом сообщении нет');
+      expect(text).not.toContain('Кадров контента нет');
+    }
+    for (const category of [1, 4, 8, 11]) {
+      const textOnly = JSON.parse(String(callFor(calls, category).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(textOnly.model).toBe('deepseek-v4-pro');
+      expect(typeof textOnly.messages[1].content).toBe('string');
+      expect(String(callFor(calls, category).init?.body)).not.toContain('image_url');
+    }
+    expect(userJson(callText(calls, 2)).attachments_order).toEqual(['preview', 'outlet_header', 'outlet_footer']);
+    expect(userJson(callText(calls, 3)).attachments_order).toEqual(['preview', 'I1']);
+    expect(userJson(callText(calls, 9)).attachments_order).toEqual(['desktop', 'preview', 'landing_footer', 'I2']);
+    expect(userJson(callText(calls, 10)).attachments_order).toEqual(['desktop', 'preview', 'landing_footer', 'I1', 'I2']);
+    const framesOf = (category: number): string[] => {
+      const parsed = JSON.parse(String(callFor(calls, category).init?.body)) as {
+        model?: string;
+        messages: Array<{ content: unknown }>;
+      };
+      expect(parsed.model).toBe('deepseek-flash');
+      const parts = parsed.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+      return parts.slice(1).map((part) => part.image_url?.url ?? '');
+    };
+    expect(framesOf(2)).toEqual([desktopShotDataUrl(preview), desktopShotDataUrl(header), desktopShotDataUrl(footer)]);
+    expect(framesOf(3)).toEqual([desktopShotDataUrl(preview), heroUrl]);
+    expect(framesOf(9)).toEqual([
+      desktopShotDataUrl(desktop),
+      desktopShotDataUrl(preview),
+      desktopShotDataUrl(landingFooter),
+      commentUrl,
+    ]);
+    expect(framesOf(10)).toEqual([
+      desktopShotDataUrl(desktop),
+      desktopShotDataUrl(preview),
+      desktopShotDataUrl(landingFooter),
+      heroUrl,
+      commentUrl,
+    ]);
   });
 
   it('attaches the official header and footer and refuses them as finding screenshots', async () => {
@@ -645,7 +929,26 @@ describe('DeepSeek chat completions client', () => {
     expect(payload.visual_observations).toEqual([]);
     expect(categoryText).toContain('Категория 2: сравни');
     expect(categoryText).not.toContain('скриншотов оригинала издания нет');
-    expect(String(callFor(calls, 2).init?.body)).not.toContain('image_url');
+    const categoryTwoBody = JSON.parse(String(callFor(calls, 2).init?.body)) as {
+      model?: string;
+      messages: Array<{ content: unknown }>;
+    };
+    expect(categoryTwoBody.model).toBe('deepseek-flash');
+    const categoryTwoParts = categoryTwoBody.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+    expect(categoryTwoParts.map((part) => part.type)).toEqual(['text', 'image_url', 'image_url', 'image_url']);
+    expect(categoryTwoParts[1].image_url?.url).toBe(desktopShotDataUrl(landingFooter));
+    expect(categoryTwoParts[2].image_url?.url).toBe(desktopShotDataUrl(header));
+    expect(categoryTwoParts[3].image_url?.url).toBe(desktopShotDataUrl(footer));
+    const categoryTenOnlyFooter = JSON.parse(String(callFor(calls, 10).init?.body)) as {
+      model?: string;
+      messages: Array<{ content: unknown }>;
+    };
+    expect(categoryTenOnlyFooter.model).toBe('deepseek-flash');
+    const categoryTenParts = categoryTenOnlyFooter.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+    expect(categoryTenParts.map((part) => part.type)).toEqual(['text', 'image_url']);
+    expect(categoryTenParts[1].image_url?.url).toBe(desktopShotDataUrl(landingFooter));
+    expect(JSON.parse(String(callFor(calls, 1).init?.body)).model).toBe('deepseek-v4-pro');
+    expect(String(callFor(calls, 1).init?.body)).not.toContain('image_url');
     const vision = JSON.parse(String(calls[0].init?.body)) as {
       model?: string;
       messages: Array<{ content: unknown }>;
@@ -885,9 +1188,26 @@ describe('DeepSeek chat completions client', () => {
     expect(payload.stand_url).toBe('https://example.invalid/stand');
     expect(payload.attachments_order).toEqual(['desktop', PREVIEW_SHOT]);
     expect(categoryTen).toContain('visual_observations');
-    expect(String(callFor(calls, 10).init?.body)).not.toContain('image_url');
-    expect(JSON.parse(String(callFor(calls, 10).init?.body)).model).toBe('deepseek-v4-pro');
+    const categoryTenBody = JSON.parse(String(callFor(calls, 10).init?.body)) as {
+      model?: string;
+      messages: Array<{ content: unknown }>;
+    };
+    expect(categoryTenBody.model).toBe('deepseek-flash');
+    const categoryTenParts = categoryTenBody.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+    expect(categoryTenParts.map((part) => part.type)).toEqual(['text', 'image_url', 'image_url']);
+    expect(categoryTenParts[1].image_url?.url).toBe(desktopShotDataUrl(desktop));
+    expect(categoryTenParts[2].image_url?.url).toBe(desktopShotDataUrl(preview));
+    const categoryThreeBody = JSON.parse(String(callFor(calls, 3).init?.body)) as {
+      model?: string;
+      messages: Array<{ content: unknown }>;
+    };
+    expect(categoryThreeBody.model).toBe('deepseek-flash');
+    const categoryThreeParts = categoryThreeBody.messages[1].content as Array<{ type: string; image_url?: { url: string } }>;
+    expect(categoryThreeParts.map((part) => part.type)).toEqual(['text', 'image_url']);
+    expect(categoryThreeParts[1].image_url?.url).toBe(desktopShotDataUrl(preview));
     expect(callText(calls, 3)).toContain('Кадры preview');
+    expect(callText(calls, 3)).toContain('Кадры превью приложены в этом вызове');
+    expect(callText(calls, 3)).not.toContain('Пикселей в этом вызове нет');
     expect(callText(calls, 3)).toContain('Сверь лицо');
     expect(callText(calls, 3)).toContain('гостю интервью');
     expect(callText(calls, 3)).toContain('Ссылку сам не открывай');
@@ -908,8 +1228,15 @@ describe('DeepSeek chat completions client', () => {
     expect(userJson(textOnly).attachments_order).toEqual([]);
     expect(textOnly).toContain('кадров страницы нет');
     expect(textOnly).toContain('Не ставь визуальный FAIL');
-    const plain = JSON.parse(String(callFor(second, 1).init?.body)) as { messages: Array<{ content: unknown }> };
+    expect(JSON.parse(String(callFor(second, 3).init?.body)).model).toBe('deepseek-flash');
+    expect(String(callFor(second, 3).init?.body)).not.toContain('image_url');
+    const plain = JSON.parse(String(callFor(second, 1).init?.body)) as {
+      model?: string;
+      messages: Array<{ content: unknown }>;
+    };
+    expect(plain.model).toBe('deepseek-v4-pro');
     expect(typeof plain.messages[1].content).toBe('string');
+    expect(String(callFor(second, 1).init?.body)).not.toContain('image_url');
   });
 
   it('drops incomplete findings', () => {

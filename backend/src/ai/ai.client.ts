@@ -12,6 +12,7 @@ import {
   QA_CATEGORY_COUNT,
   VISION_CATEGORIES,
   attachmentLabels,
+  categoryReadsContentFrames,
   categoryUsesVision,
   mergeCategoryParts,
 } from './qa-categories';
@@ -26,7 +27,7 @@ import {
 
 export const DEFAULT_DEEPSEEK_API_BASE = 'https://api.deepseek.com';
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-pro';
-/** Reads frames. deepseek-v4-pro accepts image_url and discards the pixels. */
+/** Reads frames. Also the checklist model for vision categories. deepseek-v4-pro accepts image_url and discards the pixels. */
 export const DEFAULT_DEEPSEEK_VISION_MODEL = 'deepseek-flash';
 /** The high 64K thinking budget is not used. Effort stays low. */
 export const DEEPSEEK_REASONING_EFFORT = 'low';
@@ -222,7 +223,12 @@ export class DeepSeekAiClient extends AiClient {
     for (let attempt = 1; attempt <= CATEGORY_ATTEMPTS; attempt += 1) {
       try {
         const completion = await this.openai.chat.completions.create(
-          buildCategoryRequest(bundle, category, this.model(), observations),
+          buildCategoryRequest(
+            bundle,
+            category,
+            categoryUsesVision(category) ? this.visionModel() : this.model(),
+            observations,
+          ),
           { timeout: CATEGORY_TIMEOUT_MS },
         );
         absorbUsage(usage, plainUsage(completion.usage));
@@ -240,7 +246,7 @@ export class DeepSeekAiClient extends AiClient {
           lastDetail = 'no_status';
           continue;
         }
-        // Correspondence is decided by the vision pass. Pro image_checks are ignored.
+        // Correspondence is decided by the vision pass. Checklist image_checks are ignored.
         if (category === 3) return { category, accepted: true, result: mapped.result, imageChecks: imageChecksFor(bundle, parsed, observations) };
         return { category, accepted: true, result: mapped.result };
       } catch (error) {
@@ -378,7 +384,9 @@ function buildCategoryRequest(
 ): DeepSeekChatRequest {
   // No web_search: chat completions accepts only function tools, and the model does not run them.
   // Responses API web_search is a different API and is not used for this check.
-  // Pixels are not attached here. Vision categories receive visual_observations instead.
+  // Vision categories attach image_url parts for their own attachments_order.
+  // Categories 5–7 stay on flash. With no content frames the user message is a plain string and image_url is not invented.
+  // Categories 1, 4, 8 and 11 stay a string on the text model.
   const labels = attachmentLabels(category, bundle.available, { content: bundle.contentRefs, comment: bundle.commentRefs });
   const labelSet = new Set(labels);
   const images = bundle.images.filter((image) => labelSet.has(image.ref));
@@ -412,6 +420,12 @@ function buildCategoryRequest(
   };
   if (categoryUsesVision(category)) userPayload.visual_observations = observationsFor(labels, observations);
   const userText = [JSON.stringify(userPayload), ...categoryNotes(bundle, category, labels), 'ПРОВЕРЯЙ'].filter(Boolean).join('\n');
+  const frames = frameParts(bundle, labels);
+  const plainWithoutContentFrames = categoryReadsContentFrames(category) && frames.length === 0;
+  const userContent =
+    categoryUsesVision(category) && !plainWithoutContentFrames
+      ? [{ type: 'text' as const, text: userText }, ...frames]
+      : userText;
   return {
     model,
     stream: false,
@@ -421,9 +435,22 @@ function buildCategoryRequest(
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: categorySystemMessage(category) },
-      { role: 'user', content: userText },
+      { role: 'user', content: userContent },
     ],
   };
+}
+
+function frameParts(
+  bundle: ReviewBundle,
+  labels: readonly string[],
+): Array<{ type: 'image_url'; image_url: { url: string } }> {
+  const parts: Array<{ type: 'image_url'; image_url: { url: string } }> = [];
+  for (const label of labels) {
+    const url = bundle.modelShots[label];
+    if (!url) continue;
+    parts.push({ type: 'image_url', image_url: { url } });
+  }
+  return parts;
 }
 
 function buildVisionRequest(bundle: ReviewBundle, labels: readonly string[], model: string): DeepSeekChatRequest {
@@ -497,7 +524,7 @@ function imageChecksFor(bundle: ReviewBundle, parsed: unknown, observations: rea
 }
 
 function categoryNotes(bundle: ReviewBundle, category: number, labels: string[]): string[] {
-  const notes = [attachmentNote(labels), previewNote(bundle, category), renderedNote(bundle.input)];
+  const notes = [attachmentNote(category, labels), previewNote(bundle, category), renderedNote(bundle.input)];
   if (category === 2) notes.push(outletNote(bundle));
   const facts = factNote(bundle, category);
   if (facts) notes.push(facts);
@@ -506,20 +533,27 @@ function categoryNotes(bundle: ReviewBundle, category: number, labels: string[])
   return notes.filter((note) => note.trim().length > 0);
 }
 
-function attachmentNote(labels: string[]): string {
+function attachmentNote(category: number, labels: string[]): string {
   if (!labels.length) {
+    if (categoryReadsContentFrames(category)) {
+      return 'Кадров контента нет. Суди только по page_text и не выдумывай содержимое изображений.';
+    }
     return 'Изображения не приложены: не делай выводов об их содержимом, в screenshot_ref ставь короткую метку места на странице.';
   }
-  return `Пикселей в этом сообщении нет. Видимое содержимое — visual_observations по меткам attachments_order (${labels.join(', ')}). В screenshot_ref ставь только метку из этого списка. ${OUTLET_HEADER_REF} и ${OUTLET_FOOTER_REF} в screenshot_ref не ставь, никогда не base64 и не описание.`;
+  const refs = `В screenshot_ref ставь только метку из этого списка. ${OUTLET_HEADER_REF} и ${OUTLET_FOOTER_REF} в screenshot_ref не ставь, никогда не base64 и не описание.`;
+  if (categoryUsesVision(category)) {
+    return `Кадры следуют в порядке attachments_order (${labels.join(', ')}). ${refs}`;
+  }
+  return `Пикселей в этом сообщении нет. Видимое содержимое — visual_observations по меткам attachments_order (${labels.join(', ')}). ${refs}`;
 }
 
 function previewNote(bundle: ReviewBundle, category: number): string {
-  if (!categoryUsesVision(category)) return '';
+  if (category !== 2 && category !== 3 && category !== 9 && category !== 10) return '';
   const labels = bundle.previewLabels;
   if (labels.length) {
     const first = labels[0];
     const last = labels[labels.length - 1];
-    const base = `Кадры ${labels.join(', ')} — страница landing_preview_url, уже снятая нашим браузером сверху вниз. ${first} — верх и шапка, ${last} — низ и футер. Пикселей в этом вызове нет: смотри visual_observations. Повторно превью не скачивай.`;
+    const base = `Кадры ${labels.join(', ')} — страница landing_preview_url, уже снятая нашим браузером сверху вниз. ${first} — верх и шапка, ${last} — низ и футер. Кадры превью приложены в этом вызове. Повторно превью не скачивай.`;
     if (category === 2) {
       return `${base} Шапка ленда — ${first}, футер ленда — ${last}. Эталон издания — outlet_header и outlet_footer, только если эти метки есть в attachments_order. Если их нет — N/A, не FAIL.`;
     }

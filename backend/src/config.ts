@@ -31,7 +31,7 @@ export interface AppConfig {
   aiBaseUrl: string;
   aiApiKey: string;
   aiModel: string;
-  /** Reads frames. Checklist verdicts stay on aiModel. */
+  /** Reads frames. Vision-category verdicts use aiVisionModel; text verdicts stay on aiModel. */
   aiVisionModel: string;
   lighthouseMode: 'stub' | 'real';
   lighthouseChromePath: string;

@@ -12,8 +12,8 @@ import {
 
 export const QA_CATEGORY_COUNT = 11;
 
-/** Header/footer, the main person, comment avatars, and text on pictures. */
-export const VISION_CATEGORIES = [2, 3, 9, 10] as const;
+/** Header/footer, the main person, deposit and offer text on content frames, comment avatars, and contradictions on pictures. */
+export const VISION_CATEGORIES = [2, 3, 5, 6, 7, 9, 10] as const;
 
 export const QA_CATEGORY_TITLES: Record<number, string> = {
   1: 'GEO и локализация',
@@ -52,9 +52,9 @@ const OUTLET_OFFLINE =
 const PERSON_OFFLINE = 'Биографию в сети не ищи. Источник сведений о человеке — fact_sheet.person.';
 const FAME_OFFLINE = 'Гражданство и известность в сети не ищи. Источник для этого пункта — fact_sheet.person.';
 
-/** Pixels stay on the vision call. The category number keeps this sentence from being copied across prompts. */
+/** Frames are attached on this call. The category number keeps this sentence from being copied across prompts. */
 function eyesLine(category: number): string {
-  return `Пункт ${category}. Пикселей в этом вызове нет. Видимое содержимое кадров — visual_observations по меткам attachments_order. Нет записи для метки — кадр не прочитан: не пиши, что осмотр невозможен, и не выдумывай пиксели. Суди по тексту записи.`;
+  return `Пункт ${category}. Кадры приложены в этом вызове в порядке attachments_order, после текста. visual_observations тоже есть: смотри приложенные пиксели. Нет записи для метки — кадр не прочитан: не пиши, что осмотр невозможен, и не выдумывай пиксели отсутствующего кадра. screenshot_ref — метка, никогда не base64.`;
 }
 
 function answerContract(category: number): string {
@@ -127,6 +127,10 @@ const CATEGORY_PROMPTS: Record<number, string> = {
   5: [
     'Пункт 5. Валюта минимального депозита.',
     'Найди упоминания минимального депозита и проверь только валюту. Она должна соответствовать GEO. Примеры: Германия — EUR, Польша — PLN, Швейцария — CHF, Великобритания — GBP. Учитывай страны, где допустимы несколько валют.',
+    'Пункт 5. Сумма, валюта или название оффера, нарисованные на приложенном кадре контента, — упоминание этого факта. С этого кадра читай только валюту депозита.',
+    'Нет кадров контента у пункта 5 — суди только по page_text и не выдумывай содержимое изображений. screenshot_ref — метка из attachments_order, никогда не base64.',
+    'Проверку валюты пункта 5 не переноси в пункт 10 и не копируй сюда поиск противоречий между частями страницы.',
+    'Пункт 5. Когда attachments_order не пуст, кадры контента приложены после текста, и visual_observations этих меток тоже есть: смотри пиксели. Нет записи для метки — не выдумывай пиксели отсутствующего кадра.',
     'Валюта не соответствует GEO — FAIL. Разные валюты одного депозита на странице — FAIL. Депозита на странице нет — N/A.',
     'Сумму в доллары не переводи и размер депозита не оценивай. Курс для этого пункта не нужен.',
     'Не проверяй оффер, даты и телефонный код.',
@@ -136,6 +140,10 @@ const CATEGORY_PROMPTS: Record<number, string> = {
   6: [
     'Пункт 6. Размер минимального депозита.',
     'Найди все упоминания минимального депозита. Сумма в долларах должна попадать в один из диапазонов: 185–215, 235–265 или 285–315 USD. Это 200, 250 или 300 USD с допуском 15 USD.',
+    'Пункт 6. Сумма, валюта или название оффера, нарисованные на приложенном кадре контента, — упоминание этого факта. С этого кадра читай только сумму депозита.',
+    'Нет кадров контента у пункта 6 — суди только по page_text и не выдумывай содержимое изображений. screenshot_ref — метка из attachments_order, никогда не base64.',
+    'Проверку суммы пункта 6 не переноси в пункт 10 и не копируй сюда поиск противоречий между частями страницы.',
+    'Пункт 6. Когда attachments_order не пуст, кадры контента приложены после текста, и visual_observations этих меток тоже есть: смотри пиксели. Нет записи для метки — не выдумывай пиксели отсутствующего кадра.',
     'fx_rates.rates[код] — сколько единиц валюты даёт 1 USD на fx_rates.date. Эквивалент = локальная сумма / rates[код]. Нет fx_rates или нет кода валюты в rates — N/A. Свой курс не подставляй и приближение не выдавай за расчёт.',
     'Разные суммы минимального депозита внутри страницы — FAIL. Валюту против GEO не оценивай.',
     'Не проверяй единство оффера и актуальность дат.',
@@ -145,7 +153,11 @@ const CATEGORY_PROMPTS: Record<number, string> = {
   7: [
     'Пункт 7. Единство оффера.',
     'Определи основной оффер: название компании, платформы или продукта, которое повторяется в тексте. Примеры таких названий — Quifix, Mifix.',
-    'Проверь заголовки, статью и комментарии: одно название, без случайной другой платформы и без разных написаний одного имени. Чужое название в комментарии — тоже ошибка, если контекст его не объясняет.',
+    'Пункт 7. Сумма, валюта или название оффера, нарисованные на приложенном кадре контента, — упоминание этого факта. С этого кадра читай только название оффера.',
+    'Проверь заголовки, статью, комментарии и приложенные кадры контента: одно название, без случайной другой платформы и без разных написаний одного имени. Чужое название в комментарии — тоже ошибка, если контекст его не объясняет.',
+    'Нет кадров контента у пункта 7 — суди только по page_text и не выдумывай содержимое изображений. screenshot_ref — метка из attachments_order, никогда не base64.',
+    'Проверку оффера пункта 7 не переноси в пункт 10 и не копируй сюда поиск противоречий между частями страницы.',
+    'Пункт 7. Когда attachments_order не пуст, кадры контента приложены после текста, и visual_observations этих меток тоже есть: смотри пиксели. Нет записи для метки — не выдумывай пиксели отсутствующего кадра.',
     'Упоминание конкурента не является ошибкой, если оно логически объяснено. Остаток другого оффера — FAIL.',
     'Не проверяй валюту депозита, даты, шапку и телефон. Не оценивай юридическую подлинность оффера.',
     'general.offer — название основного оффера.',
@@ -191,6 +203,11 @@ const CATEGORY_PROMPTS: Record<number, string> = {
 
 export function categoryUsesVision(category: number): boolean {
   return (VISION_CATEGORIES as readonly number[]).includes(category);
+}
+
+/** Deposit currency, deposit amount, and offer name. Content frames only, and flash even when a landing has none. */
+export function categoryReadsContentFrames(category: number): boolean {
+  return category === 5 || category === 6 || category === 7;
 }
 
 export function categorySystemPrompt(category: number): string {
@@ -239,6 +256,8 @@ export function attachmentLabels(
       take(DESKTOP_SHOT);
       take(LANDING_FOOTER_REF);
     }
+    for (const label of available) if (content.has(label)) take(label);
+  } else if (categoryReadsContentFrames(category)) {
     for (const label of available) if (content.has(label)) take(label);
   } else if (category === 9) {
     take(DESKTOP_SHOT);
