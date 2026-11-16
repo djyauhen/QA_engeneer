@@ -14,6 +14,12 @@ export interface QaParseOptions {
   pageText?: string;
   /** Screenshot label ("desktop", "I1"...) to data URL. */
   screenshots?: Record<string, string>;
+  /**
+   * Labels of this call, from attachmentLabels.
+   * Non-empty: screenshot_ref must be one of them.
+   * Empty: a short place label is kept as text and is not resolved through screenshots.
+   */
+  attachmentLabels?: readonly string[];
 }
 
 export interface QaParseResult {
@@ -55,7 +61,29 @@ function normalizeStatus(value: unknown): AiCheck['status'] | undefined {
   return undefined;
 }
 
-function mapFinding(raw: unknown, screenshots: Record<string, string>): Partial<AiFinding> | null {
+function isLongBase64(label: string): boolean {
+  const compact = label.replace(/\s+/g, '');
+  return compact.length >= 80 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact);
+}
+
+/**
+ * Non-empty attachmentLabels: the ref must be in that list, then a known shot becomes its data URL.
+ * Empty attachmentLabels: keep a short place label as text. Do not look it up in the global shot map.
+ * Omitted attachmentLabels: a known shot still becomes its data URL.
+ */
+function resolveScreenshot(label: string, options: QaParseOptions): string | null {
+  if (label === OUTLET_HEADER_REF || label === OUTLET_FOOTER_REF) return null;
+  const screenshots = options.screenshots ?? {};
+  const labels = options.attachmentLabels;
+  if (labels !== undefined && labels.length === 0) {
+    if (label.startsWith('data:') || isLongBase64(label)) return null;
+    return label;
+  }
+  if (labels !== undefined && !labels.includes(label)) return null;
+  return Object.prototype.hasOwnProperty.call(screenshots, label) ? screenshots[label] : label;
+}
+
+function mapFinding(raw: unknown, options: QaParseOptions): Partial<AiFinding> | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const item = raw as Record<string, unknown>;
   const file = str(item.file);
@@ -63,11 +91,12 @@ function mapFinding(raw: unknown, screenshots: Record<string, string>): Partial<
   const shotRaw = str(item.screenshot_ref) ?? str(item.screenshot);
   if (!file || !quote || !shotRaw) return null;
   const label = shotRaw.trim();
-  if (label === OUTLET_HEADER_REF || label === OUTLET_FOOTER_REF) return null;
+  const screenshot = resolveScreenshot(label, options);
+  if (!screenshot) return null;
   const finding: Partial<AiFinding> = {
     file,
     quote,
-    screenshot: Object.prototype.hasOwnProperty.call(screenshots, label) ? screenshots[label] : shotRaw,
+    screenshot,
   };
   const category = normalizeCategory(item.category);
   if (category !== undefined) finding.category = category;
@@ -116,12 +145,11 @@ function mapGeneral(raw: unknown): AiGeneral | undefined {
 
 export function mapQaResponse(parsed: unknown, options: QaParseOptions = {}): QaParseResult {
   const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-  const screenshots = options.screenshots ?? {};
   const haystack = normalizeWhitespace(options.pageText ?? '');
   const rawFindings = Array.isArray(body.findings) ? body.findings : [];
   const findings: Array<Partial<AiFinding>> = [];
   for (const raw of rawFindings) {
-    const finding = mapFinding(raw, screenshots);
+    const finding = mapFinding(raw, options);
     if (!finding) continue;
     if (haystack && !haystack.includes(normalizeWhitespace(finding.quote as string))) continue;
     findings.push(finding);
@@ -321,6 +349,8 @@ export interface ImageCorrespondenceOptions {
   screenshots?: Record<string, string>;
   images?: CorrespondenceImage[];
   imageChecks?: unknown;
+  /** index.html or index.php. Blank or absent stays index.html. */
+  indexFile?: string;
 }
 
 type ImageMatch = 'match' | 'mismatch' | 'uncertain';
@@ -405,9 +435,14 @@ function ensureCategoryFail(report: QaReportFields, category: number, note: stri
   }
 }
 
+function landingIndexFile(name: string | undefined): string {
+  const trimmed = name?.trim();
+  return trimmed || 'index.html';
+}
+
 /**
  * A claimed image must come back as match, mismatch, or uncertain.
- * mismatch becomes a category-10 finding when the page contains a quote; otherwise it stays a clarification.
+ * mismatch becomes a category-3 finding when the page contains a quote; otherwise it stays a clarification.
  * uncertain and a missing verdict stay clarifications and do not become FAIL.
  */
 export function enforceImageCorrespondence(result: QaParseResult, options: ImageCorrespondenceOptions = {}): QaParseResult {
@@ -447,7 +482,7 @@ export function enforceImageCorrespondence(result: QaParseResult, options: Image
       continue;
     }
     result.findings.push({
-      file: 'index.html',
+      file: landingIndexFile(options.indexFile),
       quote,
       screenshot: dataUrl,
       category: 3,

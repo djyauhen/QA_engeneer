@@ -47,6 +47,7 @@ describe('buildAiMaterials', () => {
       resolved: 'Andrzej Duda',
       conflict: false,
     });
+    expect(result.indexFile).toBe('index.html');
     expect(result.images).toHaveLength(1);
     expect(result.images[0]).toMatchObject({
       ref: 'I1',
@@ -76,6 +77,7 @@ describe('buildAiMaterials', () => {
     write('index.php', '<?php echo 1; ?><h1>Jan Kowalski</h1><p>text</p>');
     write('style.css', 'body{content:"CSS_BODY"}');
     const result = buildAiMaterials(dir, 'x', '2026-10-26');
+    expect(result.indexFile).toBe('index.php');
     expect(result.pageText).toBe('Jan Kowalski text');
     expect(result.pageText).not.toContain('CSS_BODY');
     expect(result.person.resolved).toBe('Jan Kowalski');
@@ -243,6 +245,91 @@ describe('buildAiMaterials', () => {
     expect(result.images).toEqual([]);
     expect(result.person.resolved).toBe('Andrzej Duda');
   });
+
+  it('reads a trailing initial as the commenter and ignores the French reply control', () => {
+    write(
+      'index.html',
+      `<div class="comments">
+  <div class="comment">
+    <img src="images/a1.jpg" alt="">
+    <div class="name">Stéphane M.</div>
+    <p>J'ai commencé avec 205 CHF.</p>
+    <div class="actions"><span>J'aime</span> <a href="#">Répondre</a></div>
+  </div>
+  <div class="comment">
+    <img src="images/a2.jpg" alt="">
+    <strong class="author">Hans K.</strong>
+    <p>Je suis retraité.</p>
+    <button type="button">Répondre</button>
+  </div>
+</div>`,
+    );
+    write('images/a1.jpg', jpeg(3000, 11));
+    write('images/a2.jpg', jpeg(3000, 12));
+    const result = buildAiMaterials(dir, 'x', '2026-10-26');
+    expect(result.commentAvatars.map((avatar) => avatar.name)).toEqual(['Stéphane M.', 'Hans K.']);
+  });
+
+  it('does not invent a commenter from a reply button', () => {
+    write(
+      'index.html',
+      `<div class="comment">
+  <img src="images/a1.jpg" alt="">
+  <p>merci pour le retour.</p>
+  <a href="#">Répondre</a>
+</div>`,
+    );
+    write('images/a1.jpg', jpeg(3000, 13));
+    const result = buildAiMaterials(dir, 'x', '2026-10-26');
+    expect(result.commentAvatars).toEqual([]);
+  });
+
+  it('keeps full names and Jaime, and drops reply labels, J\'aime, and a lone initial', () => {
+    const accepted: Array<[string, string]> = [
+      ['Anna Nowak', 'anna'],
+      ['Andrzej Duda', 'andrzej'],
+      ['Jean-Pierre D.', 'pierre'],
+      ['Stéphane M', 'stephane'],
+      ['Jaime', 'jaime'],
+    ];
+    const rejected = [
+      'M.',
+      'M',
+      "J'aime",
+      'Reply',
+      'Replies',
+      'Répondre',
+      'Antworten',
+      'Antwort',
+      'Responder',
+      'Responde',
+      'Rispondi',
+      'Ответить',
+      'Yanıtla',
+      'Antwoord',
+      'Svara',
+      'Partager',
+      'Like',
+      'Share',
+    ];
+    const parts: string[] = [];
+    accepted.forEach(([name, file], index) => {
+      write(`images/${file}.jpg`, jpeg(3000, 30 + index));
+      parts.push(
+        `<div class="comment"><img src="images/${file}.jpg" alt=""><a class="name" href="#">${name}</a><button type="button">Répondre</button></div>`,
+      );
+    });
+    rejected.forEach((label, index) => {
+      const file = `skip${index}`;
+      write(`images/${file}.jpg`, jpeg(3000, 50 + index));
+      parts.push(
+        `<div class="comment"><img src="images/${file}.jpg" alt=""><div class="name">${label}</div><a href="#">Répondre</a></div>`,
+      );
+    });
+    write('index.html', `<div class="comments">${parts.join('')}</div>`);
+    const result = buildAiMaterials(dir, 'x', '2026-10-26');
+    expect(result.commentAvatars.map((avatar) => avatar.name)).toEqual(accepted.map(([name]) => name));
+  });
 });
 
 describe('QA_INSTRUCTION', () => {
@@ -395,7 +482,7 @@ describe('image correspondence', () => {
     claims_person: null,
   };
 
-  it('turns a mismatch into a category 10 finding and FAIL', () => {
+  it('turns a mismatch into a category 3 finding and FAIL', () => {
     const mapped = mapQaResponse(
       { report_markdown: 'ИТОГ', checks: [{ category: 10, status: 'PASS', note: 'ок' }], findings: [] },
       { pageText, screenshots: { I1: shot } },
@@ -487,5 +574,32 @@ describe('image correspondence', () => {
     expect(result.report?.clarifications).toEqual([
       'I1 (images/p1.webp): соответствие «Martín Guerra» — несоответствие, находка не собрана',
     ]);
+  });
+
+  it('writes index.php into a mismatch finding when the landing has only that index', () => {
+    const mapped = mapQaResponse(
+      { report_markdown: 'ИТОГ', checks: [{ category: 3, status: 'PASS', note: 'ок' }], findings: [] },
+      { pageText, screenshots: { I1: shot } },
+    );
+    const result = enforceImageCorrespondence(mapped, {
+      pageText,
+      screenshots: { I1: shot },
+      images: [hero],
+      imageChecks: [{ ref: 'I1', match: 'mismatch', note: 'На фото другой человек' }],
+      indexFile: 'index.php',
+    });
+    expect(result.findings).toEqual([
+      {
+        file: 'index.php',
+        quote: 'Martín Guerra',
+        screenshot: shot,
+        category: 3,
+        priority: 'major',
+        where: 'images/p1.webp',
+        problem: 'На фото другой человек',
+        expected: 'Изображение Martín Guerra',
+      },
+    ]);
+    expect(result.report?.checks?.find((check) => check.category === 3)?.status).toBe('FAIL');
   });
 });

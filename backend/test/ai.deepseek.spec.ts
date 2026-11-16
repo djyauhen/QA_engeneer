@@ -14,7 +14,7 @@ import {
 import { MaterialImage } from '../src/ai/materials';
 import { categorySystemMessage } from '../src/ai/qa-category-instruction';
 import { GAP_NOTE, QA_CATEGORY_COUNT, categorySystemPrompt } from '../src/ai/qa-categories';
-import { ADDENDUM, QA_INSTRUCTION } from '../src/ai/qa-instruction';
+import { QA_INSTRUCTION } from '../src/ai/qa-instruction';
 import { PREVIEW_SHOT, captureStandJpeg, wantsVisualCapture } from '../src/stand/capture';
 import { resolveChromeExecutable } from '../src/stand/chrome-path';
 import { standFormHtml } from '../src/stand/form-html';
@@ -205,6 +205,8 @@ describe('DeepSeek chat completions client', () => {
     for (const category of [5, 6, 7]) {
       const text = callText(calls, category);
       expect(text).toContain('Кадров контента нет. Суди только по page_text');
+      expect(text).toContain('не выдумывай содержимое изображений');
+      expect(text).toContain('в screenshot_ref ставь короткую метку места на странице');
       expect(text).not.toContain('Пикселей в этом сообщении нет');
       expect(userJson(text).attachments_order).toEqual([]);
       expect(userJson(text).visual_observations).toEqual([]);
@@ -253,9 +255,6 @@ describe('DeepSeek chat completions client', () => {
     expect(messages[0].content).toContain(categorySystemPrompt(1));
     expect(messages[0].content).not.toContain('ровно 11');
     expect(messages[0].content).not.toContain('11. Телефонный код формы');
-    expect(ADDENDUM).toContain('"report_markdown","general","checks","findings","clarifications","image_checks"');
-    expect(ADDENDUM).toContain('screenshot_ref');
-    expect(QA_INSTRUCTION).not.toContain(ADDENDUM);
     expect(messages[1].role).toBe('user');
     expect(typeof messages[1].content).toBe('string');
     expect(userJson(messages[1].content)).toEqual({ ...userPayload, category: 1 });
@@ -324,6 +323,8 @@ describe('DeepSeek chat completions client', () => {
       expect(typeof parsed.messages[1].content).toBe('string');
       const text = callText(calls, category);
       expect(text).toContain('Кадров контента нет. Суди только по page_text');
+      expect(text).toContain('не выдумывай содержимое изображений');
+      expect(text).toContain('в screenshot_ref ставь короткую метку места на странице');
       expect(text).not.toContain('Пикселей в этом сообщении нет');
       expect(userJson(text).attachments_order).toEqual([]);
       expect(userJson(text).visual_observations).toEqual([]);
@@ -1027,9 +1028,16 @@ describe('DeepSeek chat completions client', () => {
     expect(presentPerson).toContain('fact_sheet.person (Ben Woldring');
     expect(presentPerson).toContain('Википедия или поиск до вызова');
     expect(presentPerson).toContain('description и extract');
+    expect(presentPerson).toContain('человек этого GEO');
+    expect(presentPerson).toContain('Умершего тёзку');
     expect(presentPerson).not.toContain('web_search');
     expect(presentPerson).not.toContain('открой сайт');
-    expect(textAt(1, 3)).toContain('description и extract');
+    const categoryThree = textAt(1, 3);
+    expect(categoryThree).toContain('fact_sheet.person.extract (Ben Woldring)');
+    expect(categoryThree).toContain('имя, возраст, должность и цитаты');
+    expect(categoryThree).toContain('Фото сверь с именем из названия ленда');
+    expect(categoryThree).not.toContain('человек этого GEO');
+    expect(categoryThree).not.toContain('Умершего тёзку');
     expect(presentAmount).toContain('Депозит в USD считай по fx_rates на 2026-10-27');
     expect(textAt(1, 1)).toContain('видимый текст отрисованного стенда');
     expect(textAt(1, 7)).not.toContain('offer_name');
@@ -1214,9 +1222,6 @@ describe('DeepSeek chat completions client', () => {
     expect(result.findings).toEqual([
       { file: 'index.html', quote: 'Hello', screenshot: desktopShotDataUrl(preview), category: 10 },
     ]);
-    expect(ADDENDUM).toContain('landing_preview_url');
-    expect(ADDENDUM).toContain('"preview"');
-    expect(ADDENDUM).toContain('не ставь визуальный FAIL');
     expect(QA_INSTRUCTION).not.toContain('landing_preview_url');
 
     const before = calls.length;

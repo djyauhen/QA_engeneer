@@ -445,6 +445,7 @@ export class CheckOrchestrator {
                 person: materials.person,
                 images: materials.images,
                 commentAvatars: materials.commentAvatars,
+                indexFile: materials.indexFile,
               }
             : previewText
               ? { pageText: previewText.pageText }

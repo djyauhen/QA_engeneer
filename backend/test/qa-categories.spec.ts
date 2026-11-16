@@ -1,5 +1,6 @@
 import { CommentAvatarOccurrence } from '../src/ai/materials';
 import { categoryInstruction, categorySystemMessage } from '../src/ai/qa-category-instruction';
+import { QA_INSTRUCTION } from '../src/ai/qa-instruction';
 import {
   GAP_NOTE,
   QA_CATEGORY_COUNT,
@@ -99,7 +100,10 @@ describe('per-category prompts', () => {
     expect(prompts[4]).toContain('только валюту депозита');
     expect(prompts[4]).toContain('суди только по page_text');
     expect(prompts[4]).toContain('не выдумывай содержимое изображений');
-    expect(prompts[4]).toContain('screenshot_ref — метка из attachments_order, никогда не base64');
+    expect(prompts[4]).toContain('Нет кадров контента у пункта 5');
+    expect(prompts[4]).toContain('screenshot_ref — короткая метка места на странице, не описание изображения, никогда не base64');
+    expect(prompts[4]).not.toContain('метка из attachments_order');
+    expect(prompts[4]).toContain('Когда attachments_order не пуст, кадры контента приложены после текста');
     expect(prompts[4]).toContain('не переноси в пункт 10');
     expect(prompts[4]).toContain('не копируй сюда поиск противоречий');
     expect(prompts[4]).toContain('visual_observations');
@@ -110,14 +114,20 @@ describe('per-category prompts', () => {
     expect(prompts[5]).toContain('упоминание этого факта');
     expect(prompts[5]).toContain('только сумму депозита');
     expect(prompts[5]).toContain('суди только по page_text');
-    expect(prompts[5]).toContain('screenshot_ref — метка из attachments_order, никогда не base64');
+    expect(prompts[5]).toContain('Нет кадров контента у пункта 6');
+    expect(prompts[5]).toContain('screenshot_ref — короткая метка места на странице, не описание изображения, никогда не base64');
+    expect(prompts[5]).not.toContain('метка из attachments_order');
+    expect(prompts[5]).toContain('Когда attachments_order не пуст, кадры контента приложены после текста');
     expect(prompts[5]).toContain('не переноси в пункт 10');
     expect(prompts[6]).toContain('Quifix');
     expect(prompts[6]).toContain('нарисованные на приложенном кадре контента');
     expect(prompts[6]).toContain('упоминание этого факта');
     expect(prompts[6]).toContain('только название оффера');
     expect(prompts[6]).toContain('суди только по page_text');
-    expect(prompts[6]).toContain('screenshot_ref — метка из attachments_order, никогда не base64');
+    expect(prompts[6]).toContain('Нет кадров контента у пункта 7');
+    expect(prompts[6]).toContain('screenshot_ref — короткая метка места на странице, не описание изображения, никогда не base64');
+    expect(prompts[6]).not.toContain('метка из attachments_order');
+    expect(prompts[6]).toContain('Когда attachments_order не пуст, кадры контента приложены после текста');
     expect(prompts[6]).toContain('не переноси в пункт 10');
     for (const index of [0, 1, 2, 3, 7, 8, 9, 10]) {
       expect(prompts[index]).not.toContain('нарисованные на приложенном кадре контента');
@@ -425,10 +435,97 @@ describe('category merge', () => {
       commentAvatars: [avatar, other],
     });
     expect(merged.findings.map((finding) => finding.category).sort()).toEqual([3, 9]);
+    expect(merged.findings.find((finding) => finding.category === 3)?.file).toBe('index.html');
     expect(merged.report?.checks?.find((check) => check.category === 3)?.status).toBe('FAIL');
     expect(merged.report?.checks?.find((check) => check.category === 9)?.status).toBe('FAIL');
     expect(merged.report?.report_markdown).toContain('3. Данные главного персонажа: FAIL.');
     expect(merged.report?.report_markdown).toContain('9. Комментарии: FAIL.');
+  });
+
+  it('keeps a text FAIL when this call has no frames', () => {
+    const pageText = 'Заполните форму и укажите телефон.';
+    const screenshots = { desktop: 'data:image/jpeg;base64,DESKTOP' };
+    for (const category of [1, 6, 8, 11]) {
+      const mapped = mapCategoryResponse(
+        category,
+        {
+          status: 'FAIL',
+          findings: [{ file: 'index.html', quote: 'форму', screenshot_ref: 'форма' }],
+        },
+        { pageText, screenshots, attachmentLabels: [] },
+      );
+      expect(mapped.accepted).toBe(true);
+      expect(mapped.result.findings).toEqual([{ file: 'index.html', quote: 'форму', screenshot: 'форма', category }]);
+      expect(mapped.result.report?.checks).toEqual([{ category, status: 'FAIL' }]);
+    }
+    const invented = mapCategoryResponse(
+      1,
+      { status: 'FAIL', findings: [{ file: 'index.html', quote: 'этого нет на странице', screenshot_ref: 'форма' }] },
+      { pageText, attachmentLabels: [] },
+    );
+    expect(invented.result.findings).toEqual([]);
+    expect(invented.result.report?.checks).toEqual([{ category: 1, status: 'N/A', note: 'Нет подтверждённой находки' }]);
+    const blob = 'A'.repeat(120);
+    const dropped = mapCategoryResponse(
+      8,
+      {
+        status: 'FAIL',
+        findings: [
+          { file: 'index.html', quote: 'форму', screenshot_ref: 'data:image/png;base64,QQ' },
+          { file: 'index.html', quote: 'форму', screenshot_ref: blob },
+          { file: 'index.html', quote: 'форму', screenshot_ref: 'outlet_footer' },
+          { file: 'index.html', quote: 'форму', screenshot_ref: '' },
+        ],
+      },
+      { pageText, screenshots, attachmentLabels: [] },
+    );
+    expect(dropped.result.findings).toEqual([]);
+    expect(dropped.result.report?.checks).toEqual([{ category: 8, status: 'N/A', note: 'Нет подтверждённой находки' }]);
+  });
+
+  it('drops a screenshot_ref outside this call and keeps a listed label as a data URL', () => {
+    const pageText = 'Minimum deposit 250 PLN.';
+    const shot = 'data:image/png;base64,QQ';
+    const quote = 'Minimum deposit 250 PLN';
+    const missing = mapCategoryResponse(
+      6,
+      { status: 'FAIL', findings: [{ file: 'index.html', quote, screenshot_ref: 'desktop' }] },
+      { pageText, attachmentLabels: ['I1'], screenshots: { I1: shot, desktop: 'data:image/jpeg;base64,DD' } },
+    );
+    expect(missing.result.findings).toEqual([]);
+    expect(missing.result.report?.checks).toEqual([{ category: 6, status: 'N/A', note: 'Нет подтверждённой находки' }]);
+    const outlet = mapCategoryResponse(
+      2,
+      { status: 'FAIL', findings: [{ file: 'index.html', quote, screenshot_ref: 'outlet_header' }] },
+      { pageText, attachmentLabels: ['preview', 'outlet_header'], screenshots: { preview: shot } },
+    );
+    expect(outlet.result.findings).toEqual([]);
+    expect(outlet.result.report?.checks).toEqual([{ category: 2, status: 'N/A', note: 'Нет подтверждённой находки' }]);
+    const kept = mapCategoryResponse(
+      6,
+      { status: 'FAIL', findings: [{ file: 'index.html', quote, screenshot_ref: 'I1' }] },
+      { pageText, attachmentLabels: ['I1'], screenshots: { I1: shot, desktop: 'data:image/jpeg;base64,DD' } },
+    );
+    expect(kept.result.findings).toEqual([{ file: 'index.html', quote, screenshot: shot, category: 6 }]);
+    expect(kept.result.report?.checks).toEqual([{ category: 6, status: 'FAIL' }]);
+  });
+
+  it('leaves N/A with no finding as N/A', () => {
+    const cases: Array<[number, string]> = [
+      [5, 'Депозита на странице нет'],
+      [8, 'Актуальные даты не найдены'],
+      [11, 'Поля телефона нет'],
+    ];
+    for (const [category, note] of cases) {
+      const mapped = mapCategoryResponse(
+        category,
+        { status: 'N/A', note, findings: [] },
+        { pageText: 'текст без депозита и дат', attachmentLabels: [] },
+      );
+      expect(mapped.accepted).toBe(true);
+      expect(mapped.result.findings).toEqual([]);
+      expect(mapped.result.report?.checks).toEqual([{ category, status: 'N/A', note }]);
+    }
   });
 });
 
@@ -520,7 +617,17 @@ describe('per-category instructions', () => {
     expect(amount).toContain('235\u2013265 USD.');
     expect(amount).toContain('285\u2013315 USD.');
     expect(amount).toContain('200 USD');
-    expect(amount).toContain('Для проверки используй актуальный валютный курс.');
+    expect(QA_INSTRUCTION).toContain('Для проверки используй актуальный валютный курс.');
+    expect(QA_INSTRUCTION).toContain('Переведи указанную сумму в USD и сравни с допустимыми диапазонами.');
+    expect(amount).toContain('fx_rates.rates[код] — сколько единиц валюты даёт 1 USD на fx_rates.date.');
+    expect(amount).toContain('Эквивалент = локальная сумма / rates[код].');
+    expect(amount).toContain('Нет fx_rates или нет кода валюты в rates — N/A.');
+    expect(amount).toContain('Свой курс не подставляй и приближение не выдавай за расчёт.');
+    expect(amount).not.toContain('Для проверки используй актуальный валютный курс.');
+    expect(amount).not.toContain('Переведи указанную сумму в USD и сравни с допустимыми диапазонами.');
+    expect(currency).not.toContain('Для проверки используй актуальный валютный курс.');
+    expect(currency).not.toContain('Переведи указанную сумму в USD');
+    expect(currency).not.toContain('fx_rates');
     expect(amount).toContain('согласуются между собой.');
     expect(amount).not.toContain('УСЛОВИЕ №1: ВАЛЮТА');
     expect(amount).not.toContain('Германия: EUR.');

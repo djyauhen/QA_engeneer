@@ -81,6 +81,11 @@ function replaceOnce(text: string, from: string, to: string, label: string): str
   return text.slice(0, at) + to + text.slice(at + from.length);
 }
 
+const AMOUNT_RATE_SENTENCES =
+  'Для проверки используй актуальный валютный курс.\n\nПереведи указанную сумму в USD и сравни с допустимыми диапазонами.';
+const AMOUNT_FX_RULE =
+  'fx_rates.rates[код] — сколько единиц валюты даёт 1 USD на fx_rates.date. Эквивалент = локальная сумма / rates[код]. Нет fx_rates или нет кода валюты в rates — N/A. Свой курс не подставляй и приближение не выдавай за расчёт.';
+
 function depositSlice(part: 'currency' | 'amount'): string {
   const body = section(5).body;
   const currencyAt = body.indexOf('УСЛОВИЕ №1: ВАЛЮТА');
@@ -93,7 +98,8 @@ function depositSlice(part: 'currency' | 'amount'): string {
   }
   if (currency.includes('УСЛОВИЕ №2')) throw new Error('currency slice includes condition 2');
   if (amount.includes('УСЛОВИЕ №1: ВАЛЮТА')) throw new Error('amount slice includes condition 1');
-  return part === 'currency' ? currency : amount;
+  if (part === 'currency') return currency;
+  return replaceOnce(amount, AMOUNT_RATE_SENTENCES, AMOUNT_FX_RULE, 'amount fx sentences');
 }
 
 function ownSection(category: number): string {

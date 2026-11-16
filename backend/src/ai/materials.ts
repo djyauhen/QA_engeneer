@@ -47,12 +47,16 @@ export interface CommentAvatarOccurrence {
   screenshot: string;
 }
 
+export type LandingIndexFile = 'index.html' | 'index.php';
+
 export interface AiMaterials {
   pageText: string;
   textTruncated: boolean;
   person: PersonClaim;
   images: MaterialImage[];
   commentAvatars: CommentAvatarOccurrence[];
+  /** Set when the landing index was read. Absent when the folder has neither index. */
+  indexFile?: LandingIndexFile;
 }
 
 const NAME_RE = /\p{Lu}\p{Ll}+(?:[-\s]+\p{Lu}\p{Ll}+){1,3}/u;
@@ -62,10 +66,17 @@ const NAME_TOKEN_RE = /^(?:name|author|user|username|nick|nickname)$/i;
 const NAME_REJECT_RE = /text|body|message/i;
 const PLACEHOLDER_RE =
   /(?:^|[^a-z0-9])(?:placeholder|default[-_]?avatar|no[-_]?photo|no[-_]?avatar|anon(?:ymous)?|silhouette|userpic|stub|blank|nophoto)(?:[^a-z0-9]|$)/i;
+// Single-token controls (Reply, Répondre, Ответить, …). Jaime is a given name and stays out of this list.
+// J'aime is already a non-name: the apostrophe fails PERSON_NAME_EXACT, and it is not stripped.
 const NOT_A_PERSON_RE =
-  /^(?:comments?|reviews?|repl(?:y|ies)|likes?|share|read|more|show|hide|users?|admin|guest|anonymous|feedback|otzyv|отзыв|отзывы)$/iu;
+  /^(?:comments?|reviews?|repl(?:y|ies)|répondre|antworten|antwort|responder|responde|rispondi|ответить|yanıtla|antwoord|svara|partager|likes?|share|read|more|show|hide|users?|admin|guest|anonymous|feedback|otzyv|отзыв|отзывы)$/iu;
 const PERSON_WORD = String.raw`\p{Lu}\p{Ll}+(?:-\p{Lu}\p{Ll}+)?`;
-const PERSON_NAME_EXACT = new RegExp(`^${PERSON_WORD}(?:[ \\u00a0]+${PERSON_WORD}){0,2}$`, 'u');
+const PERSON_INITIAL = String.raw`\p{Lu}\.?`;
+// One to three name words, then an optional trailing initial (Stéphane M.). A lone initial does not match.
+const PERSON_NAME_EXACT = new RegExp(
+  `^${PERSON_WORD}(?:[ \\u00a0]+${PERSON_WORD}){0,2}(?:[ \\u00a0]+${PERSON_INITIAL})?$`,
+  'u',
+);
 /** Comment avatars above this size are skipped: the finding card stores the bytes as a data URL. */
 const COMMENT_AVATAR_MAX_BYTES = 2_000_000;
 const VOID_TAGS = new Set([
@@ -90,7 +101,14 @@ export function buildAiMaterials(landingFolder: string, landName: string, _check
   const person = resolvePerson(landName, firstH1(cleaned), extracted.pageText);
   const images = selectImages(landingFolder, cleaned, parsed, person.resolved);
   const commentAvatars = collectCommentAvatars(landingFolder, cleaned, parsed, person.resolved, index.file);
-  return { pageText: extracted.pageText, textTruncated: extracted.textTruncated, person, images, commentAvatars };
+  return {
+    pageText: extracted.pageText,
+    textTruncated: extracted.textTruncated,
+    person,
+    images,
+    commentAvatars,
+    indexFile: index.file,
+  };
 }
 
 export interface AiPageText {

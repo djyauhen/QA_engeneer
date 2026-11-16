@@ -3,7 +3,7 @@ import { AppConfig } from '../config';
 import { AiFinding } from '../reports/report.types';
 import { DESKTOP_SHOT } from '../stand/capture';
 import { previewShotLabel, previewShotLabels } from '../stand/preview-slices';
-import { CommentAvatarOccurrence, MaterialImage, PersonClaim } from './materials';
+import { CommentAvatarOccurrence, LandingIndexFile, MaterialImage, PersonClaim } from './materials';
 import { FactSheet, FxRates } from './facts';
 import { LANDING_FOOTER_REF, OUTLET_FOOTER_REF, OUTLET_HEADER_REF } from './outlets';
 import { categorySystemMessage } from './qa-category-instruction';
@@ -72,6 +72,8 @@ export interface AiInput {
   images?: MaterialImage[];
   /** Every comment avatar from the landing HTML, including byte-identical repeats. */
   commentAvatars?: CommentAvatarOccurrence[];
+  /** Landing index that was read. Absent stays index.html on an image-mismatch finding. */
+  indexFile?: LandingIndexFile;
   /** YYYY-MM-DD, the date of the check. */
   checkDate?: string;
   /** Header and footer of the official outlet homepage. Reference only: not a finding screenshot. */
@@ -195,6 +197,7 @@ export class DeepSeekAiClient extends AiClient {
         images: bundle.images,
         commentAvatars: input.commentAvatars,
         checkDate: bundle.checkDate,
+        indexFile: input.indexFile,
       });
       const shotUrl = bundle.shot ? desktopShotDataUrl(bundle.shot) : '';
       return {
@@ -238,9 +241,14 @@ export class DeepSeekAiClient extends AiClient {
           continue;
         }
         const parsed = parseJsonContent(content);
+        const labels = attachmentLabels(category, bundle.available, {
+          content: bundle.contentRefs,
+          comment: bundle.commentRefs,
+        });
         const mapped = mapCategoryResponse(category, parsed, {
           pageText: bundle.input.pageText,
           screenshots: bundle.screenshots,
+          attachmentLabels: labels,
         });
         if (!mapped.accepted) {
           lastDetail = 'no_status';
@@ -536,7 +544,7 @@ function categoryNotes(bundle: ReviewBundle, category: number, labels: string[])
 function attachmentNote(category: number, labels: string[]): string {
   if (!labels.length) {
     if (categoryReadsContentFrames(category)) {
-      return 'Кадров контента нет. Суди только по page_text и не выдумывай содержимое изображений.';
+      return 'Кадров контента нет. Суди только по page_text и не выдумывай содержимое изображений, в screenshot_ref ставь короткую метку места на странице.';
     }
     return 'Изображения не приложены: не делай выводов об их содержимом, в screenshot_ref ставь короткую метку места на странице.';
   }
@@ -586,15 +594,21 @@ function outletNote(bundle: ReviewBundle): string {
 
 function factNote(bundle: ReviewBundle, category: number): string {
   const geo = (bundle.input.countries ?? []).filter(Boolean).join(', ') || 'страницы';
-  if (category === 3 || category === 4) {
+  const person = category === 3 || category === 4 ? bundle.input.factSheet?.person : undefined;
+  if (category === 3) {
+    if (person) {
+      return `Категория 3: имя, возраст, должность и цитаты page_text сверь с fact_sheet.person.extract (${person.name}). Фото сверь с именем из названия ленда. Прямое противоречие extract — FAIL. Чего extract не говорит, не называй верным.`;
+    }
+    return 'Категория 3: карточки fact_sheet.person нет. Имя сверяй по page_text и по фото. Возраст, должность и цитаты без extract не подтверждай и не опровергай: это clarifications. Человека не объявляй несуществующим и не пиши «fact_sheet.person отсутствует». Пустая карточка не запрещает закрыть пункт по тексту и фото. Не ставь N/A только из-за пустой карточки.';
+  }
+  if (category === 4) {
     const picked =
       'Если fact_sheet.person есть, это ныне живущий человек этого GEO: карточку дали Википедия или поиск до вызова. Сверь гражданство, description и extract. Умершего тёзку и человека из другой страны в карточку не кладут.';
-    const person = bundle.input.factSheet?.person;
     if (person) {
       const citizenship = (person.citizenship ?? []).join(', ') || 'не указано';
-      return `Категория ${category}: знаменитость для GEO ${geo} сверяется с карточкой fact_sheet.person (${person.name}, гражданство: ${citizenship}). ${picked}`;
+      return `Категория 4: знаменитость для GEO ${geo} сверяется с карточкой fact_sheet.person (${person.name}, гражданство: ${citizenship}). ${picked}`;
     }
-    return `Категория ${category}: карточки fact_sheet.person нет. Человека не объявляй несуществующим и не пиши «fact_sheet.person отсутствует». Пустая карточка не запрещает закрыть пункт по тексту и фото. Не ставь N/A только из-за пустой карточки. Сайт отсюда не открывается: возраст, должность и гражданство без карточки не выдумывай, это clarifications. ${picked}`;
+    return `Категория 4: карточки fact_sheet.person нет. Человека не объявляй несуществующим и не пиши «fact_sheet.person отсутствует». Пустая карточка не запрещает закрыть пункт по тексту и фото. Не ставь N/A только из-за пустой карточки. Сайт отсюда не открывается: возраст, должность и гражданство без карточки не выдумывай, это clarifications. ${picked}`;
   }
   if (category === 5) return 'Валюту против GEO проверяй без курса. Сумму в USD не переводи.';
   if (category === 6) {
