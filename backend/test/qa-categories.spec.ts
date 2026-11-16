@@ -152,6 +152,17 @@ describe('per-category prompts', () => {
       expect(prompts[category - 1]).toContain(`Ответ пункта ${category}. ${QA_CATEGORY_TITLES[category]}.`);
     }
   });
+
+  it('pins Russian notes once in every category prompt and leaves page quotes in the landing language', () => {
+    const sentence =
+      'Пиши по-русски note, clarifications, where, problem, expected и словесные значения general (страна, название языка, издание, человек, оффер), при этом quote оставляй дословной подстрокой page_text на исходном языке, а имена, суммы, коды валют и телефонные коды оставляй как на странице и сам лендинг не переводи.';
+    for (let category = 1; category <= QA_CATEGORY_COUNT; category += 1) {
+      const prompt = categorySystemPrompt(category);
+      const at = prompt.indexOf(sentence);
+      expect(at).toBe(prompt.lastIndexOf(sentence));
+      expect(at).not.toBe(-1);
+    }
+  });
 });
 
 describe('vision attachments', () => {
