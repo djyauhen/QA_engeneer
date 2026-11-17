@@ -61,7 +61,12 @@ export interface AiMaterials {
 
 const NAME_RE = /\p{Lu}\p{Ll}+(?:[-\s]+\p{Lu}\p{Ll}+){1,3}/u;
 const SKIP_NAME_RE = /favicon|pixel|spacer|sprite|blank|logo|icon/i;
-const COMMENT_MARKER_RE = /comment|review|otzyv|отзыв|feedback/iu;
+// Whole class/id tokens only. A substring match treats "review" inside "preview" as a comment frame.
+const COMMENT_MARKER_TOKEN_RE = /^(?:comments?|reviews?|otzyvy?|отзывы?|feedback)$/iu;
+const COMMENT_ITEM_TOKEN_RE = /^(?:comment|review|otzyv|отзыв|feedback)$/iu;
+const COMMENT_SECTION_TOKEN_RE = /^(?:comments|reviews|otzyvy|отзывы)$/iu;
+const AVATAR_TOKEN_RE = /^(?:avatar|userpic|ava|userphoto|profilephoto)$/i;
+const BODY_TOKEN_RE = /^(?:text|body|message|content|attachment|attachments)$/i;
 const NAME_TOKEN_RE = /^(?:name|author|user|username|nick|nickname)$/i;
 const NAME_REJECT_RE = /text|body|message/i;
 const PLACEHOLDER_RE =
@@ -201,6 +206,7 @@ function firstH1(cleaned: string): string | null {
 interface TagFrame {
   name: string;
   comment: boolean;
+  tokens: string[];
   start: number;
   end: number;
 }
@@ -209,7 +215,13 @@ interface RawImg {
   tag: string;
   offset: number;
   inComment: boolean;
-  /** Smallest ancestor whose class or id marks a comment block. End is filled when that tag closes. */
+  /** The picture next to the commenter name. An image inside the comment text is not an avatar. */
+  avatar: boolean;
+  /**
+   * Innermost single comment item that contains this image.
+   * A wide comments/reviews/preview wrapper is not an item, so an article image
+   * in that wrapper does not become a comment avatar.
+   */
   commentFrame: TagFrame | null;
 }
 
@@ -218,20 +230,139 @@ interface ParsedTags {
   imgs: RawImg[];
 }
 
+function isCommentMarker(marker: string): boolean {
+  return markerTokens(marker).some((token) => COMMENT_MARKER_TOKEN_RE.test(token));
+}
+
+function containsNestedComment(region: TagFrame, regions: TagFrame[]): boolean {
+  return regions.some((other) => other !== region && other.start > region.start && other.end <= region.end);
+}
+
+/**
+ * A comment-marked leaf that also holds the article (several figures, a figure plus
+ * other images, or a section class wrapped around a figure) is not one comment item.
+ * A flat comment list with no figures stays a leaf so each avatar can still be named.
+ */
+function leafMixesArticle(block: string, tokens: string[]): boolean {
+  if (tokens.some((token) => COMMENT_ITEM_TOKEN_RE.test(token))) return false;
+  const figureCount = (block.match(/<figure\b/gi) ?? []).length;
+  if (figureCount === 0) return false;
+  const outside = block.replace(/<figure\b[\s\S]*?<\/figure\s*>/gi, ' ');
+  if (/<img\b/i.test(outside)) return true;
+  if (figureCount >= 2) return true;
+  const sectionOnly = tokens.some((token) => COMMENT_SECTION_TOKEN_RE.test(token)) && !tokens.some((token) => COMMENT_ITEM_TOKEN_RE.test(token));
+  return sectionOnly;
+}
+
+/** Innermost comment item for this image, or null when it only sits in a wide wrapper. */
+function commentItemFrame(offset: number, regions: TagFrame[], cleaned: string): TagFrame | null {
+  const containing = regions
+    .filter((region) => offset >= region.start && offset < region.end)
+    .sort((a, b) => a.end - a.start - (b.end - b.start) || b.start - a.start);
+  for (const region of containing) {
+    if (containsNestedComment(region, regions)) continue;
+    const block = cleaned.slice(region.start, region.end);
+    if (leafMixesArticle(block, region.tokens)) continue;
+    return region;
+  }
+  return null;
+}
+
+function imgHasAvatarToken(tag: string): boolean {
+  const marker = `${attrOf(tag, 'class') ?? ''} ${attrOf(tag, 'id') ?? ''}`;
+  return markerTokens(marker).some((token) => AVATAR_TOKEN_RE.test(token));
+}
+
+function nameAnchors(block: string): ElementSpan[] {
+  const elements = scanElements(block);
+  const authors = elements.filter((element) => element.author && acceptName(elementText(block, element), null));
+  if (authors.length) return authors;
+  return elements.filter(
+    (element) => !element.reject && !insideReject(element, elements) && acceptName(elementText(block, element), null),
+  );
+}
+
+function bodyStartAfter(elements: ElementSpan[], nameEnd: number): number | null {
+  let start: number | null = null;
+  for (const element of elements) {
+    if (!element.body || element.contentStart < nameEnd) continue;
+    if (start === null || element.contentStart < start) start = element.contentStart;
+  }
+  return start;
+}
+
+function insideAvatarBox(elements: ElementSpan[], imgAt: number): boolean {
+  return elements.some((element) => element.avatar && imgAt >= element.contentStart && imgAt <= element.contentEnd);
+}
+
+/** Beside the name: before it, inside it, or in the header row before the comment text. */
+function besideName(imgAt: number, name: ElementSpan, bodyAt: number | null, explicitAvatar: boolean): boolean {
+  if (bodyAt !== null && imgAt >= bodyAt) return false;
+  if (imgAt <= name.contentEnd) return true;
+  if (bodyAt !== null && imgAt < bodyAt) return true;
+  return explicitAvatar;
+}
+
+/**
+ * One photo per commenter: the image next to the name.
+ * A later image in the same comment is an attachment and is not that user's photo.
+ */
+function markCommentAvatars(cleaned: string, imgs: RawImg[]): void {
+  const groups = new Map<TagFrame, RawImg[]>();
+  for (const img of imgs) {
+    if (!img.commentFrame) continue;
+    const list = groups.get(img.commentFrame) ?? [];
+    list.push(img);
+    groups.set(img.commentFrame, list);
+  }
+  const chosen = new Set<RawImg>();
+  for (const [frame, group] of groups) {
+    const block = cleaned.slice(frame.start, frame.end);
+    const elements = scanElements(block);
+    const anchors = nameAnchors(block).sort((a, b) => a.contentStart - b.contentStart || a.contentEnd - b.contentEnd);
+    if (!anchors.length) {
+      if (group.length === 1) chosen.add(group[0]);
+      continue;
+    }
+    const used = new Set<RawImg>();
+    for (const anchor of anchors) {
+      const bodyAt = bodyStartAfter(elements, anchor.contentEnd);
+      let best: RawImg | null = null;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      let bestClassed = false;
+      for (const img of group) {
+        if (used.has(img)) continue;
+        const at = img.offset - frame.start;
+        const classed = imgHasAvatarToken(img.tag) || insideAvatarBox(elements, at);
+        if (!besideName(at, anchor, bodyAt, classed)) continue;
+        const distance = distanceToElement(anchor, at);
+        const closer = best === null || (classed === bestClassed ? distance < bestDistance : classed);
+        if (!closer) continue;
+        best = img;
+        bestDistance = distance;
+        bestClassed = classed;
+      }
+      if (!best) continue;
+      chosen.add(best);
+      used.add(best);
+    }
+  }
+  for (const img of imgs) {
+    const avatar = chosen.has(img);
+    img.avatar = avatar;
+    img.inComment = avatar;
+    if (!avatar) img.commentFrame = null;
+  }
+}
+
 function parseTags(cleaned: string): ParsedTags {
   const imgs: RawImg[] = [];
   const stack: TagFrame[] = [];
+  const commentRegions: TagFrame[] = [];
   const marked = cleaned.replace(TAG_RE, (full: string, slash: string, name: string, attrs: string, offset: number) => {
     const tag = name.toLowerCase();
     if (tag === 'img') {
-      let commentFrame: TagFrame | null = null;
-      for (let i = stack.length - 1; i >= 0; i -= 1) {
-        if (stack[i].comment) {
-          commentFrame = stack[i];
-          break;
-        }
-      }
-      imgs.push({ tag: full, offset, inComment: commentFrame !== null, commentFrame });
+      imgs.push({ tag: full, offset, inComment: false, avatar: false, commentFrame: null });
       return ` ${MARK_OPEN}${imgs.length - 1}${MARK_CLOSE} `;
     }
     if (VOID_TAGS.has(tag) || full.endsWith('/>')) return ' ';
@@ -246,9 +377,17 @@ function parseTags(cleaned: string): ParsedTags {
       return ' ';
     }
     const marker = `${attrOf(attrs, 'class') ?? ''} ${attrOf(attrs, 'id') ?? ''}`;
-    stack.push({ name: tag, comment: COMMENT_MARKER_RE.test(marker), start: offset, end: cleaned.length });
+    const tokens = markerTokens(marker);
+    const comment = isCommentMarker(marker);
+    const frame: TagFrame = { name: tag, comment, tokens, start: offset, end: cleaned.length };
+    if (comment) commentRegions.push(frame);
+    stack.push(frame);
     return ' ';
   });
+  for (const img of imgs) {
+    img.commentFrame = commentItemFrame(img.offset, commentRegions, cleaned);
+  }
+  markCommentAvatars(cleaned, imgs);
   return { marked, imgs };
 }
 
@@ -536,6 +675,8 @@ function nearestName(items: Array<{ element: ElementSpan; text: string }>, imgAt
 interface ElementSpan {
   name: string;
   author: boolean;
+  avatar: boolean;
+  body: boolean;
   reject: boolean;
   contentStart: number;
   contentEnd: number;
@@ -563,9 +704,13 @@ function scanElements(block: string): ElementSpan[] {
     }
     if (VOID_TAGS.has(tag) || full.endsWith('/>')) continue;
     const marker = `${attrOf(attrs, 'class') ?? ''} ${attrOf(attrs, 'id') ?? ''}`;
+    const tokens = markerTokens(marker);
+    const author = isAuthorMarker(marker);
     const element: ElementSpan = {
       name: tag,
-      author: isAuthorMarker(marker),
+      author,
+      avatar: tokens.some((token) => AVATAR_TOKEN_RE.test(token)),
+      body: !author && (tag === 'p' || tokens.some((token) => BODY_TOKEN_RE.test(token))),
       reject: NAME_REJECT_RE.test(marker),
       contentStart: match.index + full.length,
       contentEnd: block.length,

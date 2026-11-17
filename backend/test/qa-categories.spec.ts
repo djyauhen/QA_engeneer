@@ -66,8 +66,13 @@ describe('per-category prompts', () => {
       expect(prompt).not.toContain('Этот вызов страницу не загружает');
     }
     expect(prompts[0]).toContain('язык основного текста');
+    expect(prompts[0]).toContain(
+      'Национальная валюта, телефонный код и название издания здесь только признаки страны. Не проверяй сумму депозита, оффер, даты, комментарии, шапку и существование телефонного номера.',
+    );
     expect(prompts[0]).not.toContain('ПРОВЕРКА ТЕЛЕФОННОГО КОДА');
     expect(prompts[1]).toContain('outlet_header');
+    expect(prompts[1]).toContain('Футер ленда — последняя метка preview из списка, иначе landing_footer, если он в списке.');
+    expect(prompts[1]).not.toContain('иначе текст page_text');
     expect(prompts[1]).toContain('отсутствие кадра ошибкой не считай');
     expect(prompts[1]).toContain('Кадры приложены в этом вызове в порядке attachments_order, после текста.');
     expect(prompts[1]).toContain('visual_observations');
@@ -94,6 +99,7 @@ describe('per-category prompts', () => {
     expect(prompts[3]).toContain(OFFLINE_PHRASE[4]);
     expect(prompts[3]).not.toContain('image_checks');
     expect(prompts[4]).toContain('PLN');
+    expect(prompts[4]).toContain('Разные валюты одного депозита на странице — FAIL.');
     expect(prompts[4]).not.toContain('185–215');
     expect(prompts[4]).toContain('нарисованные на приложенном кадре контента');
     expect(prompts[4]).toContain('упоминание этого факта');
@@ -136,11 +142,40 @@ describe('per-category prompts', () => {
     expect(prompts[8]).toContain('Заглушка');
     expect(prompts[8]).toContain('Кадры приложены в этом вызове в порядке attachments_order, после текста.');
     expect(prompts[8]).not.toContain('image_checks');
+    expect(prompts[8]).not.toContain('Фото аватара сверь с родом имени.');
+    expect(prompts[8]).not.toContain('соседних кадрах preview');
+    expect(prompts[8].split('\n\n')).toEqual(
+      expect.arrayContaining([
+        'Имена и GEO. Имена правдоподобны для GEO. Иностранное имя само по себе не FAIL. Явно чужое имя вместе с другими признаками неправильной локализации — FAIL.',
+        'Грамматический род. Род имени и род текста комментария согласованы, если язык различает род. Пример ошибки: имя Анна и текст «Я зарегистрировался». Фактический пол человека по одному имени не определяй.',
+        'Комментарий и статья. Другое имя платформы, другой обязательный депозит или другой продукт — FAIL.',
+        'Релевантность офферу. Комментарий относится к основному офферу. Случайный чужой продукт без объяснения — FAIL.',
+        [
+          'Фото.',
+          'Аватар — картинка рядом с именем.',
+          'Картинка внутри текста комментария — вложение: не второе фото этого имени и не аватар другого комментатора.',
+          'Иллюстрации статьи — не аватары.',
+          'Один и тот же аватар в нескольких комментариях одного имени — нормально.',
+          'Явно мужской портрет при явно женском имени или наоборот — priority minor.',
+          'Одно узнаваемое фото у разных имён или одно имя с двумя разными аватарами, которые не являются заглушками, — priority major.',
+          'Заглушка (стандартный аватар, силуэт, буква, пустой серый круг, иконка «нет фото»), её повтор, похожие лица и один комментарий на пересекающихся кадрах preview — не ошибка.',
+          'Аватар не виден: finding не выдумывай, напиши об этом в note или clarifications и всё равно закрой критерии текста.',
+          'Категорию целиком не ставь N/A или FAIL только потому, что аватары не видны.',
+        ].join('\n'),
+        'Аватар комментатора — не главный персонаж статьи. Не переноси эту проверку в данные персонажа.',
+      ]),
+    );
     expect(prompts[9]).toContain('подпись');
+    expect(prompts[9]).toContain(
+      'Отдельную ошибку валюты против GEO, размера депозита или телефонного кода не дублируй, если части страницы друг другу не противоречат.',
+    );
+    expect(prompts[9]).not.toContain('курса или телефонного кода');
     expect(prompts[9]).toContain('Кадры приложены в этом вызове в порядке attachments_order, после текста.');
     expect(prompts[0]).not.toContain('visual_observations');
     expect(prompts[3]).not.toContain('visual_observations');
     expect(prompts[10]).toContain('+48');
+    expect(prompts[10]).toContain('Код другой страны — FAIL. Поля телефона нет или код страны не найден — N/A и так и напиши в note.');
+    expect(prompts[10]).not.toContain('Поля телефона или кода не видно');
     expect(prompts[10]).toContain('существует ли номер');
     for (const category of [2, 3, 4]) {
       const phrase = OFFLINE_PHRASE[category];
@@ -623,6 +658,14 @@ describe('per-category instructions', () => {
     expect(amount).toContain('Эквивалент = локальная сумма / rates[код].');
     expect(amount).toContain('Нет fx_rates или нет кода валюты в rates — N/A.');
     expect(amount).toContain('Свой курс не подставляй и приближение не выдавай за расчёт.');
+    expect(QA_INSTRUCTION).toContain('Если актуальный курс недоступен, не выдавай приблизительный расчёт за точный.');
+    expect(QA_INSTRUCTION).toContain('Эквивалент: приблизительно XXX USD.');
+    expect(amount).toContain('Нет fx_rates или нет кода валюты в rates — N/A. Приблизительный расчёт не подставляй.');
+    expect(amount).toContain('Эквивалент: локальная сумма / fx_rates.rates[код] USD.');
+    expect(amount).not.toContain('Если актуальный курс недоступен, не выдавай приблизительный расчёт за точный.');
+    expect(amount).not.toContain('Эквивалент: приблизительно XXX USD.');
+    expect(currency).not.toContain('Приблизительный расчёт не подставляй.');
+    expect(currency).not.toContain('Эквивалент: локальная сумма / fx_rates.rates[код] USD.');
     expect(amount).not.toContain('Для проверки используй актуальный валютный курс.');
     expect(amount).not.toContain('Переведи указанную сумму в USD и сравни с допустимыми диапазонами.');
     expect(currency).not.toContain('Для проверки используй актуальный валютный курс.');
@@ -631,6 +674,42 @@ describe('per-category instructions', () => {
     expect(amount).toContain('согласуются между собой.');
     expect(amount).not.toContain('УСЛОВИЕ №1: ВАЛЮТА');
     expect(amount).not.toContain('Германия: EUR.');
+    const comments = categoryInstruction(9);
+    expect(comments).toContain(
+      'Аватар — картинка рядом с именем. Картинка внутри текста комментария — вложение: это не второе фото этого имени и не аватар другого комментатора. Иллюстрации статьи — не аватары.',
+    );
+    const avatarPhoto =
+      'Сравнение только по аватарам рядом с именами. Вложение внутри текста комментария и иллюстрация статьи этим фото не считаются.';
+    expect(comments).toContain(
+      `Одно и то же узнаваемое фото у двух разных имён комментаторов — ошибка, если это не заглушка.\n\n${avatarPhoto}`,
+    );
+    expect(comments).toContain(
+      `Одно и то же имя с двумя разными фото, которые не являются заглушками, — ошибка.\n\n${avatarPhoto}`,
+    );
+    expect(comments).toContain('Явно мужской портрет рядом с явно женским именем — ошибка.');
+    expect(comments).toContain('- стандартный аватар или иконка пользователя по умолчанию;');
+    expect(comments).toContain('- иконка «нет фото».');
+    expect(comments).toContain('Приоритет minor: у одного комментария пол аватара явно не сходится с именем.');
+    expect(comments).toContain(
+      'Приоритет major: одно реальное фото у разных имён или одно имя с разными фото, которые не являются заглушками.',
+    );
+    expect(comments).toContain('Если аватары рядом с именем на предоставленных кадрах и на отдельно приложенных кадрах не видны');
+    expect(comments).not.toContain('Если аватары на предоставленных кадрах и во вложениях не видны');
+    expect(categoryInstruction(5)).not.toContain('Иллюстрации статьи — не аватары.');
+    expect(categoryInstruction(3)).not.toContain(avatarPhoto);
+    expect(categoryInstruction(10)).not.toContain(avatarPhoto);
+    expect(QA_INSTRUCTION).toContain(
+      `Одно и то же узнаваемое фото у двух разных имён комментаторов — ошибка, если это не заглушка.\n\n${avatarPhoto}`,
+    );
+    expect(QA_INSTRUCTION).toContain(
+      `Одно и то же имя с двумя разными фото, которые не являются заглушками, — ошибка.\n\n${avatarPhoto}`,
+    );
+    const phone = categoryInstruction(11);
+    expect(phone).toContain('Если поля телефона нет или код страны не найден, укажи, что проверить их невозможно.');
+    expect(phone).not.toContain('Если поле телефона или код страны не видны');
+    expect(QA_INSTRUCTION).toContain('Если поля телефона нет или код страны не найден, укажи, что проверить их невозможно.');
+    expect(QA_INSTRUCTION).not.toContain('Если поле телефона или код страны не видны');
+    expect(QA_INSTRUCTION).not.toContain('во вложениях не видны');
   });
 
   it('does not ask points 2–4 to open the internet', () => {

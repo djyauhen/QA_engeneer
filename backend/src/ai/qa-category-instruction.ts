@@ -99,7 +99,19 @@ function depositSlice(part: 'currency' | 'amount'): string {
   if (currency.includes('УСЛОВИЕ №2')) throw new Error('currency slice includes condition 2');
   if (amount.includes('УСЛОВИЕ №1: ВАЛЮТА')) throw new Error('amount slice includes condition 1');
   if (part === 'currency') return currency;
-  return replaceOnce(amount, AMOUNT_RATE_SENTENCES, AMOUNT_FX_RULE, 'amount fx sentences');
+  const withFx = replaceOnce(amount, AMOUNT_RATE_SENTENCES, AMOUNT_FX_RULE, 'amount fx sentences');
+  const withMissingRate = replaceOnce(
+    withFx,
+    'Если актуальный курс недоступен, не выдавай приблизительный расчёт за точный.',
+    'Нет fx_rates или нет кода валюты в rates — N/A. Приблизительный расчёт не подставляй.',
+    'amount missing rate',
+  );
+  return replaceOnce(
+    withMissingRate,
+    'Эквивалент: приблизительно XXX USD.',
+    'Эквивалент: локальная сумма / fx_rates.rates[код] USD.',
+    'amount equivalent line',
+  );
 }
 
 function ownSection(category: number): string {

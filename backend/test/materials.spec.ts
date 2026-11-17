@@ -1,9 +1,10 @@
+import { createHash } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { buildAiMaterials, MAX_PAGE_TEXT_CHARS } from '../src/ai/materials';
 import { QA_INSTRUCTION } from '../src/ai/qa-instruction';
-import { enforceImageCorrespondence, mapQaResponse, stripOverallLine } from '../src/ai/qa-response';
+import { enforceCommentAvatars, enforceImageCorrespondence, mapQaResponse, stripOverallLine } from '../src/ai/qa-response';
 
 function jpeg(size: number, seed: number): Buffer {
   const buf = Buffer.alloc(size, seed);
@@ -329,6 +330,174 @@ describe('buildAiMaterials', () => {
     write('index.html', `<div class="comments">${parts.join('')}</div>`);
     const result = buildAiMaterials(dir, 'x', '2026-10-26');
     expect(result.commentAvatars.map((avatar) => avatar.name)).toEqual(accepted.map(([name]) => name));
+  });
+
+  it('does not turn article figures inside preview or a wide reviews block into comment avatars', () => {
+    const banner = jpeg(3000, 21);
+    const selfie = jpeg(3000, 22);
+    const watch = jpeg(3000, 23);
+    const banks = jpeg(3000, 24);
+    const loose = jpeg(3000, 25);
+    const marco = jpeg(3000, 26);
+    const luca = jpeg(3000, 27);
+    write('images/banner.jpg', banner);
+    write('images/selfie.jpg', selfie);
+    write('images/watch.jpg', watch);
+    write('images/banks.jpg', banks);
+    write('images/loose.jpg', loose);
+    write('images/marco.jpg', marco);
+    write('images/luca.jpg', luca);
+    write(
+      'index.html',
+      `<div class="preview">
+  <div class="preview">
+    <figure>
+      <img src="images/banner.jpg" alt="">
+      <figcaption class="author">Sigfrido Ranucci</figcaption>
+    </figure>
+  </div>
+  <div class="preview">
+    <figure>
+      <img src="images/selfie.jpg" alt="">
+      <figcaption class="author">Maria Ferrari</figcaption>
+    </figure>
+  </div>
+  <div class="preview">
+    <figure>
+      <img src="images/watch.jpg" alt="">
+      <figcaption class="name">Giuseppe Camorra</figcaption>
+    </figure>
+  </div>
+  <div id="otzyv" class="feedback">
+    <div class="reviews">
+      <figure>
+        <img src="images/banks.jpg" alt="">
+        <figcaption class="name">Marco Rossi</figcaption>
+      </figure>
+      <div class="comments">
+        <img src="images/loose.jpg" alt="">
+        <p class="author">Sigfrido Ranucci</p>
+        <div class="comment">
+          <img src="images/marco.jpg" alt="">
+          <div class="name">Marco Rossi</div>
+          <p>Ho provato la piattaforma.</p>
+        </div>
+        <div class="review">
+          <img src="images/luca.jpg" alt="">
+          <span class="author">Luca Bianchi</span>
+          <p>Confermo.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>`,
+    );
+    const result = buildAiMaterials(dir, 'x', '2026-10-26');
+    const photoKey = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+    expect(result.commentAvatars.map((avatar) => avatar.name)).toEqual(['Marco Rossi', 'Luca Bianchi']);
+    expect(result.commentAvatars.map((avatar) => avatar.photoKey)).toEqual([photoKey(marco), photoKey(luca)]);
+    expect(result.commentAvatars.map((avatar) => avatar.photoKey)).not.toContain(photoKey(banks));
+    for (const file of ['images/banner.jpg', 'images/selfie.jpg', 'images/watch.jpg', 'images/banks.jpg', 'images/loose.jpg']) {
+      expect(result.images.find((image) => image.file === file)?.kind).toBe('content');
+    }
+    expect(result.images.find((image) => image.file === 'images/marco.jpg')?.kind).toBe('comment');
+    expect(result.images.find((image) => image.file === 'images/luca.jpg')?.kind).toBe('comment');
+    const enforced = enforceCommentAvatars(
+      { findings: [], report: { checks: [{ category: 9, status: 'PASS' }] } },
+      { pageText: result.pageText, avatars: result.commentAvatars },
+    );
+    expect(enforced.findings.map((finding) => finding.problem ?? '')).toEqual([]);
+    expect(enforced.report?.checks?.find((check) => check.category === 9)?.status).toBe('PASS');
+  });
+
+  it('flags one commenter with two different comment avatars', () => {
+    const first = jpeg(3000, 41);
+    const second = jpeg(3000, 42);
+    write('images/m1.jpg', first);
+    write('images/m2.jpg', second);
+    write(
+      'index.html',
+      `<div class="comments">
+  <div class="comment">
+    <img src="images/m1.jpg" alt="">
+    <div class="name">Marco Rossi</div>
+    <p>Primo commento.</p>
+  </div>
+  <div class="comment">
+    <img src="images/m2.jpg" alt="">
+    <div class="name">Marco Rossi</div>
+    <p>Secondo commento.</p>
+  </div>
+</div>`,
+    );
+    const result = buildAiMaterials(dir, 'x', '2026-10-26');
+    expect(result.commentAvatars.map((avatar) => avatar.name)).toEqual(['Marco Rossi', 'Marco Rossi']);
+    expect(new Set(result.commentAvatars.map((avatar) => avatar.photoKey)).size).toBe(2);
+    const enforced = enforceCommentAvatars(
+      { findings: [], report: { checks: [{ category: 9, status: 'PASS' }] } },
+      { pageText: result.pageText, avatars: result.commentAvatars },
+    );
+    expect(enforced.findings).toEqual([
+      expect.objectContaining({
+        file: 'index.html',
+        category: 9,
+        priority: 'major',
+        where: 'Комментарии «Marco Rossi»',
+        problem: 'У комментатора «Marco Rossi» разные фото.',
+        expected: 'У одного имени одно фото.',
+        screenshot: result.commentAvatars[0].screenshot,
+      }),
+    ]);
+    expect(enforced.report?.checks).toEqual([
+      { category: 9, status: 'FAIL', note: 'У комментатора «Marco Rossi» разные фото' },
+    ]);
+  });
+
+  it('keeps the avatar next to the name and ignores an image attached inside the comment', () => {
+    const avatar = jpeg(3000, 61);
+    const banks = jpeg(3000, 62);
+    const selfie = jpeg(3000, 63);
+    const watch = jpeg(3000, 64);
+    write('images/marco.jpg', avatar);
+    write('images/banks.jpg', banks);
+    write('images/selfie.jpg', selfie);
+    write('images/watch.jpg', watch);
+    write(
+      'index.html',
+      `<div class="comments">
+  <div class="comment">
+    <img src="images/marco.jpg" alt="">
+    <div class="name">Marco Rossi</div>
+    <p>Guarda lo screenshot del bonifico.</p>
+    <img src="images/banks.jpg" alt="">
+  </div>
+  <div class="comment">
+    <img src="images/marco.jpg" class="avatar" alt="">
+    <div class="name">Marco Rossi</div>
+    <p>Altro screenshot.</p>
+    <figure><img src="images/selfie.jpg" alt=""></figure>
+  </div>
+  <div class="comment">
+    <div class="name">Luca Bianchi</div>
+    <p>Solo testo.</p>
+    <img src="images/watch.jpg" alt="">
+  </div>
+</div>`,
+    );
+    const result = buildAiMaterials(dir, 'x', '2026-10-26');
+    const photoKey = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+    expect(result.commentAvatars.map((item) => item.name)).toEqual(['Marco Rossi', 'Marco Rossi']);
+    expect(result.commentAvatars.map((item) => item.photoKey)).toEqual([photoKey(avatar), photoKey(avatar)]);
+    expect(result.images.find((image) => image.file === 'images/marco.jpg')?.kind).toBe('comment');
+    expect(result.images.find((image) => image.file === 'images/banks.jpg')?.kind).toBe('content');
+    expect(result.images.find((image) => image.file === 'images/selfie.jpg')?.kind).toBe('content');
+    expect(result.images.find((image) => image.file === 'images/watch.jpg')?.kind).toBe('content');
+    const enforced = enforceCommentAvatars(
+      { findings: [], report: { checks: [{ category: 9, status: 'PASS' }] } },
+      { pageText: result.pageText, avatars: result.commentAvatars },
+    );
+    expect(enforced.findings.map((finding) => finding.problem ?? '')).toEqual([]);
+    expect(enforced.report?.checks?.find((check) => check.category === 9)?.status).toBe('PASS');
   });
 });
 

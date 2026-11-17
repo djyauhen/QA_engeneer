@@ -881,6 +881,11 @@ describe('DeepSeek chat completions client', () => {
       desktopShotDataUrl(landingFooter),
       commentUrl,
     ]);
+    expect(callText(calls, 9)).toContain(
+      'Аватар — картинка рядом с именем. Картинка внутри текста комментария — вложение: это не второе фото этого имени и не аватар другого комментатора. Иллюстрации статьи — не аватары. Одно и то же фото у одного имени в нескольких комментариях — нормально. Явный конфликт пола аватара и имени — minor. Одно реальное фото у разных имён или одно имя с разными фото — major. Заглушка и невидимый аватар — не FAIL.',
+    );
+    expect(callText(calls, 3)).not.toContain('Иллюстрации статьи — не аватары.');
+    expect(callText(calls, 10)).not.toContain('Иллюстрации статьи — не аватары.');
     expect(framesOf(10)).toEqual([
       desktopShotDataUrl(desktop),
       desktopShotDataUrl(preview),
@@ -992,7 +997,13 @@ describe('DeepSeek chat completions client', () => {
     const absentHeader = textAt(0, 2);
     const absentAmount = textAt(0, 6);
     expect(absentHeader).toContain('Категория 2: скриншотов оригинала издания нет, ставь N/A');
-    expect(absentAmount).toContain('сумму депозита в USD не переводи');
+    expect(absentAmount).toContain('fx_rates нет: сумму депозита в USD не переводи, статус N/A.');
+    expect(absentAmount).not.toContain('fx_rates нет: сумму депозита в USD не переводи.');
+    expect(textAt(0, 3)).toContain('Пустая карточка не запрещает закрыть пункт по тексту и фото.');
+    expect(textAt(0, 4)).toContain('Пустая карточка не запрещает закрыть пункт.');
+    expect(textAt(0, 4)).not.toContain('по тексту и фото');
+    expect(textAt(0, 4)).toContain('Сайт отсюда не открывается: гражданство без карточки не выдумывай, это clarifications.');
+    expect(textAt(0, 4)).not.toContain('возраст, должность и гражданство');
     expect(userJson(absentAmount).fx_rates).toBeNull();
     expect(userJson(absentHeader).fact_sheet).toBeNull();
     expect(textAt(0, 1)).not.toContain('видимый текст отрисованного стенда');
@@ -1023,6 +1034,8 @@ describe('DeepSeek chat completions client', () => {
     const presentPerson = textAt(1, 4);
     const presentAmount = textAt(1, 6);
     expect(presentHeader).toContain('Категория 2: сравни');
+    expect(presentHeader).toContain('футер ленда (скриншота футера нет)');
+    expect(presentHeader).not.toContain('текст page_text');
     expect(presentHeader).not.toContain('скриншотов оригинала издания нет');
     expect(presentHeader).not.toContain('ставь N/A');
     expect(presentPerson).toContain('fact_sheet.person (Ben Woldring');
@@ -1038,7 +1051,7 @@ describe('DeepSeek chat completions client', () => {
     expect(categoryThree).toContain('Фото сверь с именем из названия ленда');
     expect(categoryThree).not.toContain('человек этого GEO');
     expect(categoryThree).not.toContain('Умершего тёзку');
-    expect(presentAmount).toContain('Депозит в USD считай по fx_rates на 2026-10-27');
+    expect(presentAmount).toContain('Депозит в USD считай по fx_rates на 2026-10-27: сумма / rates[код]. Кода нет в rates — N/A.');
     expect(textAt(1, 1)).toContain('видимый текст отрисованного стенда');
     expect(textAt(1, 7)).not.toContain('offer_name');
     expect(textAt(1, 7)).not.toContain('название оффера не');

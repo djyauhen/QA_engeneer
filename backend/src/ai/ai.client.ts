@@ -569,7 +569,7 @@ function previewNote(bundle: ReviewBundle, category: number): string {
       return `${base} Ссылку сам не открывай. Сверь лицо, имя на картинке и подпись с персонажем из названия ленда только там, где страница подаёт кадр как этого человека. Совпало лицо, имя на картинке и подпись — не ошибка. Кадр подан как он, а лицо или имя другие — FAIL. Лица не видно — clarifications, не FAIL. Исключение гостю интервью: если page_text называет второго участника гостем, читателем или пользователем платформы, а в записи его имя, его история или его транзакции — не FAIL и метка кадра в guest_refs. Имя из названия ленда не обязано быть на каждом кадре. Имя в записи другое, чем у этого гостя в page_text, — FAIL.`;
     }
     if (category === 9) {
-      return `${base} Явный конфликт пола аватара и имени — minor. Одно реальное фото у разных имён или одно имя с разными фото — major. Заглушка и невидимый аватар — не FAIL.`;
+      return `${base} Аватар — картинка рядом с именем. Картинка внутри текста комментария — вложение: это не второе фото этого имени и не аватар другого комментатора. Иллюстрации статьи — не аватары. Одно и то же фото у одного имени в нескольких комментариях — нормально. Явный конфликт пола аватара и имени — minor. Одно реальное фото у разных имён или одно имя с разными фото — major. Заглушка и невидимый аватар — не FAIL.`;
     }
     return base;
   }
@@ -588,7 +588,7 @@ function outletNote(bundle: ReviewBundle): string {
     ? bundle.previewLabels[bundle.previewLabels.length - 1]
     : bundle.landingFooter
       ? LANDING_FOOTER_REF
-      : 'текст page_text';
+      : 'скриншота футера нет';
   return `Категория 2: сравни шапку ленда (${header}) с ${OUTLET_HEADER_REF} и футер ленда (${footer}) с ${OUTLET_FOOTER_REF}. Это уже снятые кадры официальной главной ${bundle.outlet.name} (${bundle.outlet.url}). Совпадение утверждай только по visual_observations этих меток.`;
 }
 
@@ -608,14 +608,14 @@ function factNote(bundle: ReviewBundle, category: number): string {
       const citizenship = (person.citizenship ?? []).join(', ') || 'не указано';
       return `Категория 4: знаменитость для GEO ${geo} сверяется с карточкой fact_sheet.person (${person.name}, гражданство: ${citizenship}). ${picked}`;
     }
-    return `Категория 4: карточки fact_sheet.person нет. Человека не объявляй несуществующим и не пиши «fact_sheet.person отсутствует». Пустая карточка не запрещает закрыть пункт по тексту и фото. Не ставь N/A только из-за пустой карточки. Сайт отсюда не открывается: возраст, должность и гражданство без карточки не выдумывай, это clarifications. ${picked}`;
+    return `Категория 4: карточки fact_sheet.person нет. Человека не объявляй несуществующим и не пиши «fact_sheet.person отсутствует». Пустая карточка не запрещает закрыть пункт. Не ставь N/A только из-за пустой карточки. Сайт отсюда не открывается: гражданство без карточки не выдумывай, это clarifications. ${picked}`;
   }
   if (category === 5) return 'Валюту против GEO проверяй без курса. Сумму в USD не переводи.';
   if (category === 6) {
     const fx = bundle.input.fxRates;
     return fx
-      ? `Депозит в USD считай по fx_rates на ${fx.date}: сумма / rates[код].`
-      : 'fx_rates нет: сумму депозита в USD не переводи.';
+      ? `Депозит в USD считай по fx_rates на ${fx.date}: сумма / rates[код]. Кода нет в rates — N/A.`
+      : 'fx_rates нет: сумму депозита в USD не переводи, статус N/A.';
   }
   return '';
 }
@@ -649,8 +649,8 @@ function correspondenceNote(bundle: ReviewBundle, labels: string[]): string {
 
 function commentNote(bundle: ReviewBundle, labels: string[]): string {
   const refs = bundle.commentRefs.filter((ref) => labels.includes(ref));
-  if (!refs.length) return 'Аватар комментария — не главный персонаж. Фото не видно — текстовые критерии комментариев всё равно закрой.';
-  return `Изображения ${refs.join(', ')} с kind comment — фото комментаторов, не главный персонаж. Сверь их по критерию 5.`;
+  if (!refs.length) return 'Аватар комментария — не главный персонаж. Фото не видно — текстовые критерии комментариев всё равно закрой. Картинка внутри текста комментария — вложение, не аватар.';
+  return `Изображения ${refs.join(', ')} с kind comment — аватары рядом с именем, не главный персонаж и не вложение внутри текста комментария. Сверь их по критерию 5.`;
 }
 
 function parseJsonContent(content: string): unknown {
