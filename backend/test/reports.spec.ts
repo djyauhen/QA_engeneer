@@ -132,6 +132,7 @@ describe('rules, costs and reports', () => {
       .get('/reports/22222222-2222-4222-8222-222222222222/previous')
       .set('x-session-id', qaA.body.session_id);
     expect(previous.body.report.report_id).toBe('11111111-1111-4111-8111-111111111111');
+    expect(previous.body.report.ai_requests).toBeUndefined();
     expect(previous.body.comparison_verdict).toBeUndefined();
     expect(previous.body.report.verdict).toBeUndefined();
     const tlList = await request(http.getHttpServer()).get('/reports').set('x-session-id', tl);
@@ -145,5 +146,44 @@ describe('rules, costs and reports', () => {
       .set('x-session-id', qaA.body.session_id);
     expect(empty.body).toEqual({ report: null });
     expect(qaB.status).toBe(200);
+  });
+
+  it('returns a stored request trace with image data urls and does not invent one', async () => {
+    const createdAt = new Date().toISOString();
+    const id = '55555555-5555-4555-8555-555555555555';
+    const stored = payload(id, '359226', 'env-tl', createdAt);
+    const jpeg = 'data:image/jpeg;base64,/9j/4AAQ';
+    stored.ai_requests = {
+      shots: { preview: jpeg, outlet_header: jpeg },
+      calls: [
+        {
+          kind: 'vision',
+          model: 'deepseek-flash',
+          system: 'Ты только глаза.',
+          pixels: true,
+          attachments: ['preview', 'outlet_header'],
+        },
+        {
+          kind: 'category',
+          category: 1,
+          model: 'deepseek-v4-pro',
+          system: 'Пункт 1. GEO и локализация.',
+          pixels: false,
+          attachments: [],
+        },
+      ],
+    };
+    await ctx.repos.reports.insert({
+      id,
+      human_id: '359226',
+      owner_login: 'env-tl',
+      created_at: createdAt,
+      payload: stored,
+    });
+    const response = await request(http.getHttpServer()).get(`/reports/${id}`).set('x-session-id', tl);
+    expect(response.status).toBe(200);
+    expect(response.body.ai_requests).toEqual(stored.ai_requests);
+    expect(JSON.stringify(response.body.ai_requests.calls)).not.toContain('base64');
+    expect(response.body.stand_url).toBeUndefined();
   });
 });

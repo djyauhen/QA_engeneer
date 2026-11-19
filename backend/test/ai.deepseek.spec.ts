@@ -115,6 +115,24 @@ function callFor(calls: Array<{ init?: RequestInit }>, category: number): { init
   return found[found.length - 1];
 }
 
+function labelsFromImages(init: RequestInit | undefined, known: Map<string, string>): string[] {
+  const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: unknown }> };
+  const content = body.messages[1].content;
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((part) => {
+    if (!part || typeof part !== 'object' || (part as { type?: string }).type !== 'image_url') return [];
+    const url = (part as { image_url?: { url?: string } }).image_url?.url ?? '';
+    const label = known.get(url);
+    if (!label) throw new Error(`unmapped frame ${url.slice(0, 40)}`);
+    return [label];
+  });
+}
+
+function urlForLabel(known: Map<string, string>, label: string): string {
+  for (const [url, name] of known) if (name === label) return url;
+  throw new Error(label);
+}
+
 function callText(calls: Array<{ init?: RequestInit }>, category: number): string {
   const body = JSON.parse(String(callFor(calls, category).init?.body)) as { messages: Array<{ content: unknown }> };
   return messageText(body.messages[1].content);
@@ -1159,6 +1177,120 @@ describe('DeepSeek chat completions client', () => {
     expect(result.report?.report_markdown).toContain('8. Актуальность дат: НЕ ВЫПОЛНЕНО.');
     expect(result.report?.report_markdown).not.toContain('8. Актуальность дат: PASS');
     expect(result.report?.clarifications).toContain('Категория 8. Актуальность дат: проверка не выполнена, пункт не закрыт.');
+  });
+
+  it('records the requests that were built, including frames and a category whose later attempt fails', async () => {
+    const attempts = new Map<number, number>();
+    const calls: Array<{ init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      calls.push({ init });
+      if (isVisionCall(init)) return jsonResponse(completionBody(JSON.stringify({ observations: [] })));
+      const category = categoryOf(init);
+      const attempt = (attempts.get(category) ?? 0) + 1;
+      attempts.set(category, attempt);
+      if (category === 11) throw new Error('category 11 down');
+      return jsonResponse(completionBody(JSON.stringify(passAnswer())));
+    };
+    const header = Buffer.from([0xff, 0xd8, 0xff, 0x11]);
+    const footer = Buffer.from([0xff, 0xd8, 0xff, 0x22]);
+    const landingFooter = Buffer.from([0xff, 0xd8, 0xff, 0x33]);
+    const preview = Buffer.from([0xff, 0xd8, 0xff, 0x44]);
+    const known = new Map<string, string>([
+      [desktopShotDataUrl(preview), 'preview'],
+      [desktopShotDataUrl(landingFooter), 'landing_footer'],
+      [desktopShotDataUrl(header), 'outlet_header'],
+      [desktopShotDataUrl(footer), 'outlet_footer'],
+    ]);
+    const result = await new DeepSeekAiClient(deepseekConfig(), fetchImpl).review({
+      ...sampleInput,
+      pageText: 'marker-page-text-9f3a',
+      previewShots: [preview],
+      landingFooter,
+      outlet: { name: 'NOS', url: 'https://nos.nl', header, footer },
+    });
+    const trace = result.ai_requests;
+    if (!trace) throw new Error('missing ai_requests');
+    expect(trace.calls.map((call) => (call.kind === 'vision' ? 'vision' : call.category))).toEqual([
+      'vision',
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+    ]);
+    expect(attempts.get(11)).toBe(2);
+    expect(trace.calls.filter((call) => call.category === 11)).toHaveLength(1);
+
+    const categoryOne = trace.calls.find((call) => call.category === 1);
+    expect(categoryOne).toMatchObject({ kind: 'category', category: 1, pixels: false, attachments: [] });
+
+    const sentCategory = (category: number) =>
+      JSON.parse(String(callFor(calls, category).init?.body)) as { model?: string; messages: Array<{ content: unknown }> };
+    for (let category = 1; category <= QA_CATEGORY_COUNT; category += 1) {
+      const call = trace.calls.find((item) => item.category === category);
+      const sent = sentCategory(category);
+      expect(call?.model).toBe(sent.model);
+      expect(call?.system).toBe(sent.messages[0].content);
+      expect(call?.system).toContain(categorySystemPrompt(category));
+      const pixels = Array.isArray(sent.messages[1].content)
+        && (sent.messages[1].content as Array<{ type?: string }>).some((part) => part?.type === 'image_url');
+      expect(call?.pixels).toBe(pixels);
+    }
+
+    const categoryTwo = trace.calls.find((call) => call.category === 2);
+    const sentTwoLabels = labelsFromImages(callFor(calls, 2).init, known);
+    expect(categoryTwo?.pixels).toBe(true);
+    expect(categoryTwo?.attachments).toEqual(['preview', 'outlet_header', 'outlet_footer']);
+    expect(categoryTwo?.attachments).toEqual(sentTwoLabels);
+    for (const label of categoryTwo?.attachments ?? []) {
+      expect(trace.shots[label]).toBe(urlForLabel(known, label));
+      expect(trace.shots[label]).toMatch(/^data:image\/jpeg;base64,/);
+    }
+    expect(trace.shots.outlet_header).toBe(desktopShotDataUrl(header));
+    expect(trace.shots.outlet_footer).toBe(desktopShotDataUrl(footer));
+
+    const visionSent = calls.find((call) => isVisionCall(call.init));
+    const vision = trace.calls[0];
+    const visionBody = JSON.parse(String(visionSent?.init?.body)) as { model?: string; messages: Array<{ content: unknown }> };
+    expect(vision.kind).toBe('vision');
+    expect(vision.category).toBeUndefined();
+    expect(vision.pixels).toBe(true);
+    expect(vision.model).toBe(visionBody.model);
+    expect(vision.system).toBe(visionBody.messages[0].content);
+    expect(vision.attachments).toEqual(labelsFromImages(visionSent?.init, known));
+    expect(vision.attachments).toEqual(['preview', 'landing_footer', 'outlet_header', 'outlet_footer']);
+    for (const label of vision.attachments) expect(trace.shots[label]).toBe(urlForLabel(known, label));
+
+    const callsJson = JSON.stringify(trace.calls);
+    expect(callsJson).not.toContain('data:image');
+    expect(callsJson).not.toContain(desktopShotDataUrl(header));
+    const traceJson = JSON.stringify(trace);
+    expect(traceJson).not.toContain('marker-page-text-9f3a');
+    expect(traceJson).not.toContain('test-deepseek-placeholder');
+    expect(traceJson).not.toContain('category 11 down');
+
+    let visionBuilt = false;
+    const bare = await new DeepSeekAiClient(deepseekConfig(), async (_url, init) => {
+      if (isVisionCall(init)) visionBuilt = true;
+      return jsonResponse(completionBody(JSON.stringify(passAnswer())));
+    }).review(sampleInput);
+    expect(visionBuilt).toBe(false);
+    expect(bare.ai_requests?.calls.map((call) => (call.kind === 'vision' ? 'vision' : call.category))).toEqual(
+      Array.from({ length: QA_CATEGORY_COUNT }, (_, index) => index + 1),
+    );
+    expect(bare.ai_requests?.shots).toEqual({});
+  });
+
+  it('leaves the request trace unset for a stub review', async () => {
+    const result = await new StubAiClient().review();
+    expect(result).toEqual({ findings: [], usage: null, skipped: true });
+    expect(result.ai_requests).toBeUndefined();
   });
 
   it('createAiClient stays stub when AI_MODE is not real and refuses real without a key', () => {

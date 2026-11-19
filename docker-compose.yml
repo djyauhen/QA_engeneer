@@ -20,5 +20,26 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: qa-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - backend/.env
+    environment:
+      DATABASE_URL: postgresql://qa:qa@postgres:5432/qa?sslmode=disable
+      STORAGE: neon
+      QA_LISTEN_ALL: "1"
+      WORK_DIR: /var/lib/qa/workdir
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - qa_backend_workdir:/var/lib/qa/workdir
+
 volumes:
   qa_postgres_data:
+  qa_backend_workdir:

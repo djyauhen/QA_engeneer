@@ -93,6 +93,21 @@ export interface StepSnapshot {
   message?: string;
 }
 
+export interface AiRequestCall {
+  kind: 'vision' | 'category';
+  category?: number;
+  model: string;
+  system: string;
+  pixels: boolean;
+  attachments: string[];
+}
+
+/** One DeepSeek review: each image once, then the calls that were built to be sent. */
+export interface AiRequests {
+  shots: Record<string, string>;
+  calls: AiRequestCall[];
+}
+
 export interface ReportPayload {
   report_id: string;
   human_id: string;
@@ -106,4 +121,5 @@ export interface ReportPayload {
   ai: AiBlock | null;
   lighthouse: LighthouseBlock | null;
   replaced_previous_stand: boolean;
+  ai_requests?: AiRequests;
 }

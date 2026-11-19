@@ -462,6 +462,7 @@ export class CheckOrchestrator {
         check.step('ai', 'skipped');
         return;
       }
+      if (result.ai_requests) check.aiRequests = result.ai_requests;
       if (result.usage && typeof result.usage === 'object') {
         await this.costs.record(result.usage);
       }
@@ -613,6 +614,7 @@ export class CheckOrchestrator {
       ai: check.aiBlock,
       lighthouse: check.lighthouseBlock,
       replaced_previous_stand: check.replaced_previous_stand,
+      ...(check.aiRequests ? { ai_requests: check.aiRequests } : {}),
     });
     await this.reports.insert({
       id: check.id,

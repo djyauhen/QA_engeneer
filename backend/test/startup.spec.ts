@@ -64,10 +64,20 @@ describe('startup', () => {
     decide(undefined, (_err, allow) => expect(allow).toBe(true));
   });
 
-  it('listens only on loopback', () => {
+  it('listens only on loopback unless the container flag is set', () => {
     expect(listenHost({})).toBe('127.0.0.1');
     expect(listenHost({ LISTEN_HOST: 'localhost' })).toBe('127.0.0.1');
     expect(listenHost({ LISTEN_HOST: '::1' })).toBe('127.0.0.1');
+    expect(listenHost({ LISTEN_HOST: '127.0.0.1' })).toBe('127.0.0.1');
     expect(() => listenHost({ LISTEN_HOST: '0.0.0.0' })).toThrow(/LISTEN_HOST must be 127\.0\.0\.1/);
+    expect(() => listenHost({ LISTEN_HOST: '10.0.0.8' })).toThrow(/LISTEN_HOST must be 127\.0\.0\.1/);
+    expect(() => listenHost({ QA_LISTEN_ALL: '0', LISTEN_HOST: '0.0.0.0' })).toThrow(/LISTEN_HOST must be 127\.0\.0\.1/);
+    expect(() => listenHost({ QA_LISTEN_ALL: 'true', LISTEN_HOST: '0.0.0.0' })).toThrow(
+      /LISTEN_HOST must be 127\.0\.0\.1/,
+    );
+    expect(listenHost({ QA_LISTEN_ALL: '1' })).toBe('0.0.0.0');
+    expect(listenHost({ QA_LISTEN_ALL: '1', LISTEN_HOST: '127.0.0.1' })).toBe('0.0.0.0');
+    expect(listenHost({ QA_LISTEN_ALL: '1', LISTEN_HOST: '0.0.0.0' })).toBe('0.0.0.0');
+    expect(listenHost({ QA_LISTEN_ALL: '1', LISTEN_HOST: '10.0.0.8' })).toBe('0.0.0.0');
   });
 });

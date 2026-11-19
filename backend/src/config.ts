@@ -167,8 +167,14 @@ function unwrapEnv(value: string | undefined): string {
   return text;
 }
 
-/** Public TLS ends at nginx. The Node process stays on loopback. */
+/**
+ * Public TLS ends at nginx. The Node process stays on loopback.
+ * QA_LISTEN_ALL=1 is only for the compose service: the published port stays on
+ * 127.0.0.1, and the process must accept the Docker proxy on 0.0.0.0.
+ * LISTEN_HOST cannot open every interface.
+ */
 export function listenHost(env: NodeJS.ProcessEnv): string {
+  if (unwrapEnv(env.QA_LISTEN_ALL) === '1') return '0.0.0.0';
   const host = unwrapEnv(env.LISTEN_HOST);
   if (!host || host === '127.0.0.1' || host === 'localhost' || host === '::1') return '127.0.0.1';
   throw new Error('LISTEN_HOST must be 127.0.0.1');

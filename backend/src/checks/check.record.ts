@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'crypto';
 import { CatalogCard } from '../catalog/map-row';
-import { AiBlock, LighthouseBlock, StaticBlock, StepSnapshot } from '../reports/report.types';
+import { AiBlock, AiRequests, LighthouseBlock, StaticBlock, StepSnapshot } from '../reports/report.types';
 import { STEP_NAMES, StepName, StepState } from '../tokens';
 
 const FLUSH_MS = 400;
@@ -39,6 +39,8 @@ export class CheckRecord {
   private _aiBlock: AiBlock | null = null;
   private _lighthouseBlock: LighthouseBlock | null = null;
   private _reportSaved = false;
+  /** DeepSeek requests for the saved report. Kept off the live check snapshot. */
+  aiRequests: AiRequests | null = null;
   private clearPending = false;
   private hooks: CheckHooks | null = null;
   private decisionWait: ((decision: 'allow' | 'deny') => void) | null = null;

@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { AppConfig } from '../config';
-import { AiFinding } from '../reports/report.types';
+import { AiFinding, AiRequestCall, AiRequests } from '../reports/report.types';
 import { DESKTOP_SHOT } from '../stand/capture';
 import { previewShotLabel, previewShotLabels } from '../stand/preview-slices';
 import { CommentAvatarOccurrence, LandingIndexFile, MaterialImage, PersonClaim } from './materials';
@@ -92,6 +92,8 @@ export interface AiResult {
   skipped?: boolean;
   /** Instruction §13 report; absent for legacy / stub answers. */
   report?: QaReportFields;
+  /** Requests built for this DeepSeek review. Stub reviews omit it. */
+  ai_requests?: AiRequests;
 }
 
 export abstract class AiClient {
@@ -184,12 +186,13 @@ export class DeepSeekAiClient extends AiClient {
   }
 
   async review(input: AiInput): Promise<AiResult> {
+    const trace = emptyRequestTrace();
     try {
       const bundle = buildBundle(input);
       const usage: Record<string, number> = {};
-      const observations = await this.visualPass(bundle, usage);
+      const observations = await this.visualPass(bundle, usage, trace);
       const parts = await runPool(CATEGORIES, CATEGORY_CONCURRENCY, (category) =>
-        this.categoryPart(bundle, category, usage, observations),
+        this.categoryPart(bundle, category, usage, observations, trace),
       );
       const parsed = mergeCategoryParts(parts, {
         pageText: input.pageText,
@@ -204,6 +207,7 @@ export class DeepSeekAiClient extends AiClient {
         findings: shotUrl ? applyDesktopShot(parsed.findings, shotUrl) : parsed.findings,
         usage: Object.keys(usage).length ? usage : null,
         ...(parsed.report ? { report: parsed.report } : {}),
+        ai_requests: finishRequestTrace(trace),
       };
     } catch (error) {
       if (error instanceof AiCallError) {
@@ -221,19 +225,19 @@ export class DeepSeekAiClient extends AiClient {
     category: number,
     usage: Record<string, number>,
     observations: readonly VisualObservation[],
+    trace: RequestTrace,
   ): Promise<CategoryPart> {
     let lastDetail = 'empty';
     for (let attempt = 1; attempt <= CATEGORY_ATTEMPTS; attempt += 1) {
       try {
-        const completion = await this.openai.chat.completions.create(
-          buildCategoryRequest(
-            bundle,
-            category,
-            categoryUsesVision(category) ? this.visionModel() : this.model(),
-            observations,
-          ),
-          { timeout: CATEGORY_TIMEOUT_MS },
+        const request = buildCategoryRequest(
+          bundle,
+          category,
+          categoryUsesVision(category) ? this.visionModel() : this.model(),
+          observations,
         );
+        rememberSentRequest(trace, request, bundle.modelShots, 'category', category);
+        const completion = await this.openai.chat.completions.create(request, { timeout: CATEGORY_TIMEOUT_MS });
         absorbUsage(usage, plainUsage(completion.usage));
         const content = completion.choices[0]?.message?.content;
         if (typeof content !== 'string' || !content.trim()) {
@@ -266,14 +270,16 @@ export class DeepSeekAiClient extends AiClient {
   }
 
   /** Eyes only. A failed pass leaves an empty note list and does not cancel the checklist. */
-  private async visualPass(bundle: ReviewBundle, usage: Record<string, number>): Promise<VisualObservation[]> {
+  private async visualPass(bundle: ReviewBundle, usage: Record<string, number>, trace: RequestTrace): Promise<VisualObservation[]> {
     const labels = visionLabels(bundle);
     if (!labels.length) return [];
     const personName = celebrityName(bundle.input.person);
     let lastDetail = 'empty';
     for (let attempt = 1; attempt <= CATEGORY_ATTEMPTS; attempt += 1) {
       try {
-        const completion = await this.openai.chat.completions.create(buildVisionRequest(bundle, labels, this.visionModel()), {
+        const request = buildVisionRequest(bundle, labels, this.visionModel());
+        rememberSentRequest(trace, request, bundle.modelShots, 'vision');
+        const completion = await this.openai.chat.completions.create(request, {
           timeout: CATEGORY_TIMEOUT_MS,
         });
         absorbUsage(usage, plainUsage(completion.usage), false);
@@ -682,6 +688,138 @@ async function runPool<T, R>(items: readonly T[], limit: number, task: (item: T)
   });
   await Promise.all(workers);
   return results;
+}
+
+interface RequestTrace {
+  shots: Record<string, string>;
+  vision?: AiRequestCall;
+  categories: Array<AiRequestCall | undefined>;
+}
+
+function emptyRequestTrace(): RequestTrace {
+  return { shots: {}, categories: Array.from({ length: QA_CATEGORY_COUNT }) };
+}
+
+function finishRequestTrace(trace: RequestTrace): AiRequests {
+  const calls: AiRequestCall[] = [];
+  if (trace.vision) calls.push(trace.vision);
+  for (let category = 1; category <= QA_CATEGORY_COUNT; category += 1) {
+    const call = trace.categories[category - 1];
+    if (call) calls.push(call);
+  }
+  return { shots: trace.shots, calls };
+}
+
+/** Reads the request object passed to the API. A retry keeps the first built call. */
+function rememberSentRequest(
+  trace: RequestTrace,
+  request: DeepSeekChatRequest,
+  modelShots: Record<string, string>,
+  kind: 'vision' | 'category',
+  category?: number,
+): void {
+  if (kind === 'vision') {
+    if (trace.vision) return;
+  } else if (category == null || category < 1 || category > QA_CATEGORY_COUNT || trace.categories[category - 1]) {
+    return;
+  }
+  const userContent = messageContent(request, 1);
+  const urls = imageUrlsOf(userContent);
+  const read = framesFromSentRequest(urls, declaredLabels(textOf(userContent), kind), modelShots);
+  const call: AiRequestCall = {
+    kind,
+    model: typeof request.model === 'string' ? request.model : '',
+    system: systemText(messageContent(request, 0)),
+    pixels: urls.length > 0,
+    attachments: read.attachments,
+  };
+  if (kind === 'category') call.category = category;
+  for (const frame of read.frames) {
+    if (!trace.shots[frame.label]) trace.shots[frame.label] = frame.url;
+  }
+  if (kind === 'vision') trace.vision = call;
+  else trace.categories[category! - 1] = call;
+}
+
+function messageContent(request: DeepSeekChatRequest, index: number): unknown {
+  const message = request.messages[index] as { content?: unknown } | undefined;
+  return message?.content;
+}
+
+function systemText(content: unknown): string {
+  return typeof content === 'string' ? content : '';
+}
+
+function textOf(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    const typed = part as { type?: unknown; text?: unknown };
+    if (typed.type === 'text' && typeof typed.text === 'string') return typed.text;
+  }
+  return '';
+}
+
+function imageUrlsOf(content: unknown): Array<string | undefined> {
+  if (!Array.isArray(content)) return [];
+  const urls: Array<string | undefined> = [];
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    const typed = part as { type?: unknown; image_url?: { url?: unknown } };
+    if (typed.type !== 'image_url') continue;
+    const url = typed.image_url?.url;
+    urls.push(typeof url === 'string' ? url : undefined);
+  }
+  return urls;
+}
+
+function declaredLabels(text: string, kind: 'vision' | 'category'): string[] {
+  const line = text.split('\n', 1)[0]?.trim() ?? '';
+  if (!line.startsWith('{')) return [];
+  try {
+    const parsed = JSON.parse(line) as { labels?: unknown; attachments_order?: unknown };
+    const raw = kind === 'vision' ? parsed.labels : parsed.attachments_order;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function framesFromSentRequest(
+  urls: ReadonlyArray<string | undefined>,
+  order: readonly string[],
+  modelShots: Record<string, string>,
+): { attachments: string[]; frames: Array<{ label: string; url: string }> } {
+  const consumed = new Set<string>();
+  const attachments: string[] = [];
+  const frames: Array<{ label: string; url: string }> = [];
+  const pool = Object.keys(modelShots);
+  for (const url of urls) {
+    const label = takeLabel(order, modelShots, url, consumed) ?? takeLabel(pool, modelShots, url, consumed);
+    if (!label) continue;
+    consumed.add(label);
+    attachments.push(label);
+    if (typeof url === 'string' && isDataImage(url)) frames.push({ label, url });
+  }
+  return { attachments, frames };
+}
+
+function takeLabel(
+  candidates: readonly string[],
+  modelShots: Record<string, string>,
+  url: string | undefined,
+  consumed: Set<string>,
+): string | undefined {
+  if (typeof url === 'string' && url.length > 0) {
+    return candidates.find((label) => !consumed.has(label) && modelShots[label] === url);
+  }
+  return candidates.find((label) => !consumed.has(label) && !modelShots[label]);
+}
+
+function isDataImage(url: string): boolean {
+  return /^data:image\/[^;,]+;base64,/i.test(url);
 }
 
 export function createAiClient(config: AppConfig): AiClient {

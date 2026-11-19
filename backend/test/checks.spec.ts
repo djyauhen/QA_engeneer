@@ -100,6 +100,7 @@ describe('checks, stand, AI and lighthouse', () => {
     expect(report.body.overall_status).toBeUndefined();
     expect(report.body.stand_url).toBeUndefined();
     expect(report.body.preview_image).toBeUndefined();
+    expect(report.body.ai_requests).toBeUndefined();
   });
 
   it('calls AI without a question when nothing failed, drops incomplete findings, and keeps static if lighthouse fails', async () => {
@@ -115,6 +116,19 @@ describe('checks, stand, AI and lighthouse', () => {
       { file: 'index.html', quote: 'no shot' },
     ];
     ctx.ai.usage = { prompt_tokens: 11, completion_tokens: 4 };
+    ctx.ai.aiRequests = {
+      shots: { desktop: 'data:image/jpeg;base64,YQ==' },
+      calls: [
+        {
+          kind: 'category',
+          category: 1,
+          model: 'deepseek-v4-pro',
+          system: 'Пункт 1. GEO и локализация.',
+          pixels: false,
+          attachments: [],
+        },
+      ],
+    };
     ctx.lighthouse.failTimes = 9;
     const started = await request(http.getHttpServer())
       .post('/checks')
@@ -133,6 +147,7 @@ describe('checks, stand, AI and lighthouse', () => {
       .set('x-session-id', session);
     expect(report.body.ai.findings).toEqual([{ file: 'index.html', quote: 'Hello', screenshot: 'shot-1' }]);
     expect(report.body.ai.status).toBe('Список готов');
+    expect(report.body.ai_requests).toEqual(ctx.ai.aiRequests);
     expect(report.body.stand_url).toBeUndefined();
     expect(JSON.stringify(report.body)).not.toMatch(/verdict|overall_status|preview_image/);
     expect(JSON.stringify(report.body)).not.toContain('sign' + 'ature=');
