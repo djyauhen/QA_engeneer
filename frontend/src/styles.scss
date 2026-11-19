@@ -710,6 +710,38 @@ form.stack textarea {
 }
 form.stack input { max-width: 320px; }
 form.stack button { margin-top: var(--space-3); }
+app-requests {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.request-pixels { font-weight: 700; }
+.request-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding-left: 1.5rem;
+}
+.request-shot { margin: 0; min-width: 0; }
+.request-shot figcaption {
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+.request-shot img {
+  display: block;
+  width: 100%;
+  max-height: 240px;
+  margin-top: var(--space-2);
+  object-fit: contain;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
 .shot-placeholder {
   display: flex;
   align-items: center;

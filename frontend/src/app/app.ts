@@ -32,6 +32,7 @@ export function screenTitle(url: string): string {
   if (path === '/launch') return 'Запуск проверки';
   if (path === '/reports') return 'Отчёты';
   if (path.endsWith('/compare')) return 'Сравнение';
+  if (path.endsWith('/requests')) return 'Запросы';
   if (path.startsWith('/reports/')) return 'Отчёт';
   if (path === '/stand' || path.includes('/stand')) return 'Стенд';
   if (path === '/progress' || path.startsWith('/checks/')) return 'Ход проверки';

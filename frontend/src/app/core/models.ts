@@ -203,6 +203,20 @@ export interface CheckView {
   catalog_status?: string;
 }
 
+export interface AiRequestCall {
+  kind: 'vision' | 'category';
+  category?: number;
+  model: string;
+  system: string;
+  pixels: boolean;
+  attachments: string[];
+}
+
+export interface AiRequests {
+  shots: Record<string, string>;
+  calls: AiRequestCall[];
+}
+
 export interface ReportPayload {
   report_id: string;
   human_id: string;
@@ -218,6 +232,7 @@ export interface ReportPayload {
   replaced_previous_stand?: boolean;
   lander_type_name?: string;
   status?: string;
+  ai_requests?: AiRequests;
 }
 
 export interface ReportListItem {

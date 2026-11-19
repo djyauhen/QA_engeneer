@@ -7,6 +7,7 @@ import { LaunchComponent } from './pages/launch.component';
 import { LoginComponent } from './pages/login.component';
 import { ProgressComponent } from './pages/progress.component';
 import { ReportComponent } from './pages/report.component';
+import { RequestsComponent } from './pages/requests.component';
 import { ReportsComponent } from './pages/reports.component';
 import { StandComponent } from './pages/stand.component';
 
@@ -19,6 +20,7 @@ export function buildRoutes(role: Role | null): Routes {
     { path: 'checks/:checkId/stand', component: StandComponent },
     { path: 'reports', component: ReportsComponent },
     { path: 'reports/:reportId/compare', component: CompareComponent },
+    { path: 'reports/:reportId/requests', component: RequestsComponent },
     { path: 'reports/:reportId', component: ReportComponent },
   ];
   if (role === ROLE_TL) {

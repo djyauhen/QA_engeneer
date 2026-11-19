@@ -17,7 +17,10 @@ import { ReportBlocksComponent } from '../report/report-blocks.component';
     } @else if (error()) {
       <p class="alert error" role="alert">{{ error() }}</p>
     } @else if (body(); as report) {
-      <p class="actions"><a class="secondary link" [routerLink]="['/reports', reportId(), 'compare']">Сравнение</a></p>
+      <p class="actions">
+        <a class="secondary link" [routerLink]="['/reports', reportId(), 'compare']">Сравнение</a>
+        <a class="secondary link" [routerLink]="['/reports', reportId(), 'requests']">Запросы</a>
+      </p>
       <app-report-blocks [data]="report" idPrefix="report" [showDate]="true" [showRecommendation]="true" />
     }
   `,
