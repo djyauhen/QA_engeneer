@@ -612,6 +612,7 @@ function selectImages(landingFolder: string, cleaned: string, parsed: ParsedTags
     !!resolved && `${candidate.alt} ${candidate.caption} ${candidate.context}`.toLowerCase().includes(resolved.toLowerCase());
   const content = candidates.filter((candidate) => candidate.kind === 'content');
   const comments = candidates.filter((candidate) => candidate.kind === 'comment');
+  const hero = content.find((candidate) => mentions(candidate)) ?? null;
   const ordered = [
     ...content.filter(mentions),
     ...content.filter((candidate) => !mentions(candidate)),
@@ -625,7 +626,7 @@ function selectImages(landingFolder: string, cleaned: string, parsed: ParsedTags
     caption: candidate.caption,
     context: candidate.context,
     kind: candidate.kind,
-    claims_person: !resolved ? null : candidate.kind === 'content' || mentions(candidate) ? resolved : null,
+    claims_person: resolved && hero && candidate.kind === 'content' && candidate.order === hero.order ? resolved : null,
     mime: candidate.mime,
     buffer: candidate.buffer,
   }));

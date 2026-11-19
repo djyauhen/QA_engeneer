@@ -28,7 +28,24 @@ const CONSENT_LABELS = [
 export interface OutletReferenceShots {
   header: Buffer;
   footer: Buffer;
+  landingHeader: Buffer | null;
   landingFooter: Buffer | null;
+}
+
+/** Outlet frames are kept only as a pair. The stand crops ride along and may be absent. */
+export function assembleOutletReference(parts: {
+  header: Buffer | null;
+  footer: Buffer | null;
+  landingHeader: Buffer | null;
+  landingFooter: Buffer | null;
+}): OutletReferenceShots | null {
+  if (!parts.header?.length || !parts.footer?.length) return null;
+  return {
+    header: parts.header,
+    footer: parts.footer,
+    landingHeader: parts.landingHeader?.length ? parts.landingHeader : null,
+    landingFooter: parts.landingFooter?.length ? parts.landingFooter : null,
+  };
 }
 
 /** Document coordinates. Puppeteer clip with captureBeyondViewport is measured from the top of the page, not the scrolled viewport. */
@@ -159,6 +176,7 @@ async function captureOnce(
     browser = await puppeteer.launch({ executablePath, headless: true, timeout: 15000 });
     let header: Buffer | null = null;
     let footer: Buffer | null = null;
+    let landingHeader: Buffer | null = null;
     let landingFooter: Buffer | null = null;
     let pageText = '';
     if (outletUrl) {
@@ -175,12 +193,13 @@ async function captureOnce(
       try {
         const text = await stand.evaluate(() => (document.body ? document.body.innerText : ''));
         pageText = typeof text === 'string' ? text : '';
+        landingHeader = await shootRegion(stand, HEADER_SELECTORS, 'top');
         landingFooter = await shootRegion(stand, FOOTER_SELECTORS, 'bottom');
       } finally {
         await stand.close().catch(() => undefined);
       }
     }
-    const outlet = header && footer ? { header, footer, landingFooter } : null;
+    const outlet = assembleOutletReference({ header, footer, landingHeader, landingFooter });
     return { outlet, pageText };
   } catch {
     return { outlet: null, pageText: '' };

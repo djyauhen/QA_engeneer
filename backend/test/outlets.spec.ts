@@ -1,4 +1,4 @@
-import { captureOutletReference, captureQaSurfaces, clipDocumentRegion } from '../src/ai/outlet-capture';
+import { assembleOutletReference, captureOutletReference, captureQaSurfaces, clipDocumentRegion } from '../src/ai/outlet-capture';
 import { isAllowedOutletUrl, matchOutlet } from '../src/ai/outlets';
 
 describe('outlet homepage match', () => {
@@ -48,6 +48,21 @@ describe('outlet capture guard', () => {
     await expect(
       captureQaSurfaces({ chromePath: 'C:\\missing\\chrome.exe', outletUrl: 'https://evil.test', standUrl: null }),
     ).resolves.toBeNull();
+  });
+
+  it('carries the stand header crop when both outlet frames exist', () => {
+    const header = Buffer.from('outlet-header');
+    const footer = Buffer.from('outlet-footer');
+    const landingHeader = Buffer.from('landing-header');
+    const landingFooter = Buffer.from('landing-footer');
+    expect(assembleOutletReference({ header, footer, landingHeader, landingFooter })).toEqual({
+      header,
+      footer,
+      landingHeader,
+      landingFooter,
+    });
+    expect(assembleOutletReference({ header: null, footer, landingHeader, landingFooter })).toBeNull();
+    expect(assembleOutletReference({ header, footer: Buffer.alloc(0), landingHeader, landingFooter })).toBeNull();
   });
 
   it('clips a region in page coordinates, including content below the viewport', () => {

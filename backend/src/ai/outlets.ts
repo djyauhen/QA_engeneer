@@ -1,5 +1,6 @@
 export const OUTLET_HEADER_REF = 'outlet_header';
 export const OUTLET_FOOTER_REF = 'outlet_footer';
+export const LANDING_HEADER_REF = 'landing_header';
 export const LANDING_FOOTER_REF = 'landing_footer';
 
 /** One hostname mention is enough. A bare logo token must repeat, so a single aside does not pick the outlet. */

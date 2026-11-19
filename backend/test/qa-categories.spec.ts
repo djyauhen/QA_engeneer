@@ -14,12 +14,12 @@ import {
 } from '../src/ai/qa-categories';
 import { imageChecksFromObservations, mapCategoryResponse, parseVisualObservations, readGuestRefs } from '../src/ai/qa-response';
 
-const order = ['desktop', 'preview', 'preview_2', 'landing_footer', 'outlet_header', 'outlet_footer', 'I1', 'I2'];
-const kinds = { content: ['I1'], comment: ['I2'] };
+const order = ['desktop', 'preview', 'preview_2', 'landing_header', 'landing_footer', 'outlet_header', 'outlet_footer', 'I1', 'I2'];
+const kinds = { content: ['I1'], comment: ['I2'], hero: 'I1' };
 
 const OFFLINE_PHRASE: Record<number, string> = {
   2: 'Сайт издания этот вызов не открывает. Нет outlet_header или outlet_footer в attachments_order — статус N/A, не FAIL.',
-  3: 'Биографию в сети не ищи. Источник сведений о человеке — fact_sheet.person.',
+  3: 'Биографию в сети не ищи. Источник сведений о человеке — fact_sheet.person, уже полученная поиском биография.',
   4: 'Гражданство и известность в сети не ищи. Источник для этого пункта — fact_sheet.person.',
 };
 
@@ -71,7 +71,9 @@ describe('per-category prompts', () => {
     );
     expect(prompts[0]).not.toContain('ПРОВЕРКА ТЕЛЕФОННОГО КОДА');
     expect(prompts[1]).toContain('outlet_header');
-    expect(prompts[1]).toContain('Футер ленда — последняя метка preview из списка, иначе landing_footer, если он в списке.');
+    expect(prompts[1]).toContain('Шапка ленда — landing_header, футер ленда — landing_footer.');
+    expect(prompts[1]).toContain('Сравни landing_header с outlet_header и landing_footer с outlet_footer.');
+    expect(prompts[1]).not.toContain('первая метка preview');
     expect(prompts[1]).not.toContain('иначе текст page_text');
     expect(prompts[1]).toContain('отсутствие кадра ошибкой не считай');
     expect(prompts[1]).toContain('Кадры приложены в этом вызове в порядке attachments_order, после текста.');
@@ -158,11 +160,12 @@ describe('per-category prompts', () => {
           'Один и тот же аватар в нескольких комментариях одного имени — нормально.',
           'Явно мужской портрет при явно женском имени или наоборот — priority minor.',
           'Одно узнаваемое фото у разных имён или одно имя с двумя разными аватарами, которые не являются заглушками, — priority major.',
-          'Заглушка (стандартный аватар, силуэт, буква, пустой серый круг, иконка «нет фото»), её повтор, похожие лица и один комментарий на пересекающихся кадрах preview — не ошибка.',
+          'Заглушка (стандартный аватар, силуэт, буква, пустой серый круг, иконка «нет фото»), её повтор и похожие лица — не ошибка.',
           'Аватар не виден: finding не выдумывай, напиши об этом в note или clarifications и всё равно закрой критерии текста.',
           'Категорию целиком не ставь N/A или FAIL только потому, что аватары не видны.',
         ].join('\n'),
         'Аватар комментатора — не главный персонаж статьи. Не переноси эту проверку в данные персонажа.',
+        'В пункт 9 входят только картинки комментариев. Шапка ленда, футер, превью, desktop и кадры статьи к этому вызову не приложены. Нет картинок комментариев — пикселей нет, пять критериев текста всё равно закрой по page_text.',
       ]),
     );
     expect(prompts[9]).toContain('подпись');
@@ -211,7 +214,7 @@ describe('per-category prompts', () => {
 });
 
 describe('vision attachments', () => {
-  it('sends page frames to header, person, comment and consistency checks, and content frames to deposit and offer checks', () => {
+  it('sends header crops to point 2, the named hero to point 3, comment frames to point 9, and content frames to deposit and offer checks', () => {
     expect(VISION_CATEGORIES).toEqual([2, 3, 5, 6, 7, 9, 10]);
     for (let category = 1; category <= 11; category += 1) {
       const labels = attachmentLabels(category, order, kinds);
@@ -222,15 +225,22 @@ describe('vision attachments', () => {
         expect(labels.length > 0).toBe(categoryUsesVision(category));
       }
     }
-    expect(attachmentLabels(2, order, kinds)).toEqual(['preview', 'preview_2', 'outlet_header', 'outlet_footer']);
-    expect(attachmentLabels(3, order, kinds)).toEqual(['preview', 'preview_2', 'I1']);
-    expect(attachmentLabels(9, order, kinds)).toEqual(['desktop', 'preview', 'preview_2', 'landing_footer', 'I2']);
+    expect(attachmentLabels(2, order, kinds)).toEqual(['landing_header', 'landing_footer', 'outlet_header', 'outlet_footer']);
+    expect(attachmentLabels(3, order, kinds)).toEqual(['I1']);
+    const several = ['desktop', 'preview', 'preview_2', 'landing_footer', 'I1', 'I2', 'I3', 'I4'];
+    expect(attachmentLabels(3, several, { content: ['I1', 'I2', 'I3'], comment: ['I4'], hero: 'I2' })).toEqual(['I2']);
+    expect(attachmentLabels(3, several, { content: ['I1', 'I2', 'I3'], comment: ['I4'], hero: null })).toEqual([]);
+    expect(attachmentLabels(3, several, { content: ['I1', 'I2', 'I3'], comment: ['I4'] })).toEqual([]);
+    expect(attachmentLabels(9, order, kinds)).toEqual(['I2']);
+    expect(attachmentLabels(9, order, { content: ['I1'], comment: [], hero: 'I1' })).toEqual([]);
     expect(attachmentLabels(10, order, kinds)).toEqual(['desktop', 'preview', 'preview_2', 'landing_footer', 'I1', 'I2']);
-    expect(attachmentLabels(2, ['landing_footer', 'outlet_header', 'outlet_footer'], kinds)).toEqual([
+    expect(attachmentLabels(2, ['landing_header', 'landing_footer', 'outlet_header', 'outlet_footer'], kinds)).toEqual([
+      'landing_header',
       'landing_footer',
       'outlet_header',
       'outlet_footer',
     ]);
+    expect(attachmentLabels(2, ['preview', 'preview_2', 'desktop', 'I1'], kinds)).toEqual([]);
     expect(attachmentLabels(5, order, kinds)).toEqual(['I1']);
     expect(attachmentLabels(6, order, kinds)).toEqual(['I1']);
     expect(attachmentLabels(7, order, kinds)).toEqual(['I1']);

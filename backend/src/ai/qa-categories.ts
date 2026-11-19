@@ -1,7 +1,7 @@
 import { AiCheck, AiFinding, AiGeneral } from '../reports/report.types';
 import { DESKTOP_SHOT } from '../stand/capture';
 import { CommentAvatarOccurrence } from './materials';
-import { LANDING_FOOTER_REF, OUTLET_FOOTER_REF, OUTLET_HEADER_REF } from './outlets';
+import { LANDING_FOOTER_REF, LANDING_HEADER_REF, OUTLET_FOOTER_REF, OUTLET_HEADER_REF } from './outlets';
 import {
   CorrespondenceImage,
   QaParseResult,
@@ -49,7 +49,8 @@ const GENERAL_BY_CATEGORY: Record<number, Array<(typeof GENERAL_KEYS)[number]>> 
  */
 const OUTLET_OFFLINE =
   'Сайт издания этот вызов не открывает. Нет outlet_header или outlet_footer в attachments_order — статус N/A, не FAIL.';
-const PERSON_OFFLINE = 'Биографию в сети не ищи. Источник сведений о человеке — fact_sheet.person.';
+const PERSON_OFFLINE =
+  'Биографию в сети не ищи. Источник сведений о человеке — fact_sheet.person, уже полученная поиском биография.';
 const FAME_OFFLINE = 'Гражданство и известность в сети не ищи. Источник для этого пункта — fact_sheet.person.';
 
 /** Frames are attached on this call. The category number keeps this sentence from being copied across prompts. */
@@ -93,9 +94,9 @@ const CATEGORY_PROMPTS: Record<number, string> = {
   2: [
     'Пункт 2. Соответствие шапки и футера оригиналу новостного издания.',
     'Сверь только шапку и футер лендинга с оформлением издания: логотип, состав и порядок элементов шапки, блоки футера, общее визуальное сходство этих зон. Внешнее сходство не доказывает, что страница опубликована этим СМИ. Сходство само по себе не FAIL: ошибка только при конкретном отличии шапки или футера на картинках из attachments_order.',
-    'Картинки этого пункта — только метки из attachments_order. Метки, которой нет в списке, в сообщении нет. outlet_header и outlet_footer — шапка и футер официальной главной, в screenshot_ref их не ставь. Шапка ленда — первая метка preview из списка, иначе desktop, если он в списке. Футер ленда — последняя метка preview из списка, иначе landing_footer, если он в списке.',
+    'Картинки этого пункта — только метки из attachments_order. Метки, которой нет в списке, в сообщении нет. outlet_header и outlet_footer — шапка и футер официальной главной, в screenshot_ref их не ставь. Шапка ленда — landing_header, футер ленда — landing_footer. Это кропы зон, не кадр всей страницы и не preview.',
     eyesLine(2),
-    'PASS — кадры ленда и оба кадра издания есть в attachments_order и совпадают. FAIL — между ними есть конкретное отличие; quote из page_text, screenshot_ref — метка кадра ленда из списка. Нет outlet_header или outlet_footer в списке — N/A, совпадение не утверждай и отсутствие кадра ошибкой не считай. Нет кадра ленда — визуальный FAIL не ставь и кадр не описывай.',
+    'Сравни landing_header с outlet_header и landing_footer с outlet_footer. PASS — кадры ленда и оба кадра издания есть в attachments_order и совпадают. FAIL — между ними есть конкретное отличие; quote из page_text, screenshot_ref — landing_header или landing_footer. Нет outlet_header или outlet_footer в списке — N/A, совпадение не утверждай и отсутствие кадра ошибкой не считай. Нет landing_header или landing_footer — визуальный FAIL не ставь и кадр не описывай.',
     OUTLET_OFFLINE,
     'Повторно страницу не скачивай. Не проверяй текст статьи, персонажа, депозит и комментарии.',
     'general.outlet — название издания.',
@@ -105,7 +106,8 @@ const CATEGORY_PROMPTS: Record<number, string> = {
     'Пункт 3. Данные главного персонажа.',
     'Опорное имя — main_person_claim.from_land_name, иначе resolved. Оба пустые — имя не выдумывай, статус N/A. conflict — FAIL, когда название ленда и текст называют разных главных людей: quote из page_text, expected — имя из названия ленда.',
     'Второе имя в page_text само по себе не FAIL, если страница — разговор двоих об инвестиционной платформе или оффере: интервьюер и гость. Гость, читатель, клиент или пользователь платформы — не замена главного персонажа из названия ленда.',
-    'Проверь написание имени по всей странице. Биографические утверждения page_text сверь с fact_sheet.person.extract, не только возраст и должность. extract может быть вступлением Википедии или сводками поиска. Прямое противоречие extract — FAIL, expected — формулировка из extract. Чего extract не говорит, не называй верным и не делай FAIL: это clarifications.',
+    'Проверь написание имени по всей странице. Биографические утверждения page_text сверь с fact_sheet.person.extract, не только возраст и должность. extract может быть вступлением Википедии или сводками поиска: сервер уже положил туда биографию из поиска. Прямое противоречие extract — FAIL, expected — формулировка из extract. Чего extract не говорит, не называй верным и не делай FAIL: это clarifications.',
+    'Пиксели пункта 3 — не больше одного кадра контента, у которого alt, подпись или соседний текст содержит имя персонажа. Нет такой метки в attachments_order — картинку не выдумывай.',
     'Пустая карточка не запрещает проверку имени по тексту и фото и не означает, что человека нет. Не пиши «fact_sheet.person отсутствует» как причину N/A. Возраст, пол и должность без карточки не подтверждай и не опровергай.',
     PERSON_OFFLINE,
     eyesLine(3),
@@ -189,11 +191,12 @@ const CATEGORY_PROMPTS: Record<number, string> = {
       'Один и тот же аватар в нескольких комментариях одного имени — нормально.',
       'Явно мужской портрет при явно женском имени или наоборот — priority minor.',
       'Одно узнаваемое фото у разных имён или одно имя с двумя разными аватарами, которые не являются заглушками, — priority major.',
-      'Заглушка (стандартный аватар, силуэт, буква, пустой серый круг, иконка «нет фото»), её повтор, похожие лица и один комментарий на пересекающихся кадрах preview — не ошибка.',
+      'Заглушка (стандартный аватар, силуэт, буква, пустой серый круг, иконка «нет фото»), её повтор и похожие лица — не ошибка.',
       'Аватар не виден: finding не выдумывай, напиши об этом в note или clarifications и всё равно закрой критерии текста.',
       'Категорию целиком не ставь N/A или FAIL только потому, что аватары не видны.',
     ].join('\n'),
     'Аватар комментатора — не главный персонаж статьи. Не переноси эту проверку в данные персонажа.',
+    'В пункт 9 входят только картинки комментариев. Шапка ленда, футер, превью, desktop и кадры статьи к этому вызову не приложены. Нет картинок комментариев — пикселей нет, пять критериев текста всё равно закрой по page_text.',
     eyesLine(9),
     answerContract(9),
   ].join('\n\n'),
@@ -240,10 +243,17 @@ function isPreviewLabel(label: string): boolean {
   return label === 'preview' || /^preview_\d+$/.test(label);
 }
 
+export interface AttachmentImageRefs {
+  content: readonly string[];
+  comment: readonly string[];
+  /** One content frame whose alt, caption, or nearby text names the person. */
+  hero?: string | null;
+}
+
 export function attachmentLabels(
   category: number,
   available: readonly string[],
-  images: { content: readonly string[]; comment: readonly string[] },
+  images: AttachmentImageRefs,
 ): string[] {
   if (!categoryUsesVision(category)) return [];
   const present = new Set(available);
@@ -255,29 +265,16 @@ export function attachmentLabels(
     if (present.has(label)) want.add(label);
   };
   if (category === 2) {
-    if (previews.length) {
-      take(previews[0]);
-      take(previews[previews.length - 1]);
-    } else {
-      take(DESKTOP_SHOT);
-      take(LANDING_FOOTER_REF);
-    }
+    take(LANDING_HEADER_REF);
+    take(LANDING_FOOTER_REF);
     take(OUTLET_HEADER_REF);
     take(OUTLET_FOOTER_REF);
   } else if (category === 3) {
-    if (previews.length) {
-      for (const label of previews) take(label);
-    } else {
-      take(DESKTOP_SHOT);
-      take(LANDING_FOOTER_REF);
-    }
-    for (const label of available) if (content.has(label)) take(label);
+    const hero = images.hero ?? null;
+    if (hero && content.has(hero)) take(hero);
   } else if (categoryReadsContentFrames(category)) {
     for (const label of available) if (content.has(label)) take(label);
   } else if (category === 9) {
-    take(DESKTOP_SHOT);
-    for (const label of previews) take(label);
-    take(LANDING_FOOTER_REF);
     for (const label of available) if (comment.has(label)) take(label);
   } else if (category === 10) {
     take(DESKTOP_SHOT);

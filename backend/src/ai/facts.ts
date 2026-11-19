@@ -376,9 +376,23 @@ async function loadPerson(options: FactLookup, fetchImpl: typeof fetch): Promise
   const name = typeof options.person === 'string' ? options.person.trim() : '';
   if (!name) return null;
   const countries = options.countries ?? [];
-  const found = await fetchPerson(name, options.checkDate, options.languages ?? [], countries, fetchImpl);
-  if (found) return found;
-  return personFromSearch(name, options.checkDate, countries, options.search ?? null, fetchImpl);
+  const search = options.search ?? null;
+  const [found, searched] = await Promise.all([
+    fetchPerson(name, options.checkDate, options.languages ?? [], countries, fetchImpl),
+    personFromSearch(name, options.checkDate, countries, search, fetchImpl),
+  ]);
+  return combinePerson(found, searched);
+}
+
+/** Wikipedia keeps the structured card. The extract the model reads must include the search biography. */
+function combinePerson(wiki: PersonFact | null, searched: PersonFact | null): PersonFact | null {
+  if (!wiki) return searched;
+  if (!searched) return wiki;
+  const searchText = searched.extract.trim();
+  const wikiText = wiki.extract.trim();
+  if (!searchText) return wiki;
+  const extract = (searchText === wikiText ? searchText : `${searchText}\n${wikiText}`).slice(0, EXTRACT_LIMIT);
+  return { ...wiki, extract };
 }
 
 async function personFromSearch(
@@ -391,7 +405,7 @@ async function personFromSearch(
   if (!isPersonName(name)) return null;
   const apiKey = search?.apiKey.trim() ?? '';
   if (!search || !apiKey) return null;
-  const built = buildPersonSearch(name, countries);
+  const built = buildPersonSearch(name, countries, checkDate);
   const url = built ? deepSeekSearchUrl(search.baseUrl) : null;
   if (!built || !url) return null;
   try {
@@ -405,24 +419,37 @@ async function personFromSearch(
   }
 }
 
-function buildPersonSearch(name: string, countries: readonly string[]): { query: string; oriQuestion: string | null } | null {
+function buildPersonSearch(
+  name: string,
+  countries: readonly string[],
+  checkDate: string,
+): { query: string; oriQuestion: string | null } | null {
   const country = countrySearchWord(countries);
-  const query = limitSearchQuery(name, country);
+  const query = biographySearchQuery(name, country, checkDate);
   if (!query) return null;
-  let oriQuestion: string | null = null;
-  if (country) {
-    const question = `Is ${name} alive in ${country}?`;
-    if (textLength(question) <= SEARCH_TEXT_LIMIT) oriQuestion = question;
-  }
-  return { query, oriQuestion };
+  return { query, oriQuestion: biographyQuestion(name, country, checkDate) };
 }
 
-function limitSearchQuery(name: string, country: string | null): string | null {
-  const living = country ? `"${name}" ${country} living` : `"${name}" living`;
-  if (fitsSearchText(living)) return living;
-  const dropped = country ? `"${name}" ${country}` : `"${name}"`;
-  if (fitsSearchText(dropped) && dropped.includes(name)) return dropped;
+function biographySearchQuery(name: string, country: string | null, checkDate: string): string | null {
+  const place = country ? ` ${country}` : '';
+  const dated = `"${name}"${place} spelling birth date age ${checkDate} gender occupation alive`;
+  if (fitsSearchText(dated)) return dated;
+  const undated = `"${name}"${place} spelling birth age gender occupation alive`;
+  if (fitsSearchText(undated)) return undated;
+  const short = `"${name}"${place} biography occupation alive`;
+  if (fitsSearchText(short)) return short;
   return shortenSearchQuery(name, country);
+}
+
+function biographyQuestion(name: string, country: string | null, checkDate: string): string | null {
+  const place = country ? ` in ${country}` : '';
+  const full = `Canonical spelling, birth date, age on ${checkDate}, gender and occupation of ${name}${place}. Is ${name} alive?`;
+  if (fitsSearchText(full)) return full;
+  const mid = `Spelling, birth date, age on ${checkDate}, gender and occupation of ${name}${place}?`;
+  if (fitsSearchText(mid)) return mid;
+  const short = `Birth date, gender and occupation of ${name}?`;
+  if (fitsSearchText(short)) return short;
+  return null;
 }
 
 function shortenSearchQuery(name: string, country: string | null): string | null {

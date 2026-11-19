@@ -5,7 +5,7 @@ import { DESKTOP_SHOT } from '../stand/capture';
 import { previewShotLabel, previewShotLabels } from '../stand/preview-slices';
 import { CommentAvatarOccurrence, LandingIndexFile, MaterialImage, PersonClaim } from './materials';
 import { FactSheet, FxRates } from './facts';
-import { LANDING_FOOTER_REF, OUTLET_FOOTER_REF, OUTLET_HEADER_REF } from './outlets';
+import { LANDING_FOOTER_REF, LANDING_HEADER_REF, OUTLET_FOOTER_REF, OUTLET_HEADER_REF } from './outlets';
 import { categorySystemMessage } from './qa-category-instruction';
 import {
   CategoryPart,
@@ -78,7 +78,9 @@ export interface AiInput {
   checkDate?: string;
   /** Header and footer of the official outlet homepage. Reference only: not a finding screenshot. */
   outlet?: { name: string; url: string; header: Buffer; footer: Buffer } | null;
-  /** Bottom of the landing stand, when Chrome could capture it. */
+  /** Header crop of the landing stand. A missing header element falls back to the top of the document. */
+  landingHeader?: Buffer | null;
+  /** Bottom crop of the landing stand, when Chrome could capture it. */
   landingFooter?: Buffer | null;
   /** Person card for the resolved celebrity. Null when the lookup did not run. */
   factSheet?: FactSheet | null;
@@ -245,10 +247,7 @@ export class DeepSeekAiClient extends AiClient {
           continue;
         }
         const parsed = parseJsonContent(content);
-        const labels = attachmentLabels(category, bundle.available, {
-          content: bundle.contentRefs,
-          comment: bundle.commentRefs,
-        });
+        const labels = attachmentLabels(category, bundle.available, shotKinds(bundle));
         const mapped = mapCategoryResponse(category, parsed, {
           pageText: bundle.input.pageText,
           screenshots: bundle.screenshots,
@@ -340,6 +339,8 @@ interface ReviewBundle {
   images: MaterialImage[];
   contentRefs: string[];
   commentRefs: string[];
+  heroRef: string | null;
+  landingHeader: Buffer | null;
   landingFooter: Buffer | null;
   outlet: NonNullable<AiInput['outlet']> | null;
   landingPreviewUrl: string | null;
@@ -353,6 +354,7 @@ function buildBundle(input: AiInput): ReviewBundle {
   const previewShots = (input.previewShots ?? []).filter((item) => item.length > 0);
   const previewLabels = previewShotLabels(previewShots.length);
   const images = input.images ?? [];
+  const landingHeader = input.landingHeader?.length ? input.landingHeader : null;
   const landingFooter = input.landingFooter?.length ? input.landingFooter : null;
   const outlet = input.outlet?.header.length && input.outlet.footer.length ? input.outlet : null;
   const screenshots: Record<string, string> = {};
@@ -360,6 +362,7 @@ function buildBundle(input: AiInput): ReviewBundle {
   previewShots.forEach((item, index) => {
     screenshots[previewShotLabel(index)] = desktopShotDataUrl(item);
   });
+  if (landingHeader) screenshots[LANDING_HEADER_REF] = desktopShotDataUrl(landingHeader);
   if (landingFooter) screenshots[LANDING_FOOTER_REF] = desktopShotDataUrl(landingFooter);
   for (const image of images) screenshots[image.ref] = imageDataUrl(image);
   const modelShots: Record<string, string> = { ...screenshots };
@@ -375,12 +378,15 @@ function buildBundle(input: AiInput): ReviewBundle {
     images,
     contentRefs: images.filter((image) => image.kind !== 'comment').map((image) => image.ref),
     commentRefs: images.filter((image) => image.kind === 'comment').map((image) => image.ref),
+    heroRef: images.find((image) => image.kind !== 'comment' && image.claims_person)?.ref ?? null,
+    landingHeader,
     landingFooter,
     outlet,
     landingPreviewUrl: input.landingPreviewUrl?.trim() ? input.landingPreviewUrl.trim() : null,
     available: [
       ...(shot ? [DESKTOP_SHOT] : []),
       ...previewLabels,
+      ...(landingHeader ? [LANDING_HEADER_REF] : []),
       ...(landingFooter ? [LANDING_FOOTER_REF] : []),
       ...(outlet ? [OUTLET_HEADER_REF, OUTLET_FOOTER_REF] : []),
       ...images.map((image) => image.ref),
@@ -401,7 +407,7 @@ function buildCategoryRequest(
   // Vision categories attach image_url parts for their own attachments_order.
   // Categories 5–7 stay on flash. With no content frames the user message is a plain string and image_url is not invented.
   // Categories 1, 4, 8 and 11 stay a string on the text model.
-  const labels = attachmentLabels(category, bundle.available, { content: bundle.contentRefs, comment: bundle.commentRefs });
+  const labels = attachmentLabels(category, bundle.available, shotKinds(bundle));
   const labelSet = new Set(labels);
   const images = bundle.images.filter((image) => labelSet.has(image.ref));
   const userPayload: Record<string, unknown> = {
@@ -420,6 +426,7 @@ function buildCategoryRequest(
       category === 2 && bundle.outlet
         ? { name: bundle.outlet.name, url: bundle.outlet.url, header_ref: OUTLET_HEADER_REF, footer_ref: OUTLET_FOOTER_REF }
         : null,
+    landing_header_ref: labelSet.has(LANDING_HEADER_REF) ? LANDING_HEADER_REF : null,
     landing_footer_ref: labelSet.has(LANDING_FOOTER_REF) ? LANDING_FOOTER_REF : null,
     images: images.map((image) => ({
       ref: image.ref,
@@ -445,6 +452,7 @@ function buildCategoryRequest(
     stream: false,
     thinking: { type: 'enabled' },
     reasoning_effort: DEEPSEEK_REASONING_EFFORT,
+    temperature: 0,
     max_tokens: DEEPSEEK_MAX_OUTPUT_TOKENS,
     response_format: { type: 'json_object' },
     messages: [
@@ -478,6 +486,7 @@ function buildVisionRequest(bundle: ReviewBundle, labels: readonly string[], mod
     stream: false,
     thinking: { type: 'enabled' },
     reasoning_effort: DEEPSEEK_REASONING_EFFORT,
+    temperature: 0,
     max_tokens: DEEPSEEK_MAX_OUTPUT_TOKENS,
     response_format: { type: 'json_object' },
     messages: [
@@ -500,8 +509,12 @@ function celebrityName(person: AiInput['person']): string {
   return person?.from_land_name?.trim() || person?.resolved?.trim() || '';
 }
 
+function shotKinds(bundle: ReviewBundle): { content: string[]; comment: string[]; hero: string | null } {
+  return { content: bundle.contentRefs, comment: bundle.commentRefs, hero: bundle.heroRef };
+}
+
 function visionLabels(bundle: ReviewBundle): string[] {
-  const kinds = { content: bundle.contentRefs, comment: bundle.commentRefs };
+  const kinds = shotKinds(bundle);
   const want = new Set<string>();
   for (const category of VISION_CATEGORIES) {
     for (const label of attachmentLabels(category, bundle.available, kinds)) want.add(label);
@@ -524,7 +537,7 @@ function isPreviewLabel(label: string): boolean {
 }
 
 function imageChecksFor(bundle: ReviewBundle, parsed: unknown, observations: readonly VisualObservation[]) {
-  const labels = attachmentLabels(3, bundle.available, { content: bundle.contentRefs, comment: bundle.commentRefs });
+  const labels = attachmentLabels(3, bundle.available, shotKinds(bundle));
   const claimed = new Set(
     bundle.images.filter((image) => image.kind !== 'comment' && image.claims_person).map((image) => image.ref),
   );
@@ -562,22 +575,21 @@ function attachmentNote(category: number, labels: string[]): string {
 }
 
 function previewNote(bundle: ReviewBundle, category: number): string {
-  if (category !== 2 && category !== 3 && category !== 9 && category !== 10) return '';
+  if (category === 2) {
+    return 'Кадры пункта 2 — кропы landing_header и landing_footer. Рядом outlet_header и outlet_footer, только если эти метки есть в attachments_order. Превью и desktop в пункт 2 не входят. Повторно сайт издания не открывай.';
+  }
+  if (category === 3) {
+    return 'Пункт 3 прикладывает не больше одного кадра контента: картинку, у которой в alt, подписи или соседнем тексте есть имя персонажа. Превью, футер и остальные картинки в этот вызов не входят. Ссылку сам не открывай. Сверь лицо, имя на картинке и подпись с персонажем из названия ленда только на этом кадре. Совпало лицо, имя на картинке и подпись — не ошибка. Кадр подан как он, а лицо или имя другие — FAIL. Лица не видно — clarifications, не FAIL. Если кадр не приложен, guest_refs оставь пустым.';
+  }
+  if (category === 9) {
+    return 'Пункт 9 прикладывает только картинки комментариев. Шапка, футер и превью в этот вызов не входят. Аватар — картинка рядом с именем. Картинка внутри текста комментария — вложение: это не второе фото этого имени и не аватар другого комментатора. Иллюстрации статьи — не аватары. Одно и то же фото у одного имени в нескольких комментариях — нормально. Явный конфликт пола аватара и имени — minor. Одно реальное фото у разных имён или одно имя с разными фото — major. Заглушка и невидимый аватар — не FAIL.';
+  }
+  if (category !== 10) return '';
   const labels = bundle.previewLabels;
   if (labels.length) {
     const first = labels[0];
     const last = labels[labels.length - 1];
-    const base = `Кадры ${labels.join(', ')} — страница landing_preview_url, уже снятая нашим браузером сверху вниз. ${first} — верх и шапка, ${last} — низ и футер. Кадры превью приложены в этом вызове. Повторно превью не скачивай.`;
-    if (category === 2) {
-      return `${base} Шапка ленда — ${first}, футер ленда — ${last}. Эталон издания — outlet_header и outlet_footer, только если эти метки есть в attachments_order. Если их нет — N/A, не FAIL.`;
-    }
-    if (category === 3) {
-      return `${base} Ссылку сам не открывай. Сверь лицо, имя на картинке и подпись с персонажем из названия ленда только там, где страница подаёт кадр как этого человека. Совпало лицо, имя на картинке и подпись — не ошибка. Кадр подан как он, а лицо или имя другие — FAIL. Лица не видно — clarifications, не FAIL. Исключение гостю интервью: если page_text называет второго участника гостем, читателем или пользователем платформы, а в записи его имя, его история или его транзакции — не FAIL и метка кадра в guest_refs. Имя из названия ленда не обязано быть на каждом кадре. Имя в записи другое, чем у этого гостя в page_text, — FAIL.`;
-    }
-    if (category === 9) {
-      return `${base} Аватар — картинка рядом с именем. Картинка внутри текста комментария — вложение: это не второе фото этого имени и не аватар другого комментатора. Иллюстрации статьи — не аватары. Одно и то же фото у одного имени в нескольких комментариях — нормально. Явный конфликт пола аватара и имени — minor. Одно реальное фото у разных имён или одно имя с разными фото — major. Заглушка и невидимый аватар — не FAIL.`;
-    }
-    return base;
+    return `Кадры ${labels.join(', ')} — страница landing_preview_url, уже снятая нашим браузером сверху вниз. ${first} — верх и шапка, ${last} — низ и футер. Кадры превью приложены в этом вызове. Повторно превью не скачивай.`;
   }
   if (bundle.landingPreviewUrl) {
     return 'landing_preview_url есть, но кадров страницы нет: ссылка сама по себе не картинка. Не ставь визуальный FAIL и не выдумывай кадр.';
@@ -589,12 +601,8 @@ function outletNote(bundle: ReviewBundle): string {
   if (!bundle.outlet) {
     return 'Категория 2: скриншотов оригинала издания нет, ставь N/A и не утверждай совпадение шапки и футера. Живой сайт отсюда не открывается.';
   }
-  const header = bundle.previewLabels[0] ?? (bundle.shot ? DESKTOP_SHOT : 'скриншота шапки нет');
-  const footer = bundle.previewLabels.length
-    ? bundle.previewLabels[bundle.previewLabels.length - 1]
-    : bundle.landingFooter
-      ? LANDING_FOOTER_REF
-      : 'скриншота футера нет';
+  const header = bundle.landingHeader ? LANDING_HEADER_REF : 'скриншота шапки нет';
+  const footer = bundle.landingFooter ? LANDING_FOOTER_REF : 'скриншота футера нет';
   return `Категория 2: сравни шапку ленда (${header}) с ${OUTLET_HEADER_REF} и футер ленда (${footer}) с ${OUTLET_FOOTER_REF}. Это уже снятые кадры официальной главной ${bundle.outlet.name} (${bundle.outlet.url}). Совпадение утверждай только по visual_observations этих меток.`;
 }
 
@@ -603,7 +611,7 @@ function factNote(bundle: ReviewBundle, category: number): string {
   const person = category === 3 || category === 4 ? bundle.input.factSheet?.person : undefined;
   if (category === 3) {
     if (person) {
-      return `Категория 3: имя, возраст, должность и цитаты page_text сверь с fact_sheet.person.extract (${person.name}). Фото сверь с именем из названия ленда. Прямое противоречие extract — FAIL. Чего extract не говорит, не называй верным.`;
+      return `Категория 3: имя, возраст, должность и цитаты page_text сверь с fact_sheet.person.extract (${person.name}). extract — уже полученная поиском биография. Фото сверь с именем из названия ленда. Прямое противоречие extract — FAIL. Чего extract не говорит, не называй верным и не делай FAIL: это clarifications.`;
     }
     return 'Категория 3: карточки fact_sheet.person нет. Имя сверяй по page_text и по фото. Возраст, должность и цитаты без extract не подтверждай и не опровергай: это clarifications. Человека не объявляй несуществующим и не пиши «fact_sheet.person отсутствует». Пустая карточка не запрещает закрыть пункт по тексту и фото. Не ставь N/A только из-за пустой карточки.';
   }
@@ -640,14 +648,14 @@ function correspondenceNote(bundle: ReviewBundle, labels: string[]): string {
   const bits: string[] = [];
   if (claimed.length) {
     bits.push(
-      `Проверь соответствие изображений ${claimed.map((image) => image.ref).join(', ')} персонажу из названия ленда по visual_observations. В guest_refs перечисли метки, которые page_text подаёт как гостя, читателя или пользователя платформы. Со знаменитостью сверяй только кадр, поданный как этот человек. Имя в записи другое, чем у этого гостя в page_text, — FAIL.`,
+      `Проверь соответствие изображения ${claimed.map((image) => image.ref).join(', ')} персонажу из названия ленда по visual_observations. Со знаменитостью сверяй только этот кадр. Если page_text подаёт его как гостя, читателя или пользователя платформы, не FAIL и верни метку в guest_refs.`,
     );
   }
   const personName = bundle.input.person?.from_land_name?.trim() || bundle.input.person?.resolved?.trim() || '';
   if (personName) {
-    const frames = bundle.previewLabels.length ? bundle.previewLabels.join(', ') : 'preview и фото';
+    const frame = claimed[0]?.ref ?? 'кадра с этим именем нет';
     bits.push(
-      `Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text. На кадрах ${frames} оно не обязано быть на каждом кадре: креатив гостя не сверяй с «${personName}». Сверь лицо, имя на картинке и подпись там, где кадр подан как этот человек.`,
+      `Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text. Кадр пункта 3 — ${frame}. На картинках, которых в этом вызове нет, имя не ищи.`,
     );
   }
   return bits.join('\n');

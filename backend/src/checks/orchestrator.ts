@@ -435,6 +435,7 @@ export class CheckOrchestrator {
           screenshot,
           checkDate,
           outlet: outletRef,
+          landingHeader: reference?.landingHeader ?? null,
           landingFooter: reference?.landingFooter ?? null,
           factSheet: facts ? { person: facts.person } : null,
           fxRates: facts?.fx ?? null,

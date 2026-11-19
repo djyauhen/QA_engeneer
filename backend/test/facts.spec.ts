@@ -550,8 +550,9 @@ describe('deepseek person search', () => {
     expect(String(body.query).length).toBeLessThanOrEqual(128);
     expect(body.query).toContain('Jan Kowalski');
     expect(body.query).toContain('Poland');
-    expect(body.query).toBe('"Jan Kowalski" Poland living');
-    expect(body.ori_question).toBe('Is Jan Kowalski alive in Poland?');
+    expectBiographyQuery(body.query, { name: 'Jan Kowalski', country: 'Poland' });
+    expectBiographyQuestion(body.ori_question, 'Jan Kowalski');
+    expect(String(body.ori_question)).toContain('Poland');
     expect(String(seen[0].init?.body)).not.toContain(apiKey);
     expect(urls.some((href) => href.includes('example.pl'))).toBe(false);
   });
@@ -643,14 +644,31 @@ describe('deepseek person search', () => {
     expect(sheet.person).toBeNull();
   });
 
-  it('does not search when Wikidata already returned a person', async () => {
+  it('posts a biography search even when Wikipedia already returned a page', async () => {
     const calls: string[] = [];
-    const fetchImpl: typeof fetch = async (url) => {
+    const requests: Array<Record<string, unknown>> = [];
+    const biography = 'Andrzej Duda, born 16 May 1972, is a male politician and president of Poland.';
+    const fetchImpl: typeof fetch = async (url, init) => {
       const href = String(url);
       calls.push(href);
       if (href.includes('/page/summary/')) return factJson(summary);
       if (href.startsWith('https://api.frankfurter.app/')) return fxJson();
-      if (href.includes('/tools/search')) return factJson({ results: [living] });
+      if (href.includes('/tools/search')) {
+        requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return factJson({
+          results: [
+            {
+              rerank_score: 2.4,
+              authority: 4,
+              title: 'Andrzej Duda',
+              url: 'https://example.pl/andrzej-duda',
+              snippet: '',
+              summary: biography,
+              site_name: 'Bio',
+            },
+          ],
+        });
+      }
       return new Response('no', { status: 404 });
     };
     const sheet = await loadFactSheet(
@@ -661,7 +679,16 @@ describe('deepseek person search', () => {
       name: 'Andrzej Duda',
       source: 'https://en.wikipedia.org/wiki/Andrzej_Duda',
     });
-    expect(calls.some((href) => href.includes('/tools/search'))).toBe(false);
+    expect(sheet.person?.extract).toContain(biography);
+    expect(sheet.person?.extract).toContain('Polish politician');
+    const searchCalls = calls.filter((href) => href.includes('/tools/search'));
+    expect(searchCalls).toEqual(['https://api.deepseek.com/v1/tools/search']);
+    expect(searchCalls[0].endsWith('/v1/tools/search')).toBe(true);
+    expect(requests).toHaveLength(1);
+    expectBiographyQuery(requests[0].query, { name: 'Andrzej Duda' });
+    expectBiographyQuestion(requests[0].ori_question, 'Andrzej Duda');
+    expect(String(requests[0].query)).not.toBe('"Andrzej Duda" living');
+    expect(String(requests[0].ori_question)).not.toBe('Is Andrzej Duda alive?');
   });
 
   it('stays null and does not call search without credentials', async () => {
@@ -742,8 +769,9 @@ describe('deepseek person search', () => {
       [{ ...living, summary: 'Jan Kowalski serves Poland. Extra sentence.', title: ' ', site_name: '' }],
       ['Польша'],
     );
-    expect(sentence.requests[0]?.query).toBe('"Jan Kowalski" Польша living');
-    expect(sentence.requests[0]?.ori_question).toBe('Is Jan Kowalski alive in Польша?');
+    expectBiographyQuery(sentence.requests[0]?.query, { name: 'Jan Kowalski', country: 'Польша' });
+    expectBiographyQuestion(sentence.requests[0]?.ori_question, 'Jan Kowalski');
+    expect(String(sentence.requests[0]?.ori_question)).toContain('Польша');
     expect(sentence.sheet.person?.description).toBe('Jan Kowalski serves Poland.');
     expect(sentence.sheet.person?.citizenship).toContain('Poland');
 
@@ -751,19 +779,20 @@ describe('deepseek person search', () => {
       [{ ...living, summary: 'Jan Kowalski lives in Germany.', url: 'https://example.de/jan-kowalski' }],
       ['DE', 'PL'],
     );
-    expect(germany.requests[0]?.query).toBe('"Jan Kowalski" Germany living');
+    expectBiographyQuery(germany.requests[0]?.query, { name: 'Jan Kowalski', country: 'Germany' });
     expect(germany.sheet.person?.citizenship).toContain('Germany');
 
     const dial = await capturingSearch([living], ['+48', 'PL']);
-    expect(dial.requests[0]?.query).toBe('"Jan Kowalski" Poland living');
+    expectBiographyQuery(dial.requests[0]?.query, { name: 'Jan Kowalski', country: 'Poland' });
     expect(String(dial.requests[0]?.query)).not.toContain('+48');
 
     const open = await capturingSearch(
       [{ ...living, summary: 'Jan Kowalski is a public figure.', url: 'https://example.com/jan-kowalski' }],
       [],
     );
-    expect(open.requests[0]?.query).toBe('"Jan Kowalski" living');
-    expect(open.requests[0]?.ori_question).toBeUndefined();
+    expectBiographyQuery(open.requests[0]?.query, { name: 'Jan Kowalski' });
+    expectBiographyQuestion(open.requests[0]?.ori_question, 'Jan Kowalski');
+    expect(String(open.requests[0]?.query)).not.toContain('Poland');
     expect(open.sheet.person?.source).toBe('https://example.com/jan-kowalski');
     expect(open.sheet.person?.citizenship).toEqual([]);
   });
@@ -789,6 +818,29 @@ describe('deepseek person search', () => {
     ).resolves.toMatchObject({ person: null });
   });
 });
+
+function expectBiographyQuery(query: unknown, options: { name: string; country?: string }): void {
+  const text = String(query);
+  expect(text).toContain(`"${options.name}"`);
+  expect(text).toContain('spelling');
+  expect(text).toContain('birth');
+  expect(text).toContain('gender');
+  expect(text).toContain('occupation');
+  expect(text).toContain('alive');
+  expect(text).toContain('2026-10-27');
+  if (options.country) expect(text).toContain(options.country);
+  const livenessOnly = options.country ? `"${options.name}" ${options.country} living` : `"${options.name}" living`;
+  expect(text).not.toBe(livenessOnly);
+}
+
+function expectBiographyQuestion(question: unknown, name: string): void {
+  const text = String(question);
+  expect(text).toContain(name);
+  expect(text).toContain('birth');
+  expect(text).toContain('gender');
+  expect(text).toContain('occupation');
+  expect(text.startsWith('Is ') && !text.includes('birth')).toBe(false);
+}
 
 function factJson(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });

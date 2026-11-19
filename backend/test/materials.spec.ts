@@ -169,10 +169,10 @@ describe('buildAiMaterials', () => {
     expect(result.images[1].file).toBe('images/c1.jpg');
     expect(result.images[1].caption).toBe('Street crowd');
     expect(result.images.every((image) => image.kind === 'content')).toBe(true);
-    expect(result.images.every((image) => image.claims_person === 'Andrzej Duda')).toBe(true);
+    expect(result.images.filter((image) => image.claims_person).map((image) => image.file)).toEqual(['images/c2.jpg']);
   });
 
-  it('marks comment avatars and leaves claims_person null unless the nearby text names the person', () => {
+  it('marks comment avatars and leaves claims_person null on every avatar', () => {
     write(
       'index.html',
       `<h1>Andrzej Duda</h1><img src="images/hero.jpg" alt="">
@@ -187,7 +187,7 @@ describe('buildAiMaterials', () => {
     expect(result.images.map((image) => [image.file, image.kind, image.claims_person])).toEqual([
       ['images/hero.jpg', 'content', 'Andrzej Duda'],
       ['images/av1.jpg', 'comment', null],
-      ['images/av2.jpg', 'comment', 'Andrzej Duda'],
+      ['images/av2.jpg', 'comment', null],
     ]);
   });
 
