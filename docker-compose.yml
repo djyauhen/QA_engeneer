@@ -35,11 +35,17 @@ services:
       STORAGE: neon
       QA_LISTEN_ALL: "1"
       WORK_DIR: /var/lib/qa/workdir
+      GROK_HOME: /home/node/.grok
+    # Docker's default seccomp blocks pivot_root, so bwrap cannot enforce --sandbox read-only.
+    security_opt:
+      - seccomp:unconfined
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
       - qa_backend_workdir:/var/lib/qa/workdir
+      - qa_grok_home:/home/node/.grok
 
 volumes:
   qa_postgres_data:
   qa_backend_workdir:
+  qa_grok_home:

@@ -35,11 +35,43 @@ export function splitPassZip(): Buffer {
   });
 }
 
-export function structureFailZip(): Buffer {
+export function phpFailZip(): Buffer {
   return zipFiles({
-    'a/index.html': '<html></html>',
-    'b/index.html': '<html></html>',
+    'landing/index.html': '<html><?php echo 1; ?></html>',
+    'landing/favicon.ico': 'ico',
+    'landing/css/app.css': 'body{}\n',
   });
+}
+
+const CLEAN_LANDING_INDEX = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="favicon.ico">
+</head>
+<body>
+{{form}}
+{{aio.visit.fields.offer_name.for_visitors}}
+{{aio:macros:tracker_protection_1}}
+{{aio:macros:tracker_protection_2}}
+{{aio:macros:tracker_protection_3}}
+</body>
+</html>
+`;
+
+export function cleanLandingFiles(withAssets: boolean): Record<string, string | Buffer> {
+  const files: Record<string, string | Buffer> = {
+    'landing/index.html': CLEAN_LANDING_INDEX,
+    'landing/favicon.ico': 'ico',
+    'landing/css/app.css': 'body{color:#111}\n',
+    'landing/images/dot.png': Buffer.from([137, 80, 78, 71]),
+  };
+  if (withAssets) files['landing/assets/keep.txt'] = 'keep';
+  return files;
+}
+
+export function assetsExtraZip(): Buffer {
+  return zipFiles(cleanLandingFiles(true));
 }
 
 export function aioRow(input: {

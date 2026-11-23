@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { safeResolveUnderLanding, stripLandingCdnMacro } from '../static/landing-utils';
 import { transformHtml } from '../stand/transform';
+import { OUTLET_SITES, matchOutlet } from './outlets';
 
 export const MAX_PAGE_TEXT_CHARS = 200_000;
 export const MAX_AI_IMAGES = 8;
@@ -60,6 +61,8 @@ export interface AiMaterials {
 }
 
 const NAME_RE = /\p{Lu}\p{Ll}+(?:[-\s]+\p{Lu}\p{Ll}+){1,3}/u;
+/** News-brand stems. They are not given names or surnames: Noovo-Info stays off the person. */
+const OUTLET_BRAND_PART_RE = /^(?:info|infos|news|nieuws|tv|radio|online|media|press|noovo)$/iu;
 const SKIP_NAME_RE = /favicon|pixel|spacer|sprite|blank|logo|icon/i;
 // Whole class/id tokens only. A substring match treats "review" inside "preview" as a comment frame.
 const COMMENT_MARKER_TOKEN_RE = /^(?:comments?|reviews?|otzyvy?|отзывы?|feedback)$/iu;
@@ -410,7 +413,8 @@ function personKey(name: string): string {
 function personFromLand(landName: string): { name: string | null; outlet: string | null } {
   const raw = landName ?? '';
   if (!raw.includes('|')) {
-    return { name: NAME_RE.exec(collapse(raw.replace(/_/g, ' ')))?.[0] ?? null, outlet: null };
+    const normalized = collapse(raw.replace(/_/g, ' '));
+    return { name: personalName(NAME_RE.exec(normalized)?.[0] ?? null, normalized), outlet: null };
   }
   const segments = raw.split('|').map((segment) => collapse(segment.replace(/_/g, ' ')));
   let name: string | null = null;
@@ -418,10 +422,90 @@ function personFromLand(landName: string): { name: string | null; outlet: string
   for (let i = 0; i < segments.length; i += 1) {
     const match = NAME_RE.exec(segments[i])?.[0] ?? null;
     if (!match) continue;
-    name = match;
+    name = personalName(match, segments[i]);
     outlet = segments[i - 1] || null;
   }
   return { name, outlet };
+}
+
+/** Person from the land title: drop a catalog outlet, then a trailing brand that the catalog missed. */
+function personalName(match: string | null, context: string): string | null {
+  if (!match) return null;
+  let current = match.trim();
+  const listed = matchOutlet(context);
+  if (listed) {
+    const site = OUTLET_SITES.find((item) => item.name === listed.name);
+    const phrases = site ? [site.name, ...site.phrases, ...site.tokens] : [listed.name];
+    current = cutOutletEdges(current, phrases);
+  }
+  if (!current) return null;
+  return stripUnlistedBrandTail(current);
+}
+
+function cutOutletEdges(name: string, phrases: readonly string[]): string {
+  let current = name.trim();
+  const suffix = edgePhrase(current, phrases, 'end');
+  if (suffix) current = current.slice(0, current.length - suffix.length).trim();
+  const prefix = edgePhrase(current, phrases, 'start');
+  if (prefix) current = current.slice(prefix.length).trim();
+  return current;
+}
+
+function edgePhrase(name: string, phrases: readonly string[], edge: 'start' | 'end'): string | null {
+  const lowerHay = name.toLowerCase();
+  let best: string | null = null;
+  for (const phrase of phrases) {
+    const needle = phrase.trim();
+    if (!needle) continue;
+    const at = edge === 'start' ? 0 : name.length - needle.length;
+    if (at < 0 || lowerHay.slice(at, at + needle.length) !== needle.toLowerCase()) continue;
+    const boundary = edge === 'start' ? name[needle.length] : name[at - 1];
+    if (boundary && /[\p{L}\p{N}]/u.test(boundary)) continue;
+    if (!best || needle.length > best.length) best = name.slice(at, at + needle.length);
+  }
+  return best;
+}
+
+function isPersonalNamePart(part: string): boolean {
+  return /^\p{Lu}\p{Ll}+$/u.test(part) && !OUTLET_BRAND_PART_RE.test(part);
+}
+
+function looksLikePersonalNameWord(word: string): boolean {
+  const parts = word.split('-').filter(Boolean);
+  return parts.length > 0 && parts.length <= 4 && parts.every((part) => isPersonalNamePart(part));
+}
+
+/** Last one or two words that are a brand (Noovo, Info), not a given name or a surname. */
+function stripUnlistedBrandTail(name: string): string | null {
+  const words = name.split(/\s+/).filter(Boolean);
+  let dropped = 0;
+  while (words.length > 0 && dropped < 2) {
+    const last = words[words.length - 1] ?? '';
+    if (looksLikePersonalNameWord(last)) break;
+    const trimmed = trimBrandParts(last);
+    if (trimmed && trimmed !== last) {
+      words[words.length - 1] = trimmed;
+      dropped += 1;
+      continue;
+    }
+    words.pop();
+    dropped += 1;
+  }
+  if (!words.length || !words.some((word) => looksLikePersonalNameWord(word))) return null;
+  return words.join(' ');
+}
+
+function trimBrandParts(word: string): string | null {
+  const parts = word.split('-').filter(Boolean);
+  let end = parts.length;
+  let cut = 0;
+  while (end > 0 && cut < 2 && !isPersonalNamePart(parts[end - 1] ?? '')) {
+    end -= 1;
+    cut += 1;
+  }
+  if (end === parts.length) return word;
+  if (end === 0) return null;
+  return parts.slice(0, end).join('-');
 }
 
 function nameOccurs(text: string, name: string): boolean {
@@ -431,6 +515,14 @@ function nameOccurs(text: string, name: string): boolean {
   return new RegExp(`(?:^|[^\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, 'u').test(text);
 }
 
+/** Name words in order. A hyphen and a space are the same separator, and the whole string is not one includes. */
+function personMentioned(text: string, name: string): boolean {
+  const parts = tokens(name);
+  if (!parts.length || !text) return false;
+  const body = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s-]+');
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, 'iu').test(text);
+}
+
 function scanPerson(text: string, person: string | null, outlet: string | null): string | null {
   if (!text) return null;
   const re = new RegExp(NAME_RE.source, 'gu');
@@ -438,6 +530,9 @@ function scanPerson(text: string, person: string | null, outlet: string | null):
   let match: RegExpExecArray | null;
   while ((match = re.exec(text)) !== null) {
     const found = match[0];
+    // A run of title-case words is a menu (Nouvelles Vidéos Chroniques Régions), not a person.
+    if (found.split(/\s+/).filter(Boolean).length >= 4) continue;
+    if (!tokens(found).some((token) => isPersonalNamePart(token))) continue;
     const first = tokens(found)[0]?.toLowerCase() ?? '';
     // Outlet label plus section names (Index Zid Vijesti Sport) is not a person. Keep looking.
     if (outletKey && first === outletKey && !(person && personKey(found) === personKey(person))) continue;
@@ -609,10 +704,11 @@ function selectImages(landingFolder: string, cleaned: string, parsed: ParsedTags
   });
 
   const mentions = (candidate: Candidate): boolean =>
-    !!resolved && `${candidate.alt} ${candidate.caption} ${candidate.context}`.toLowerCase().includes(resolved.toLowerCase());
+    !!resolved && personMentioned(`${candidate.alt} ${candidate.caption} ${candidate.context}`, resolved);
   const content = candidates.filter((candidate) => candidate.kind === 'content');
   const comments = candidates.filter((candidate) => candidate.kind === 'comment');
-  const hero = content.find((candidate) => mentions(candidate)) ?? null;
+  const nearby = content.find((candidate) => mentions(candidate)) ?? null;
+  const hero = nearby ?? (resolved ? content[0] ?? null : null);
   const ordered = [
     ...content.filter(mentions),
     ...content.filter((candidate) => !mentions(candidate)),

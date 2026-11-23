@@ -205,6 +205,7 @@ export class ProgressComponent {
       ai: view.ai,
       ai_note: aiFailureNote(view.steps),
       lighthouse: view.lighthouse,
+      ai_profile: view.ai_profile,
     };
   }
 

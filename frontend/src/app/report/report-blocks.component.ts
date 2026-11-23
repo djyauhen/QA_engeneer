@@ -68,6 +68,16 @@ function text(value: unknown): string {
           <dd class="mono">{{ data().human_id }}</dd>
         </div>
       }
+      @if (data().ai_profile; as profile) {
+        <div>
+          <dt>Модель</dt>
+          <dd>{{ profile.label }}</dd>
+        </div>
+        <div>
+          <dt>Профиль</dt>
+          <dd class="mono">{{ profile.id }}</dd>
+        </div>
+      }
       @if (joinList(data().countries)) {
         <div>
           <dt>Страны</dt>

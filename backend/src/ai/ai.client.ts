@@ -46,6 +46,8 @@ const VISION_SYSTEM = [
   'Лица не видно — face_visible false и person_match uncertain.',
   'Фразу «без визуального осмотра» не пиши.',
   'Ответ — один JSON и ничего больше: {"observations":[{"ref":"","visible_text":"","visible_name":"","face_visible":false,"person_match":"match|mismatch|uncertain","note":""}]}',
+  'Видимый ответ — ровно один JSON-объект. Первый символ «{», последний «}». Без фразы перед объектом, без markdown-ограждения, без второго сообщения и без «сейчас проверю».',
+  'Не вызывай инструменты grep, read_file и monitor, чтобы заново читать кадры. Кадры уже приложены.',
 ].join('\n');
 
 export interface AiInput {
@@ -165,7 +167,7 @@ export class StubAiClient extends AiClient {
 }
 
 /** Official OpenAI types include reasoning_effort and omit DeepSeek thinking. */
-type DeepSeekChatRequest = OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
+export type DeepSeekChatRequest = OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
   thinking: { type: 'enabled' };
 };
 
@@ -173,7 +175,7 @@ export class DeepSeekAiClient extends AiClient {
   private readonly openai: OpenAI;
 
   constructor(
-    private readonly config: AppConfig,
+    protected readonly config: AppConfig,
     fetchImpl: typeof fetch = globalThis.fetch,
   ) {
     super();
@@ -239,9 +241,9 @@ export class DeepSeekAiClient extends AiClient {
           observations,
         );
         rememberSentRequest(trace, request, bundle.modelShots, 'category', category);
-        const completion = await this.openai.chat.completions.create(request, { timeout: CATEGORY_TIMEOUT_MS });
-        absorbUsage(usage, plainUsage(completion.usage));
-        const content = completion.choices[0]?.message?.content;
+        const completion = await this.complete(request);
+        absorbUsage(usage, completion.usage);
+        const content = completion.content;
         if (typeof content !== 'string' || !content.trim()) {
           lastDetail = 'empty';
           continue;
@@ -278,11 +280,9 @@ export class DeepSeekAiClient extends AiClient {
       try {
         const request = buildVisionRequest(bundle, labels, this.visionModel());
         rememberSentRequest(trace, request, bundle.modelShots, 'vision');
-        const completion = await this.openai.chat.completions.create(request, {
-          timeout: CATEGORY_TIMEOUT_MS,
-        });
-        absorbUsage(usage, plainUsage(completion.usage), false);
-        const content = completion.choices[0]?.message?.content;
+        const completion = await this.complete(request);
+        absorbUsage(usage, completion.usage, false);
+        const content = completion.content;
         if (typeof content !== 'string' || !content.trim()) {
           lastDetail = 'empty';
           continue;
@@ -296,11 +296,23 @@ export class DeepSeekAiClient extends AiClient {
     return [];
   }
 
-  private model(): string {
+  /** Chat completion. Grok Build replaces this with one CLI call and does not use the HTTP body. */
+  protected async complete(
+    request: DeepSeekChatRequest,
+  ): Promise<{ content: string; usage: Record<string, unknown> | null }> {
+    const completion = await this.openai.chat.completions.create(request, { timeout: CATEGORY_TIMEOUT_MS });
+    const content = completion.choices[0]?.message?.content;
+    return {
+      content: typeof content === 'string' ? content : '',
+      usage: plainUsage(completion.usage),
+    };
+  }
+
+  protected model(): string {
     return this.config.aiModel || DEFAULT_DEEPSEEK_MODEL;
   }
 
-  private visionModel(): string {
+  protected visionModel(): string {
     return this.config.aiVisionModel || DEFAULT_DEEPSEEK_VISION_MODEL;
   }
 }
@@ -314,7 +326,18 @@ function aiFailureLabel(error: unknown): string {
   if (!error || typeof error !== 'object') return name;
   const status =
     'status' in error && typeof error.status === 'number' ? ` HTTP ${error.status}` : '';
-  return `${name}${status}${safeCode(error)}`;
+  return `${name}${status}${safeCode(error)}${safeLogHint(error)}`;
+}
+
+/** Exit code and one already-sanitized stderr line. Anything else stays out of the log. */
+function safeLogHint(error: object): string {
+  if (!('logHint' in error) || typeof error.logHint !== 'string') return '';
+  const hint = error.logHint.replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!hint || hint.length > 220) return '';
+  if (/(?:^|\s)(?:-p|--system-prompt|--disallowed-tools|--cwd)\b/.test(hint)) return '';
+  if (/\b(?:sk|xai)-[A-Za-z0-9_-]{8,}\b|\bBearer\s+\S+/i.test(hint)) return '';
+  if (!/^(?:exit \d{1,3}|timeout)(?:: .+)?$/.test(hint)) return '';
+  return ` ${hint}`;
 }
 
 function safeCode(error: object): string {
@@ -579,7 +602,12 @@ function previewNote(bundle: ReviewBundle, category: number): string {
     return 'Кадры пункта 2 — кропы landing_header и landing_footer. Рядом outlet_header и outlet_footer, только если эти метки есть в attachments_order. Превью и desktop в пункт 2 не входят. Повторно сайт издания не открывай.';
   }
   if (category === 3) {
-    return 'Пункт 3 прикладывает не больше одного кадра контента: картинку, у которой в alt, подписи или соседнем тексте есть имя персонажа. Превью, футер и остальные картинки в этот вызов не входят. Ссылку сам не открывай. Сверь лицо, имя на картинке и подпись с персонажем из названия ленда только на этом кадре. Совпало лицо, имя на картинке и подпись — не ошибка. Кадр подан как он, а лицо или имя другие — FAIL. Лица не видно — clarifications, не FAIL. Если кадр не приложен, guest_refs оставь пустым.';
+    const labels = attachmentLabels(3, bundle.available, shotKinds(bundle));
+    const aside = 'Превью, футер и остальные картинки в этот вызов не входят. Ссылку сам не открывай.';
+    if (!labels.length) {
+      return `Пункт 3. Кадр не приложен, сверка не проводилась. ${aside} Сверь лицо и подпись только по кадру из attachments_order; здесь его нет. guest_refs оставь пустым.`;
+    }
+    return `Пункт 3 прикладывает один кадр контента ${labels[0]}: изображение человека из названия ленда, даже если имя не написано в alt. Сверь лицо и подпись. ${aside} Совпало лицо и подпись — не ошибка. Кадр подан как он, а лицо другое — FAIL. Лица не видно — clarifications, не FAIL.`;
   }
   if (category === 9) {
     return 'Пункт 9 прикладывает только картинки комментариев. Шапка, футер и превью в этот вызов не входят. Аватар — картинка рядом с именем. Картинка внутри текста комментария — вложение: это не второе фото этого имени и не аватар другого комментатора. Иллюстрации статьи — не аватары. Одно и то же фото у одного имени в нескольких комментариях — нормально. Явный конфликт пола аватара и имени — minor. Одно реальное фото у разных имён или одно имя с разными фото — major. Заглушка и невидимый аватар — не FAIL.';
@@ -652,10 +680,14 @@ function correspondenceNote(bundle: ReviewBundle, labels: string[]): string {
     );
   }
   const personName = bundle.input.person?.from_land_name?.trim() || bundle.input.person?.resolved?.trim() || '';
-  if (personName) {
-    const frame = claimed[0]?.ref ?? 'кадра с этим именем нет';
+  if (personName && labels.length) {
+    const frame = claimed[0]?.ref ?? labels[0];
     bits.push(
-      `Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text. Кадр пункта 3 — ${frame}. На картинках, которых в этом вызове нет, имя не ищи.`,
+      `Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text. Кадр пункта 3 — ${frame}: изображение этого человека, даже если имя не написано в alt. Сверь лицо и подпись. На картинках, которых в этом вызове нет, имя не ищи.`,
+    );
+  } else if (personName) {
+    bits.push(
+      `Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text. Кадр не приложен, сверка не проводилась.`,
     );
   }
   return bits.join('\n');
@@ -828,6 +860,41 @@ function takeLabel(
 
 function isDataImage(url: string): boolean {
   return /^data:image\/[^;,]+;base64,/i.test(url);
+}
+
+/** Text and JPEG bytes for one Grok Build call. The CLI prompt gets @names, not these bytes. */
+export function grokPromptParts(request: DeepSeekChatRequest): {
+  system: string;
+  text: string;
+  frames: Array<{ name: string; bytes: Buffer }>;
+} {
+  const system = systemText(messageContent(request, 0));
+  const userContent = messageContent(request, 1);
+  const text = textOf(userContent);
+  const kind: 'vision' | 'category' =
+    text.trimStart().startsWith('{') && /"labels"\s*:/.test(text) && !/"category"\s*:/.test(text) ? 'vision' : 'category';
+  const labels = declaredLabels(text, kind);
+  const urls = imageUrlsOf(userContent);
+  const frames: Array<{ name: string; bytes: Buffer }> = [];
+  const count = Math.min(labels.length, urls.length);
+  for (let index = 0; index < count; index += 1) {
+    const bytes = decodeDataImage(urls[index]);
+    if (!bytes?.length) continue;
+    frames.push({ name: frameFileName(labels[index], index), bytes });
+  }
+  return { system, text, frames };
+}
+
+function decodeDataImage(url: string | undefined): Buffer | null {
+  if (!url) return null;
+  const match = /^data:image\/[^;,]+;base64,([A-Za-z0-9+/=]+)$/i.exec(url);
+  if (!match) return null;
+  return Buffer.from(match[1], 'base64');
+}
+
+function frameFileName(label: string, index: number): string {
+  const safe = label.replace(/[^A-Za-z0-9_-]+/g, '').slice(0, 40);
+  return `${safe || `frame_${index + 1}`}.jpg`;
 }
 
 export function createAiClient(config: AppConfig): AiClient {

@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { disabledGrokProbe, GROK_PROBE } from '../src/ai/ai-profile';
 import { AiClient } from '../src/ai/ai.client';
 import { AioClient } from '../src/aio/aio.client';
 import { AppModule } from '../src/app.module';
@@ -34,6 +35,7 @@ export async function createTestApp(options?: {
   staticChecks?: StaticChecks;
   repos?: Repos;
   config?: Partial<AppConfig>;
+  grokProbe?: ReturnType<typeof disabledGrokProbe>;
 }): Promise<TestApp> {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-backend-'));
   const config: AppConfig = {
@@ -59,6 +61,7 @@ export async function createTestApp(options?: {
     aiApiKey: '',
     aiModel: 'deepseek-flash',
     aiVisionModel: 'deepseek-flash',
+    grokModel: 'grok-4.7',
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
     lighthouseNoSandbox: false,
@@ -87,7 +90,10 @@ export async function createTestApp(options?: {
   };
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule.register(runtime)],
-  }).compile();
+  })
+    .overrideProvider(GROK_PROBE)
+    .useValue(options?.grokProbe ?? disabledGrokProbe())
+    .compile();
   const app = moduleRef.createNestApplication();
   configureApp(app);
   await app.init();

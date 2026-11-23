@@ -1,7 +1,7 @@
 import { CatalogQuery } from '../catalog/catalog-query';
 import { AdminRules } from '../rules/rules';
 import { CatalogCard } from '../catalog/map-row';
-import { AiBlock, LighthouseBlock, ReportPayload, StaticBlock, StepSnapshot } from '../reports/report.types';
+import { AiBlock, AiProfileRef, LighthouseBlock, ReportPayload, StaticBlock, StepSnapshot } from '../reports/report.types';
 
 export interface StoredUser {
   login: string;
@@ -142,6 +142,8 @@ export interface ActiveCheckSnapshot {
   lander_type_name?: string;
   catalog_status?: string;
   previewToken?: string;
+  /** Missing on a snapshot written before model choice. Readers treat that as deepseek. */
+  ai_profile?: AiProfileRef;
 }
 
 export interface ActiveChecksRepo {

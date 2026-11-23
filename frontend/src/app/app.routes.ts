@@ -45,6 +45,11 @@ export function buildRoutes(role: Role | null): Routes {
         canActivate: [tlGuard],
         loadComponent: () => import('./pages/catalog-query.component').then((module) => module.CatalogQueryComponent),
       },
+      {
+        path: 'grok',
+        canActivate: [tlGuard],
+        loadComponent: () => import('./pages/grok.component').then((module) => module.GrokComponent),
+      },
     );
   }
   const home = role ? 'launch' : 'login';

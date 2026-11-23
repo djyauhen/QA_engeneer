@@ -37,6 +37,7 @@ import { ApiService } from '../core/api.service';
           <a routerLink="/config" routerLinkActive="active" ariaCurrentWhenActive="page">Конфиг</a>
           <a routerLink="/users" routerLinkActive="active" ariaCurrentWhenActive="page">Пользователи</a>
           <a routerLink="/catalog-query" routerLinkActive="active" ariaCurrentWhenActive="page">Каталог AIO</a>
+          <a routerLink="/grok" routerLinkActive="active" ariaCurrentWhenActive="page">Grok Build</a>
         }
         <button type="button" class="quiet logout" (click)="logout()">Выйти</button>
       </nav>

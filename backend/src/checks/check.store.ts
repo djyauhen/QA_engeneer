@@ -37,6 +37,10 @@ export class CheckStore implements OnModuleDestroy {
     this.continueListener = listener;
   }
 
+  flushed(id: string): Promise<void> {
+    return this.tails.get(id) ?? Promise.resolve();
+  }
+
   add(check: CheckRecord): void {
     let replaced = false;
     for (const existing of this.byId.values()) {

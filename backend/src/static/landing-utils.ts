@@ -1,6 +1,20 @@
 import fs from 'fs';
 import path from 'path';
 
+const LANDING_FOLDER_COUNT_ERROR = 'Ожидается одна папка с лендингом';
+const LANDING_FOLDER_READ_ERROR = 'Не удалось прочитать каталог';
+
+export function isLandingResolveError(text: string): boolean {
+  const parts = text
+    .split('; ')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  return (
+    parts.length > 0 &&
+    parts.every((part) => part.startsWith(LANDING_FOLDER_COUNT_ERROR) || part.startsWith(LANDING_FOLDER_READ_ERROR))
+  );
+}
+
 export function resolveLandingFolder(
   projectPath: string,
 ): { ok: true; landingFolder: string } | { ok: false; errors: string[] } {
@@ -8,7 +22,7 @@ export function resolveLandingFolder(
   try {
     items = fs.readdirSync(projectPath);
   } catch {
-    return { ok: false, errors: [`Не удалось прочитать каталог: ${projectPath}`] };
+    return { ok: false, errors: [`${LANDING_FOLDER_READ_ERROR}: ${projectPath}`] };
   }
   const folders = items.filter((item) => {
     try {
@@ -20,7 +34,7 @@ export function resolveLandingFolder(
   if (folders.length !== 1) {
     return {
       ok: false,
-      errors: [`Ожидается одна папка с лендингом в «${projectPath}», найдено подпапок: ${folders.length}`],
+      errors: [`${LANDING_FOLDER_COUNT_ERROR} в «${projectPath}», найдено подпапок: ${folders.length}`],
     };
   }
   return { ok: true, landingFolder: path.join(projectPath, folders[0]) };

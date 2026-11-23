@@ -3,8 +3,10 @@ import fs from 'fs';
 import path from 'path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AiCallError, AiClient, completeFindings } from '../ai/ai.client';
+import { GROK_PROBE, GrokProbe } from '../ai/ai-profile';
+import { GrokBuildAiClient } from '../ai/grok.client';
 import { AiMaterials, buildAiMaterials, pageTextForAi, readLandingIndexHtml } from '../ai/materials';
-import { loadFactSheet } from '../ai/facts';
+import { factSearchForCheck, loadFactSheet } from '../ai/facts';
 import { capturePreviewPage, captureQaSurfaces, OutletReferenceShots } from '../ai/outlet-capture';
 import { matchOutlet } from '../ai/outlets';
 import { QA_INSTRUCTION } from '../ai/qa-instruction';
@@ -39,6 +41,7 @@ import {
   failedSplitCheck,
   summarizeStatic,
 } from '../static/static-checks';
+import { isLandingResolveError } from '../static/landing-utils';
 import { captureStandJpeg, wantsVisualCapture } from '../stand/capture';
 import { resolveChromeExecutable } from '../stand/chrome-path';
 import { resolveStandFormHtml } from '../stand/form-html';
@@ -62,6 +65,7 @@ export class CheckOrchestrator {
     private readonly preview: PreviewService,
     @Inject(REPORTS_REPO) private readonly reports: ReportsRepo,
     @Inject(CHECK_ARCHIVES_REPO) private readonly archives: CheckArchivesRepo,
+    @Inject(GROK_PROBE) private readonly grokProbe: GrokProbe,
   ) {}
 
   async run(check: CheckRecord): Promise<void> {
@@ -365,17 +369,18 @@ export class CheckOrchestrator {
       materials = { ...materials, pageText: fallback.pageText, textTruncated: fallback.textTruncated };
     }
     const outlet = materials ? matchOutlet(`${check.card.name}\n${materials.pageText}`) : null;
-    const chromePath = this.config.aiMode === 'real' ? resolveChromeExecutable(this.config.visualChromePath) : '';
-    const factsPromise =
-      this.config.aiMode === 'real'
-        ? loadFactSheet({
-            person: materials?.person.resolved ?? null,
-            checkDate,
-            languages: check.card.languages,
-            countries: check.card.countries,
-            search: { baseUrl: this.config.aiBaseUrl, apiKey: this.config.aiApiKey },
-          })
-        : Promise.resolve(null);
+    const modelBrowser = this.config.aiMode === 'real' || check.aiProfile.id === 'grok';
+    const chromePath = modelBrowser ? resolveChromeExecutable(this.config.visualChromePath) : '';
+    const search = factSearchForCheck(this.config, check.aiProfile);
+    const factsPromise = search
+      ? loadFactSheet({
+          person: materials?.person.resolved ?? null,
+          checkDate,
+          languages: check.card.languages,
+          countries: check.card.countries,
+          search,
+        })
+      : Promise.resolve(null);
     let reference: OutletReferenceShots | null = null;
     let pageRendered = false;
     if (chromePath && (outlet || check.standUrl)) {
@@ -391,7 +396,7 @@ export class CheckOrchestrator {
         pageRendered = chosen.source === 'rendered';
       }
     }
-    if (this.config.aiMode === 'real' && !chromePath && (outlet || check.standUrl)) {
+    if (modelBrowser && !chromePath && (outlet || check.standUrl)) {
       this.logger.error('browser capture skipped: chrome not found');
     } else if (chromePath && check.standUrl && !pageRendered) {
       this.logger.error('rendered text capture failed');
@@ -402,7 +407,7 @@ export class CheckOrchestrator {
     }
     const landingPreviewUrl = await previewTask;
     this.throwIfAborted(check);
-    const previewPage = await this.captureLandingPreview(landingPreviewUrl, chromePath);
+    const previewPage = await this.captureLandingPreview(landingPreviewUrl, chromePath, modelBrowser);
     const previewText = previewPage.pageText.trim()
       ? pageTextForAi(rawHtml ?? '', formOptions, previewPage.pageText)
       : null;
@@ -423,7 +428,7 @@ export class CheckOrchestrator {
         const rules = await this.rules.current();
         const languages = effectiveLanguages(check.card.languages, rules);
         check.effectiveLanguages = languages;
-        return this.ai.review({
+        return this.reviewer(check).review({
           name: check.card.name,
           languages,
           countries: check.card.countries,
@@ -531,15 +536,21 @@ export class CheckOrchestrator {
     }
   }
 
+  private reviewer(check: CheckRecord): AiClient {
+    if (check.aiProfile.id !== 'grok') return this.ai;
+    return new GrokBuildAiClient(this.config, this.grokProbe.spawn, () => this.grokProbe.command());
+  }
+
   private async captureLandingPreview(
     url: string | null,
     aiChromePath: string,
+    modelBrowser: boolean,
   ): Promise<{ pageText: string; shots: Buffer[] }> {
     const empty = { pageText: '', shots: [] as Buffer[] };
     if (!url) return empty;
-    const wantsBrowser = this.config.aiMode === 'real' || this.config.visualMode === 'real';
+    const wantsBrowser = modelBrowser || this.config.visualMode === 'real';
     if (!wantsBrowser) return empty;
-    const chromePath = this.config.aiMode === 'real' ? aiChromePath : resolveChromeExecutable(this.config.visualChromePath);
+    const chromePath = modelBrowser ? aiChromePath : resolveChromeExecutable(this.config.visualChromePath);
     if (!chromePath) {
       this.logger.error('landing preview capture skipped: chrome not found');
       return empty;
@@ -616,6 +627,7 @@ export class CheckOrchestrator {
       lighthouse: check.lighthouseBlock,
       replaced_previous_stand: check.replaced_previous_stand,
       ...(check.aiRequests ? { ai_requests: check.aiRequests } : {}),
+      ai_profile: { id: check.aiProfile.id, label: check.aiProfile.label },
     });
     await this.reports.insert({
       id: check.id,
@@ -647,11 +659,18 @@ const PERMANENT_UNPACK_CODES = new Set(['EROFS', 'EPERM', 'EACCES', 'ENOSPC', 'E
 function blocksStaticGate(items: StaticItem[]): boolean {
   return items.some((entry) => {
     if (entry.status !== 'failed') return false;
-    if (entry.name !== STATIC_CHECK_NAMES.split) return true;
-    return entry.findings.some(
-      (finding) => finding.text !== MERGED_SPLIT_UNAVAILABLE && finding.text !== MERGED_SPLIT_UNPACK_FAILED,
-    );
+    if (entry.name === STATIC_CHECK_NAMES.structure) return false;
+    if (entry.name === STATIC_CHECK_NAMES.split) {
+      return entry.findings.some((finding) => splitFindingBlocks(finding.text));
+    }
+    if (entry.findings.length === 0) return true;
+    return entry.findings.some((finding) => !isLandingResolveError(finding.text));
   });
+}
+
+function splitFindingBlocks(text: string): boolean {
+  if (isLandingResolveError(text)) return false;
+  return text !== MERGED_SPLIT_UNAVAILABLE && text !== MERGED_SPLIT_UNPACK_FAILED;
 }
 
 function permanentUnpackError(error: unknown): boolean {

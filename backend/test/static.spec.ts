@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { defaultRules } from '../src/rules/rules';
-import { safeResolveUnderLanding } from '../src/static/landing-utils';
+import { isLandingResolveError, safeResolveUnderLanding } from '../src/static/landing-utils';
 import {
   EXPECTED_SVG_SCRIPT_SHA256,
   MERGED_SPLIT_UNAVAILABLE,
@@ -10,19 +10,123 @@ import {
   checkRequiredSplits,
   runStaticChecks,
 } from '../src/static/static-checks';
+import { cleanLandingFiles } from './fakes';
 import { configuredStandFormHtml, dialCodeForCountries, resolveStandFormHtml, standFormHtml } from '../src/stand/form-html';
 import { applyCdnMacro, rewriteCssAssets, stampCdnUrls, transformHtml } from '../src/stand/transform';
 
+const STATIC_RUN_ORDER = [
+  STATIC_CHECK_NAMES.structure,
+  STATIC_CHECK_NAMES.php,
+  STATIC_CHECK_NAMES.images,
+  STATIC_CHECK_NAMES.linked,
+  STATIC_CHECK_NAMES.external,
+  STATIC_CHECK_NAMES.dates,
+  STATIC_CHECK_NAMES.utf8,
+  STATIC_CHECK_NAMES.favicon,
+  STATIC_CHECK_NAMES.stealer,
+  STATIC_CHECK_NAMES.style,
+  STATIC_CHECK_NAMES.legacy,
+  STATIC_CHECK_NAMES.form,
+  STATIC_CHECK_NAMES.tracker,
+  STATIC_CHECK_NAMES.svg,
+  STATIC_CHECK_NAMES.cache,
+  STATIC_CHECK_NAMES.scripts,
+  STATIC_CHECK_NAMES.css,
+  STATIC_CHECK_NAMES.unwanted,
+  STATIC_CHECK_NAMES.base64,
+  STATIC_CHECK_NAMES.cdn,
+];
+
 describe('static checks', () => {
-  it('does not run later checks when structure fails', async () => {
+  it('still runs later checks when the landing folder cannot be resolved', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-static-'));
     fs.mkdirSync(path.join(root, 'one'));
     fs.mkdirSync(path.join(root, 'two'));
-    const items = await runStaticChecks(root, defaultRules());
-    expect(items).toHaveLength(1);
-    expect(items[0].name).toBe(STATIC_CHECK_NAMES.structure);
-    expect(items[0].status).toBe('failed');
-    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      const items = await runStaticChecks(root, defaultRules());
+      expect(items.map((item) => item.name)).toEqual(STATIC_RUN_ORDER);
+      expect(items[0].status).toBe('failed');
+      expect(items[0].findings[0]?.text.startsWith('Ожидается одна папка с лендингом')).toBe(true);
+      const php = items.find((item) => item.name === STATIC_CHECK_NAMES.php);
+      expect(php?.status).toBe('failed');
+      expect(php?.findings.every((finding) => finding.text.startsWith('Ожидается одна папка с лендингом'))).toBe(true);
+      const unread = await runStaticChecks(path.join(root, 'missing'), defaultRules());
+      expect(unread.map((item) => item.name)).toEqual(STATIC_RUN_ORDER);
+      expect(unread[0].status).toBe('failed');
+      expect(unread.find((item) => item.name === STATIC_CHECK_NAMES.php)?.findings[0]?.text.startsWith('Не удалось прочитать каталог')).toBe(
+        true,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still runs later checks when structure fails inside a resolved landing folder', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-static-'));
+    const landing = path.join(root, 'landing');
+    fs.mkdirSync(path.join(landing, 'css'), { recursive: true });
+    fs.writeFileSync(path.join(landing, 'index.html'), '<html></html>');
+    fs.writeFileSync(path.join(landing, 'favicon.ico'), 'ico');
+    fs.writeFileSync(path.join(landing, 'css', 'app.css'), 'body{}\n');
+    fs.writeFileSync(path.join(landing, 'notes.txt'), 'extra');
+    try {
+      const items = await runStaticChecks(root, defaultRules());
+      expect(items.map((item) => item.name)).toEqual(STATIC_RUN_ORDER);
+      expect(items[0].status).toBe('failed');
+      expect(items[0].findings.some((finding) => finding.text.includes('notes.txt'))).toBe(true);
+      const php = items.find((item) => item.name === STATIC_CHECK_NAMES.php);
+      expect(php?.status).toBe('passed');
+      expect(php?.findings ?? []).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still runs later checks when the landing root has an extra assets folder', async () => {
+    const plainRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-static-'));
+    const assetsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-static-'));
+    const write = (root: string, withAssets: boolean) => {
+      for (const [name, data] of Object.entries(cleanLandingFiles(withAssets))) {
+        const full = path.join(root, name);
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, data);
+      }
+    };
+    write(plainRoot, false);
+    write(assetsRoot, true);
+    try {
+      const rules = defaultRules();
+      const plain = await runStaticChecks(plainRoot, rules);
+      const withAssets = await runStaticChecks(assetsRoot, rules);
+      expect(withAssets.map((item) => item.name)).toEqual(STATIC_RUN_ORDER);
+      const structure = withAssets.find((item) => item.name === STATIC_CHECK_NAMES.structure);
+      expect(structure?.status).toBe('failed');
+      expect(structure?.findings.some((finding) => finding.text.includes('assets'))).toBe(true);
+      expect(plain.filter((item) => item.status === 'failed').map((item) => item.name)).toEqual([STATIC_CHECK_NAMES.svg]);
+      for (const item of withAssets) {
+        if (item.name === STATIC_CHECK_NAMES.structure) continue;
+        const other = plain.find((entry) => entry.name === item.name);
+        expect(item.status).toBe(other?.status);
+        expect(item.findings).toEqual(other?.findings ?? []);
+      }
+    } finally {
+      fs.rmSync(plainRoot, { recursive: true, force: true });
+      fs.rmSync(assetsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('treats only the landing-folder resolve messages as echoes', () => {
+    expect(isLandingResolveError('Ожидается одна папка с лендингом в «/tmp», найдено подпапок: 2')).toBe(true);
+    expect(isLandingResolveError('Не удалось прочитать каталог: /tmp/missing')).toBe(true);
+    expect(
+      isLandingResolveError(
+        'Не удалось прочитать каталог: /tmp/a; Ожидается одна папка с лендингом в «/tmp/b», найдено подпапок: 0',
+      ),
+    ).toBe(true);
+    expect(
+      isLandingResolveError('Ожидается одна папка с лендингом в «/tmp», найдено подпапок: 2; Не найден файл index.html или index.php'),
+    ).toBe(false);
+    expect(isLandingResolveError('index.html: обнаружены вставки PHP')).toBe(false);
   });
 
   it('uses the image and css thresholds from config and flags a disallowed external url', async () => {

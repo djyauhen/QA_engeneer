@@ -364,6 +364,22 @@ const SEARCH_TEXT_LIMIT = 128;
 const SEARCH_COUNT = 8;
 const SEARCH_TIMEOUT_MS = 10_000;
 
+/** Biography search stays on DeepSeek for every check profile, including Grok Build. */
+export function biographySearch(config: { aiBaseUrl: string; aiApiKey: string }): { baseUrl: string; apiKey: string } {
+  const baseUrl = config.aiBaseUrl.trim() || 'https://api.deepseek.com';
+  return { baseUrl: baseUrl.replace(/\/$/, ''), apiKey: config.aiApiKey };
+}
+
+/** Null when the DeepSeek key is not in use. The profile does not switch the host. */
+export function factSearchForCheck(
+  config: { aiMode: 'stub' | 'real'; aiBaseUrl: string; aiApiKey: string },
+  profile: { id: string },
+): { baseUrl: string; apiKey: string } | null {
+  if (config.aiMode !== 'real') return null;
+  if (profile.id !== 'deepseek' && profile.id !== 'grok') return null;
+  return biographySearch(config);
+}
+
 export async function loadFactSheet(
   options: FactLookup,
   fetchImpl: typeof fetch = globalThis.fetch,

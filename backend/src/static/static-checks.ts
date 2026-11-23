@@ -92,7 +92,6 @@ function toFinding(text: string): { text: string; file?: string } {
 
 export async function runStaticChecks(projectPath: string, rules: AdminRules): Promise<StaticItem[]> {
   const structure = await checkStructure(projectPath);
-  if (structure.status === 'failed') return [structure];
   const rest = await Promise.all([
     checkPhp(projectPath),
     checkImages(projectPath, rules),

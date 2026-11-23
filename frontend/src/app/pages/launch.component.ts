@@ -5,7 +5,7 @@ import { ApiService } from '../core/api.service';
 import { catalogSourceLine, normalizeCatalogQuery } from '../core/catalog-query';
 import { errorCode, errorText } from '../core/http-error';
 import { formatTimestamp, inputValue, joinList } from '../core/format';
-import { ROLE_TL, CATALOG_STATUS_CAPTION, COLLISION_TEXT, EMPTY_CATALOG, EMPTY_SEARCH, NOT_IN_CATALOG, PREVIEW_CAPTION, CatalogItem, CatalogPayload, CatalogQuery } from '../core/models';
+import { ROLE_TL, CATALOG_STATUS_CAPTION, COLLISION_TEXT, EMPTY_CATALOG, EMPTY_SEARCH, NOT_IN_CATALOG, PREVIEW_CAPTION, AiProfileChoice, CatalogItem, CatalogPayload, CatalogQuery } from '../core/models';
 import { SessionStore } from '../core/session.store';
 
 @Component({
@@ -33,6 +33,20 @@ import { SessionStore } from '../core/session.store';
       }
       <div class="spacer"></div>
       <div class="launch-actions">
+        <div class="field field-model">
+          <label for="ai-profile">Модель</label>
+          <select
+            id="ai-profile"
+            [value]="profileId()"
+            [disabled]="profiles().length === 0"
+            aria-describedby="model-status"
+            (change)="onProfile($event)"
+          >
+            @for (item of profiles(); track item.id) {
+              <option [value]="item.id">{{ item.label }}</option>
+            }
+          </select>
+        </div>
         <div class="field field-human">
           <label for="human-id">human_id</label>
           <input
@@ -44,9 +58,16 @@ import { SessionStore } from '../core/session.store';
             (input)="onHumanId($event)"
           />
         </div>
-        <button type="button" class="primary" (click)="launch()" [disabled]="launching()" [attr.aria-busy]="launching()">
+        <button
+          type="button"
+          class="primary"
+          (click)="launch()"
+          [disabled]="launching() || !profileId()"
+          [attr.aria-busy]="launching()"
+        >
           Запустить проверку
         </button>
+        <p id="model-status" class="hint">{{ modelStatus() }}</p>
         <p id="human-hint" class="hint">Идентификатор ленда из каталога</p>
       </div>
     </div>
@@ -173,6 +194,9 @@ export class LaunchComponent {
   readonly refreshedAt = signal<string | null>(null);
   readonly query = signal('');
   readonly humanId = signal('');
+  readonly profiles = signal<AiProfileChoice[]>([]);
+  readonly profileId = signal('');
+  readonly profilesLoaded = signal(false);
   readonly selected = signal<CatalogItem | null>(null);
   readonly loading = signal(true);
   readonly catalogLoaded = signal(false);
@@ -221,6 +245,14 @@ export class LaunchComponent {
 
   constructor() {
     this.load();
+    this.loadProfiles();
+  }
+
+  modelStatus(): string {
+    if (!this.profilesLoaded()) return 'Статус модели: загрузка';
+    const selected = this.profiles().find((item) => item.id === this.profileId());
+    if (!selected) return 'Статус модели: нет доступной';
+    return `Статус модели: ${selected.label}`;
   }
 
   load(): void {
@@ -262,7 +294,16 @@ export class LaunchComponent {
     if (this.launching()) return;
     this.launchError.set('');
     this.select(row);
+    if (!this.profileId()) {
+      this.launchError.set('Нет доступной модели');
+      return;
+    }
     this.post({ human_id: row.human_id, uuid: row.uuid });
+  }
+
+  onProfile(event: Event): void {
+    const value = inputValue(event);
+    if (this.profiles().some((item) => item.id === value)) this.profileId.set(value);
   }
 
   onHumanId(event: Event): void {
@@ -289,6 +330,10 @@ export class LaunchComponent {
   }
 
   launch(): void {
+    if (!this.profileId()) {
+      this.launchError.set('Нет доступной модели');
+      return;
+    }
     const typed = this.humanId();
     const selected = this.selected();
     this.launchError.set('');
@@ -351,9 +396,33 @@ export class LaunchComponent {
     this.refreshedAt.set(typeof refreshed === 'string' && refreshed.length > 0 ? refreshed : null);
   }
 
+  private loadProfiles(): void {
+    this.api.aiProfiles().subscribe({
+      next: (response) => this.applyProfiles(response.profiles ?? []),
+      error: () => this.applyProfiles([]),
+    });
+  }
+
+  private applyProfiles(items: AiProfileChoice[]): void {
+    this.profiles.set(items);
+    const current = this.profileId();
+    if (items.some((item) => item.id === current)) {
+      this.profilesLoaded.set(true);
+      return;
+    }
+    const deepseek = items.find((item) => item.id === 'deepseek');
+    this.profileId.set(deepseek?.id ?? items[0]?.id ?? '');
+    this.profilesLoaded.set(true);
+  }
+
   private post(body: { human_id: string; uuid?: string }): void {
+    const profile = this.profileId();
+    if (!profile) {
+      this.launchError.set('Нет доступной модели');
+      return;
+    }
     this.launching.set(true);
-    this.api.startCheck(body).subscribe({
+    this.api.startCheck({ ...body, ai_profile: profile }).subscribe({
       next: (response) => {
         this.launching.set(false);
         this.session.rememberCheck(response.check_id);

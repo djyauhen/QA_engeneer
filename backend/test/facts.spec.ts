@@ -1,7 +1,12 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { buildAiMaterials } from '../src/ai/materials';
 import {
   ageOn,
   isAllowedFactUrl,
   isPersonName,
+  factSearchForCheck,
   loadFactSheet,
   readBirth,
   readEntityIds,
@@ -797,6 +802,44 @@ describe('deepseek person search', () => {
     expect(open.sheet.person?.citizenship).toEqual([]);
   });
 
+  it('searches the personal name and the country, not the outlet tail', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-person-search-'));
+    try {
+      fs.writeFileSync(
+        path.join(dir, 'index.html'),
+        '<h1>Nouvelles Vidéos Chroniques Régions</h1><p>La chronique décrit un placement au Québec.</p>',
+      );
+      const person = buildAiMaterials(dir, 'Charles-Emond Noovo-Info', '2026-10-27').person.resolved;
+      expect(person).toBe('Charles-Emond');
+      const requests: Array<Record<string, unknown>> = [];
+      const urls: string[] = [];
+      const fetchImpl: typeof fetch = async (url, init) => {
+        const href = String(url);
+        urls.push(href);
+        if (href.includes('/tools/search')) {
+          requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          return factJson({ results: [] });
+        }
+        if (href.startsWith('https://api.frankfurter.app/')) return fxJson();
+        return new Response('no', { status: 404 });
+      };
+      await loadFactSheet(
+        { person, checkDate: '2026-10-27', countries: ['CA'], languages: ['fr'], search },
+        fetchImpl,
+      );
+      expect(requests).toHaveLength(1);
+      expectBiographyQuery(requests[0].query, { name: 'Charles-Emond', country: 'Canada' });
+      expect(String(requests[0].query)).not.toContain('Noovo-Info');
+      expect(String(requests[0].query)).not.toContain('Noovo');
+      expectBiographyQuestion(requests[0].ori_question, 'Charles-Emond');
+      expect(String(requests[0].ori_question)).not.toContain('Noovo');
+      expect(urls.some((href) => href.includes('Charles-Emond'))).toBe(true);
+      expect(urls.some((href) => href.includes('Noovo'))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('returns no hits on a client error without a second try and survives a thrown search', async () => {
     let calls = 0;
     const once: typeof fetch = async (url) => {
@@ -931,6 +974,44 @@ function deadFetch(time: string, precision = 11): typeof fetch {
 }
 
 type GeoMode = 'iso-beats-label' | 'label' | 'dial' | 'russian-name' | 'no-citizenship';
+
+describe('biography search stays on DeepSeek for a grok profile', () => {
+  it('posts /v1/tools/search to the DeepSeek base with the DeepSeek key', async () => {
+    const config = {
+      aiMode: 'real' as const,
+      aiBaseUrl: 'https://api.deepseek.com',
+      aiApiKey: 'deepseek-search-key',
+    };
+    const grok = factSearchForCheck(config, { id: 'grok' });
+    const deepseek = factSearchForCheck(config, { id: 'deepseek' });
+    expect(grok).toEqual(deepseek);
+    expect(grok).toEqual({ baseUrl: 'https://api.deepseek.com', apiKey: 'deepseek-search-key' });
+    expect(factSearchForCheck({ ...config, aiMode: 'stub' }, { id: 'grok' })).toBeNull();
+    const urls: string[] = [];
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const href = String(url);
+      urls.push(href);
+      if (href.includes('/tools/search')) {
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer deepseek-search-key');
+        expect(href).not.toContain('api.x.ai');
+        return factJson({ results: [] });
+      }
+      if (href.startsWith('https://api.frankfurter.app/')) return fxJson();
+      return new Response('no', { status: 404 });
+    };
+    await loadFactSheet(
+      {
+        person: 'Jan Kowalski',
+        checkDate: '2026-10-27',
+        countries: ['PL'],
+        search: grok,
+      },
+      fetchImpl,
+    );
+    expect(urls).toContain('https://api.deepseek.com/v1/tools/search');
+    expect(urls.join(' ')).not.toContain('api.x.ai');
+  });
+});
 
 function geoFetch(mode: GeoMode): typeof fetch {
   return async (url) => {
