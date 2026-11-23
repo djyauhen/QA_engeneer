@@ -79,12 +79,12 @@ describe('per-category prompts', () => {
     );
     expect(prompts[0]).not.toContain('ПРОВЕРКА ТЕЛЕФОННОГО КОДА');
     expect(prompts[1]).toContain('outlet_header');
-    expect(prompts[1]).toContain('Шапка ленда — landing_header, футер ленда — landing_footer.');
-    expect(prompts[1]).toContain('Сравни landing_header с outlet_header и landing_footer с outlet_footer.');
+    expect(prompts[1]).toContain('Шапка ленда — верхний срез страницы в первом сообщении, футер ленда — нижний срез.');
+    expect(prompts[1]).toContain('Сравни верхний срез страницы с outlet_header и нижний срез с outlet_footer.');
     expect(prompts[1]).not.toContain('первая метка preview');
     expect(prompts[1]).not.toContain('иначе текст page_text');
     expect(prompts[1]).toContain('отсутствие кадра ошибкой не считай');
-    expect(prompts[1]).toContain('Кадры приложены в этом вызове в порядке attachments_order, после текста.');
+    expect(prompts[1]).toContain('Пиксели уже в первом сообщении беседы, в этом сообщении кадры не повторяются.');
     expect(prompts[1]).toContain('visual_observations');
     expect(prompts[1]).not.toContain('вложенные кадры');
     expect(prompts[1]).toContain(OFFLINE_PHRASE[2]);
@@ -100,7 +100,7 @@ describe('per-category prompts', () => {
     expect(prompts[2]).toContain(OFFLINE_PHRASE[3]);
     expect(prompts[2]).toContain('guest_refs');
     expect(prompts[2]).toContain('visual_observations');
-    expect(prompts[2]).toContain('Кадры приложены в этом вызове в порядке attachments_order, после текста.');
+    expect(prompts[2]).toContain('Пиксели уже в первом сообщении беседы, в этом сообщении кадры не повторяются.');
     expect(prompts[2]).toContain('Возраст, пол и должность без карточки не подтверждай и не опровергай.');
     expect(prompts[2]).not.toContain('image_checks');
     expect(prompts[2]).toContain('Пустая карточка не запрещает');
@@ -119,46 +119,46 @@ describe('per-category prompts', () => {
     expect(prompts[4]).toContain('PLN');
     expect(prompts[4]).toContain('Разные валюты одного депозита на странице — FAIL.');
     expect(prompts[4]).not.toContain('185–215');
-    expect(prompts[4]).toContain('нарисованные на приложенном кадре контента');
+    expect(prompts[4]).toContain('написанные на срезе страницы в первом сообщении');
     expect(prompts[4]).toContain('упоминание этого факта');
     expect(prompts[4]).toContain('только валюту депозита');
     expect(prompts[4]).toContain('суди только по page_text');
     expect(prompts[4]).toContain('не выдумывай содержимое изображений');
-    expect(prompts[4]).toContain('Нет кадров контента у пункта 5');
+    expect(prompts[4]).toContain('Нет срезов страницы у пункта 5');
     expect(prompts[4]).toContain('screenshot_ref — короткая метка места на странице, не описание изображения, никогда не base64');
     expect(prompts[4]).not.toContain('метка из attachments_order');
-    expect(prompts[4]).toContain('Когда attachments_order не пуст, кадры контента приложены после текста');
+    expect(prompts[4]).toContain('Когда attachments_order не пуст, срезы страницы уже в первом сообщении');
     expect(prompts[4]).toContain('не переноси в пункт 10');
     expect(prompts[4]).toContain('не копируй сюда поиск противоречий');
     expect(prompts[4]).toContain('visual_observations');
     expect(prompts[5]).toContain('185–215');
     expect(prompts[5]).toContain('fx_rates');
     expect(prompts[5]).not.toContain('PLN');
-    expect(prompts[5]).toContain('нарисованные на приложенном кадре контента');
+    expect(prompts[5]).toContain('написанные на срезе страницы в первом сообщении');
     expect(prompts[5]).toContain('упоминание этого факта');
     expect(prompts[5]).toContain('только сумму депозита');
     expect(prompts[5]).toContain('суди только по page_text');
-    expect(prompts[5]).toContain('Нет кадров контента у пункта 6');
+    expect(prompts[5]).toContain('Нет срезов страницы у пункта 6');
     expect(prompts[5]).toContain('screenshot_ref — короткая метка места на странице, не описание изображения, никогда не base64');
     expect(prompts[5]).not.toContain('метка из attachments_order');
-    expect(prompts[5]).toContain('Когда attachments_order не пуст, кадры контента приложены после текста');
+    expect(prompts[5]).toContain('Когда attachments_order не пуст, срезы страницы уже в первом сообщении');
     expect(prompts[5]).toContain('не переноси в пункт 10');
     expect(prompts[6]).toContain('Quifix');
-    expect(prompts[6]).toContain('нарисованные на приложенном кадре контента');
+    expect(prompts[6]).toContain('написанные на срезе страницы в первом сообщении');
     expect(prompts[6]).toContain('упоминание этого факта');
     expect(prompts[6]).toContain('только название оффера');
     expect(prompts[6]).toContain('суди только по page_text');
-    expect(prompts[6]).toContain('Нет кадров контента у пункта 7');
+    expect(prompts[6]).toContain('Нет срезов страницы у пункта 7');
     expect(prompts[6]).toContain('screenshot_ref — короткая метка места на странице, не описание изображения, никогда не base64');
     expect(prompts[6]).not.toContain('метка из attachments_order');
-    expect(prompts[6]).toContain('Когда attachments_order не пуст, кадры контента приложены после текста');
+    expect(prompts[6]).toContain('Когда attachments_order не пуст, срезы страницы уже в первом сообщении');
     expect(prompts[6]).toContain('не переноси в пункт 10');
     for (const index of [0, 1, 2, 3, 7, 8, 9, 10]) {
-      expect(prompts[index]).not.toContain('нарисованные на приложенном кадре контента');
+      expect(prompts[index]).not.toContain('написанные на срезе страницы в первом сообщении');
     }
     expect(prompts[7]).toContain('check_date');
     expect(prompts[8]).toContain('Заглушка');
-    expect(prompts[8]).toContain('Кадры приложены в этом вызове в порядке attachments_order, после текста.');
+    expect(prompts[8]).toContain('Пиксели уже в первом сообщении беседы, в этом сообщении кадры не повторяются.');
     expect(prompts[8]).not.toContain('image_checks');
     expect(prompts[8]).not.toContain('Фото аватара сверь с родом имени.');
     expect(prompts[8]).not.toContain('соседних кадрах preview');
@@ -181,7 +181,7 @@ describe('per-category prompts', () => {
           'Категорию целиком не ставь N/A или FAIL только потому, что аватары не видны.',
         ].join('\n'),
         'Аватар комментатора — не главный персонаж статьи. Не переноси эту проверку в данные персонажа.',
-        'В пункт 9 входят только картинки комментариев. Шапка ленда, футер, превью, desktop и кадры статьи к этому вызову не приложены. Нет картинок комментариев — пикселей нет, пять критериев текста всё равно закрой по page_text.',
+        'В пункт 9 входят комментарии. Аватары смотри на срезах страницы в первом сообщении, отдельных файлов аватаров нет. Нет срезов страницы — пикселей нет, пять критериев текста всё равно закрой по page_text.',
       ]),
     );
     expect(prompts[9]).toContain('подпись');
@@ -189,7 +189,7 @@ describe('per-category prompts', () => {
       'Отдельную ошибку валюты против GEO, размера депозита или телефонного кода не дублируй, если части страницы друг другу не противоречат.',
     );
     expect(prompts[9]).not.toContain('курса или телефонного кода');
-    expect(prompts[9]).toContain('Кадры приложены в этом вызове в порядке attachments_order, после текста.');
+    expect(prompts[9]).toContain('Пиксели уже в первом сообщении беседы, в этом сообщении кадры не повторяются.');
     expect(prompts[0]).not.toContain('visual_observations');
     expect(prompts[3]).not.toContain('visual_observations');
     expect(prompts[10]).toContain('+48');
@@ -239,48 +239,28 @@ describe('per-category prompts', () => {
 });
 
 describe('vision attachments', () => {
-  it('sends header crops to point 2, the named hero to point 3, comment frames to point 9, and content frames to deposit and offer checks', () => {
+  it('cites page slices for vision items and adds outlet crops only on point 2', () => {
     expect(VISION_CATEGORIES).toEqual([2, 3, 5, 6, 7, 9, 10]);
+    const slices = ['preview', 'preview_2'];
     for (let category = 1; category <= 11; category += 1) {
       const labels = attachmentLabels(category, order, kinds);
-      if (category === 5 || category === 6 || category === 7) {
-        expect(categoryUsesVision(category)).toBe(true);
-        expect(labels).toEqual(['I1']);
+      if (categoryUsesVision(category)) {
+        expect(labels).toEqual(category === 2 ? [...slices, 'outlet_header', 'outlet_footer'] : slices);
       } else {
-        expect(labels.length > 0).toBe(categoryUsesVision(category));
+        expect(labels).toEqual([]);
       }
     }
-    expect(attachmentLabels(2, order, kinds)).toEqual(['landing_header', 'landing_footer', 'outlet_header', 'outlet_footer']);
-    expect(attachmentLabels(3, order, kinds)).toEqual(['I1']);
-    const several = ['desktop', 'preview', 'preview_2', 'landing_footer', 'I1', 'I2', 'I3', 'I4'];
-    expect(attachmentLabels(3, several, { content: ['I1', 'I2', 'I3'], comment: ['I4'], hero: 'I2' })).toEqual(['I2']);
-    expect(attachmentLabels(3, several, { content: ['I1', 'I2', 'I3'], comment: ['I4'], hero: null })).toEqual([]);
-    expect(attachmentLabels(3, several, { content: ['I1', 'I2', 'I3'], comment: ['I4'] })).toEqual([]);
-    expect(attachmentLabels(9, order, kinds)).toEqual(['I2']);
-    expect(attachmentLabels(9, order, { content: ['I1'], comment: [], hero: 'I1' })).toEqual([]);
-    expect(attachmentLabels(10, order, kinds)).toEqual(['desktop', 'preview', 'preview_2', 'landing_footer', 'I1', 'I2']);
     expect(attachmentLabels(2, ['landing_header', 'landing_footer', 'outlet_header', 'outlet_footer'], kinds)).toEqual([
-      'landing_header',
-      'landing_footer',
       'outlet_header',
       'outlet_footer',
     ]);
-    expect(attachmentLabels(2, ['preview', 'preview_2', 'desktop', 'I1'], kinds)).toEqual([]);
-    expect(attachmentLabels(5, order, kinds)).toEqual(['I1']);
-    expect(attachmentLabels(6, order, kinds)).toEqual(['I1']);
-    expect(attachmentLabels(7, order, kinds)).toEqual(['I1']);
-    expect(attachmentLabels(6, ['I2', 'desktop', 'preview', 'I1', 'I3'], { content: ['I1', 'I3'], comment: ['I2'] })).toEqual([
-      'I1',
-      'I3',
+    expect(attachmentLabels(2, ['preview', 'preview_2', 'desktop', 'I1'], kinds)).toEqual(['preview', 'preview_2']);
+    expect(attachmentLabels(3, order, kinds)).toEqual(slices);
+    expect(attachmentLabels(9, order, kinds)).toEqual(slices);
+    expect(attachmentLabels(10, order, kinds)).toEqual(slices);
+    expect(attachmentLabels(5, ['I2', 'desktop', 'preview', 'I1', 'I3'], { content: ['I1', 'I3'], comment: ['I2'] })).toEqual([
+      'preview',
     ]);
-    const commentOnly = { content: [], comment: ['I1', 'I2'] };
-    for (const category of [5, 6, 7]) {
-      expect(categoryUsesVision(category)).toBe(true);
-      expect(attachmentLabels(category, order, commentOnly)).toEqual([]);
-      expect(attachmentLabels(category, ['desktop', 'preview', 'landing_footer', 'outlet_header', 'outlet_footer'], kinds)).toEqual(
-        [],
-      );
-    }
     for (const category of [1, 4, 8, 11]) {
       expect(categoryUsesVision(category)).toBe(false);
       expect(attachmentLabels(category, order, kinds)).toEqual([]);

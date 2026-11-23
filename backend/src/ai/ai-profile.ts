@@ -68,20 +68,85 @@ export function grokSessionPresent(env: NodeJS.ProcessEnv = process.env, homedir
   }
 }
 
-export function findGrokCommand(env: NodeJS.ProcessEnv = process.env): string | null {
-  const pathValue = env.PATH ?? env.Path ?? '';
-  if (!pathValue) return null;
-  const dirs = pathValue.split(path.delimiter).filter((dir) => dir.length > 0);
-  const names = process.platform === 'win32' ? ['grok.exe', 'grok'] : ['grok'];
-  for (const name of names) {
-    for (const dir of dirs) {
-      const candidate = path.join(dir, name);
+function grokFileNames(): string[] {
+  return process.platform === 'win32' ? ['grok.exe', 'grok.cmd', 'grok'] : ['grok'];
+}
+
+function isFile(candidate: string): boolean {
+  try {
+    return fs.existsSync(candidate) && fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function shebangLine(candidate: string): string {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(candidate, 'r');
+    const buf = Buffer.alloc(128);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const text = buf.subarray(0, n).toString('utf8');
+    if (!text.startsWith('#!')) return '';
+    return text.split(/\r?\n/, 1)[0];
+  } catch {
+    return '';
+  } finally {
+    if (fd != null) {
       try {
-        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+        fs.closeSync(fd);
       } catch {
-        continue;
+        /* ignore */
       }
     }
+  }
+}
+
+/** Local and global npm cmd shims both point at the package's node entry. */
+function nodeEntryNearShim(shimPath: string): string | null {
+  const dir = path.dirname(shimPath);
+  const candidates = [
+    path.join(dir, '..', '@xai-official', 'grok', 'bin', 'grok'),
+    path.join(dir, 'node_modules', '@xai-official', 'grok', 'bin', 'grok'),
+  ];
+  for (const candidate of candidates) {
+    if (isFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+function launchPath(candidate: string): string | null {
+  if (!isFile(candidate)) return null;
+  if (process.platform === 'win32' && candidate.toLowerCase().endsWith('.cmd')) return nodeEntryNearShim(candidate);
+  if (process.platform === 'win32' && /\/bin\/(?:sh|bash)\b/.test(shebangLine(candidate))) return null;
+  return candidate;
+}
+
+function grokInDir(dir: string): string | null {
+  for (const name of grokFileNames()) {
+    const found = launchPath(path.join(dir, name));
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * Package install first (`node_modules/.bin`, then `@xai-official/grok/bin`), then PATH.
+ * The VPS unit runs `node dist/main.js` and does not put `node_modules/.bin` on PATH.
+ * `dist/ai` and `src/ai` are both two levels below `backend/`.
+ */
+export function findGrokCommand(
+  env: NodeJS.ProcessEnv = process.env,
+  localBinDir: string = path.join(__dirname, '..', '..', 'node_modules', '.bin'),
+): string | null {
+  const packaged = grokInDir(localBinDir) ?? grokInDir(path.join(localBinDir, '..', '@xai-official', 'grok', 'bin'));
+  if (packaged) return packaged;
+  const pathValue = env.PATH ?? env.Path ?? '';
+  if (!pathValue) return null;
+  for (const dir of pathValue.split(path.delimiter)) {
+    if (!dir) continue;
+    const found = grokInDir(dir);
+    if (found) return found;
   }
   return null;
 }

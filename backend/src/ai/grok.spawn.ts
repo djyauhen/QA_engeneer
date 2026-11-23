@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import fs from 'fs';
 import { CATEGORY_TIMEOUT_MS } from './ai.client';
 
 export interface GrokSpawnResult {
@@ -60,8 +61,14 @@ export const GROK_DISALLOWED_TOOLS = 'run_terminal_cmd,search_replace,write,grep
 const JSON_ONLY_LINE =
   'Видимый ответ — ровно один JSON-объект, он начинается с {, без предложения перед ним и без пересказа вызовов инструментов.';
 
-export function grokArgv(input: { prompt: string; model: string; cwd: string; system: string }): string[] {
-  return [
+export function grokArgv(input: {
+  prompt: string;
+  model: string;
+  cwd: string;
+  system: string;
+  resume?: string | null;
+}): string[] {
+  const args = [
     '--no-auto-update',
     '-p',
     input.prompt,
@@ -77,17 +84,23 @@ export function grokArgv(input: { prompt: string; model: string; cwd: string; sy
     '--cwd',
     input.cwd,
     '--system-prompt-override',
-    `${input.system}\n${JSON_ONLY_LINE}`,
+    input.resume ? JSON_ONLY_LINE : `${input.system}\n${JSON_ONLY_LINE}`,
     '--disallowed-tools',
     GROK_DISALLOWED_TOOLS,
     '--sandbox',
     'read-only',
   ];
+  if (input.resume) args.push('--resume', input.resume);
+  return args;
 }
 
-export function readGrokResult(stdout: string): { content: string; usage: Record<string, unknown> | null } {
+export function readGrokResult(stdout: string): {
+  content: string;
+  usage: Record<string, unknown> | null;
+  sessionId: string | null;
+} {
   const trimmed = stdout.trim();
-  if (!trimmed) return { content: '', usage: null };
+  if (!trimmed) return { content: '', usage: null, sessionId: null };
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
@@ -95,9 +108,10 @@ export function readGrokResult(stdout: string): { content: string; usage: Record
     throw new SyntaxError('invalid_json');
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new SyntaxError('invalid_json');
-  const record = parsed as { text?: unknown; usage?: unknown };
+  const record = parsed as { text?: unknown; usage?: unknown; sessionId?: unknown };
   const content = typeof record.text === 'string' ? checklistObjectText(record.text) : '';
-  return { content, usage: numericUsage(record.usage) };
+  const sessionId = typeof record.sessionId === 'string' && record.sessionId.trim() ? record.sessionId.trim() : null;
+  return { content, usage: numericUsage(record.usage), sessionId };
 }
 
 /**
@@ -182,13 +196,39 @@ export const spawnGrok: GrokSpawn = (command, args, options) =>
 export const spawnGrokLogin: GrokLoginSpawn = (command, args, emit) =>
   runProcess(command, args, { timeoutMs: LOGIN_TIMEOUT_MS, onText: emit }).then((result) => result.code);
 
+/** Windows cannot spawn a `#!/usr/bin/env node` entry. The native binary has no shebang and is spawned as-is. */
+function nodeShebang(command: string): boolean {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(command, 'r');
+    const buf = Buffer.alloc(128);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const text = buf.subarray(0, n).toString('utf8');
+    if (!text.startsWith('#!')) return false;
+    return /\bnode\b/.test(text.split(/\r?\n/, 1)[0]);
+  } catch {
+    return false;
+  } finally {
+    if (fd != null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
 function runProcess(
   command: string,
   args: readonly string[],
   options: { cwd?: string; timeoutMs: number; onText: ((text: string) => void) | null },
 ): Promise<GrokSpawnResult> {
+  const viaNode = nodeShebang(command);
+  const file = viaNode ? process.execPath : command;
+  const argv = viaNode ? [command, ...args] : [...args];
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(file, argv, {
       cwd: options.cwd,
       shell: false,
       windowsHide: true,

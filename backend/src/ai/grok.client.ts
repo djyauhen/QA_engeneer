@@ -1,15 +1,23 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { AppConfig } from '../config';
-import { AiInput, AiResult, CATEGORY_TIMEOUT_MS, DeepSeekAiClient, DeepSeekChatRequest, grokPromptParts } from './ai.client';
+import { AiCallError, AiInput, AiResult, CATEGORY_TIMEOUT_MS, DeepSeekAiClient, DeepSeekChatRequest, grokPromptParts } from './ai.client';
 import { DEFAULT_GROK_MODEL, findGrokCommand } from './ai-profile';
 import { grokArgv, grokLogHint, GrokSpawn, readGrokResult, spawnGrok } from './grok.spawn';
 
+interface GrokTurnState {
+  dir: string;
+  sessionId: string | null;
+  wroteFrames: boolean;
+}
+
+const grokTurn = new AsyncLocalStorage<GrokTurnState>();
+
 /**
- * Checklist call through the signed-in `grok` binary, spawned without a shell.
- * Frames are JPEG files in an empty temp directory, named in the prompt.
- * Four turns leave a turn to read an @file and still print the answer.
+ * One Grok Build session per review(). Frames are written once into that temp directory.
+ * The first spawn is a fresh -p. Later spawns --resume the sessionId from that stdout.
  */
 export class GrokBuildAiClient extends DeepSeekAiClient {
   constructor(
@@ -23,12 +31,23 @@ export class GrokBuildAiClient extends DeepSeekAiClient {
   }
 
   override async review(input: AiInput): Promise<AiResult> {
-    const result = await super.review(input);
-    if (!result.ai_requests) return result;
-    return {
-      ...result,
-      ai_requests: { shots: {}, calls: result.ai_requests.calls },
-    };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-grok-'));
+    const state: GrokTurnState = { dir, sessionId: null, wroteFrames: false };
+    try {
+      const result = await grokTurn.run(state, () => super.review(input));
+      if (!result.ai_requests) return result;
+      return {
+        ...result,
+        ai_requests: { shots: {}, calls: result.ai_requests.calls },
+      };
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  protected override afterTurn(): void {
+    const state = grokTurn.getStore();
+    if (state && !state.sessionId) throw new AiCallError('grok session: no sessionId');
   }
 
   protected override model(): string {
@@ -42,31 +61,32 @@ export class GrokBuildAiClient extends DeepSeekAiClient {
   protected override async complete(
     request: DeepSeekChatRequest,
   ): Promise<{ content: string; usage: Record<string, unknown> | null }> {
+    const state = grokTurn.getStore();
     const command = this.commandImpl();
-    if (!command) throw grokFailure('missing');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-grok-'));
-    try {
-      const parts = grokPromptParts(request);
+    if (!command || !state) throw grokFailure('missing');
+    const parts = grokPromptParts(request);
+    if (!state.wroteFrames && parts.frames.length) {
       for (const frame of parts.frames) {
-        fs.writeFileSync(path.join(dir, frame.name), frame.bytes);
+        fs.writeFileSync(path.join(state.dir, frame.name), frame.bytes);
       }
-      const mentions = parts.frames.map((frame) => `@${frame.name}`);
-      const prompt = mentions.length ? `${parts.text}\n${mentions.join('\n')}` : parts.text;
-      const args = grokArgv({ prompt, model: this.slug(), cwd: dir, system: parts.system });
-      const result = await this.spawnImpl(command, args, { cwd: dir, timeoutMs: CATEGORY_TIMEOUT_MS });
-      if (result.code !== 0) {
-        const recovered = readFinishedAnswer(result.stdout);
-        if (recovered) return recovered;
-        throw grokFailure(
-          result.code == null ? 'timeout' : 'exit',
-          result.code == null,
-          grokLogHint(result.code, result.stderr ?? ''),
-        );
-      }
-      return readGrokResult(result.stdout);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      state.wroteFrames = true;
     }
+    const resume = state.sessionId;
+    const mentions = resume ? [] : parts.frames.map((frame) => `@${frame.name}`);
+    const prompt = mentions.length ? `${parts.text}\n${mentions.join('\n')}` : parts.text;
+    const args = grokArgv({ prompt, model: this.slug(), cwd: state.dir, system: parts.system, resume });
+    const result = await this.spawnImpl(command, args, { cwd: state.dir, timeoutMs: CATEGORY_TIMEOUT_MS });
+    const parsed = result.code === 0 ? readGrokResult(result.stdout) : readFinishedAnswer(result.stdout);
+    if (!parsed) {
+      throw grokFailure(
+        result.code == null ? 'timeout' : 'exit',
+        result.code == null,
+        grokLogHint(result.code, result.stderr ?? ''),
+      );
+    }
+    if (!parsed.sessionId) throw new AiCallError('grok session: no sessionId');
+    state.sessionId = parsed.sessionId;
+    return { content: parsed.content, usage: parsed.usage };
   }
 
   private slug(): string {
@@ -78,7 +98,11 @@ export class GrokBuildAiClient extends DeepSeekAiClient {
  * A non-zero exit still counts when stdout is already the JSON answer wrapper.
  * Empty stdout and non-JSON stay a failure so the caller can log the exit.
  */
-function readFinishedAnswer(stdout: string): { content: string; usage: Record<string, unknown> | null } | null {
+function readFinishedAnswer(stdout: string): {
+  content: string;
+  usage: Record<string, unknown> | null;
+  sessionId: string | null;
+} | null {
   const trimmed = stdout.trim();
   if (!trimmed) return null;
   try {
