@@ -84,5 +84,6 @@ export function toBody(report: ReportPayload): ReportBody {
     ai: report.ai,
     ai_note: report.steps.find((step) => step.name === 'ai' && step.state === 'failed')?.message ?? '',
     lighthouse: report.lighthouse,
+    ai_profile: report.ai_profile,
   };
 }

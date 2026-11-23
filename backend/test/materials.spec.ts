@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { buildAiMaterials, MAX_PAGE_TEXT_CHARS } from '../src/ai/materials';
+import { attachmentLabels } from '../src/ai/qa-categories';
 import { QA_INSTRUCTION } from '../src/ai/qa-instruction';
 import { enforceCommentAvatars, enforceImageCorrespondence, mapQaResponse, stripOverallLine } from '../src/ai/qa-response';
 
@@ -191,6 +192,66 @@ describe('buildAiMaterials', () => {
     ]);
   });
 
+  it('claims the first content frame when the name is farther than 90 characters and the alt is empty', () => {
+    const gap = 'word '.repeat(40);
+    write(
+      'index.html',
+      `<h1>Georges Karam</h1><p>${gap}</p><img src="images/person.jpg" alt="">
+<div class="comments"><div class="comment"><img src="images/avatar.jpg" alt="Georges Karam"></div></div>`,
+    );
+    write('images/person.jpg', jpeg(3000, 1));
+    write('images/avatar.jpg', jpeg(3000, 2));
+    const result = buildAiMaterials(dir, 'FR_Georges_Karam', '2026-10-26');
+    expect(result.person).toMatchObject({ from_land_name: 'Georges Karam', resolved: 'Georges Karam' });
+    const hero = result.images.find((image) => image.claims_person);
+    expect(hero).toMatchObject({
+      file: 'images/person.jpg',
+      alt: '',
+      kind: 'content',
+      claims_person: 'Georges Karam',
+    });
+    expect(hero?.context.toLowerCase()).not.toContain('georges');
+    expect(result.images.filter((image) => image.kind === 'comment').map((image) => image.claims_person)).toEqual([null]);
+    const content = result.images.filter((image) => image.kind === 'content').map((image) => image.ref);
+    const comment = result.images.filter((image) => image.kind === 'comment').map((image) => image.ref);
+    const heroRef = result.images.find((image) => image.kind !== 'comment' && image.claims_person)?.ref ?? null;
+    expect(attachmentLabels(3, [...content, ...comment], { content, comment, hero: heroRef })).toEqual([heroRef]);
+  });
+
+  it('does not make a comment frame the hero when it is the only picture', () => {
+    write(
+      'index.html',
+      `<h1>Georges Karam</h1><div class="comments"><div class="comment"><img src="images/avatar.jpg" alt="Georges Karam"></div></div>`,
+    );
+    write('images/avatar.jpg', jpeg(3000, 2));
+    const result = buildAiMaterials(dir, 'FR_Georges_Karam', '2026-10-26');
+    expect(result.images.map((image) => [image.kind, image.claims_person])).toEqual([['comment', null]]);
+    const comment = result.images.map((image) => image.ref);
+    expect(attachmentLabels(3, comment, { content: [], comment, hero: null })).toEqual([]);
+  });
+
+  it('treats a hyphen and a space as the same name separator and still prefers the nearby frame', () => {
+    const gap = 'word '.repeat(40);
+    write(
+      'index.html',
+      `<h1>Georges Karam</h1><p>${gap}</p><img src="images/far.jpg" alt=""><p>${gap}</p><img src="images/near.jpg" alt="Georges-Karam">`,
+    );
+    write('images/far.jpg', jpeg(3000, 1));
+    write('images/near.jpg', jpeg(3000, 2));
+    const hyphenInAlt = buildAiMaterials(dir, 'FR_Georges_Karam', '2026-10-26');
+    expect(hyphenInAlt.person.resolved).toBe('Georges Karam');
+    expect(hyphenInAlt.images.filter((image) => image.claims_person).map((image) => image.file)).toEqual(['images/near.jpg']);
+
+    write(
+      'index.html',
+      `<h1>Georges Karam</h1><p>${gap}</p><img src="images/far.jpg" alt=""><p>${gap}</p><p>Georges Karam speaks</p><img src="images/near.jpg" alt="">`,
+    );
+    const spacedBeside = buildAiMaterials(dir, 'Georges-Karam', '2026-10-26');
+    expect(spacedBeside.person.resolved).toBe('Georges-Karam');
+    expect(spacedBeside.images.filter((image) => image.claims_person).map((image) => image.file)).toEqual(['images/near.jpg']);
+    expect(spacedBeside.images.find((image) => image.file === 'images/near.jpg')?.context).toContain('Georges Karam');
+  });
+
   it('does not invent a person: claims_person stays null and resolved is null', () => {
     write('index.html', '<p>lower case text only</p><img src="images/hero.jpg">');
     write('images/hero.jpg', jpeg(3000, 1));
@@ -230,6 +291,36 @@ describe('buildAiMaterials', () => {
     expect(result.person.from_page_text).toBe('Donald Tusk');
     expect(result.person.from_page_text).not.toBe('Index Josip Kelemen');
     expect(result.person.from_page_text?.startsWith('Index')).toBe(false);
+  });
+
+  it('cuts an outlet tail off the land title and does not take a four-word menu as the page person', () => {
+    write(
+      'index.html',
+      '<h1>Nouvelles Vidéos Chroniques Régions</h1><p>La chronique décrit un placement au Québec.</p>',
+    );
+    const result = buildAiMaterials(dir, 'Charles-Emond Noovo-Info', '2026-10-26');
+    expect(result.person).toEqual({
+      from_land_name: 'Charles-Emond',
+      from_page_text: null,
+      resolved: 'Charles-Emond',
+      conflict: false,
+    });
+  });
+
+  it('does not turn a four-word capitalized menu into the page person when the land names nobody', () => {
+    write('index.html', '<h1>Nouvelles Vidéos Chroniques Régions</h1><p>texte</p>');
+    const result = buildAiMaterials(dir, 'demo', '2026-10-26');
+    expect(result.person.from_page_text).toBeNull();
+    expect(result.person.resolved).toBeNull();
+    expect(result.person.conflict).toBe(false);
+  });
+
+  it('drops a catalog outlet glued after the person in the land title', () => {
+    write('index.html', '<p>texte</p>');
+    const result = buildAiMaterials(dir, 'Charles-Emond Le Monde', '2026-10-26');
+    expect(result.person.from_land_name).toBe('Charles-Emond');
+    expect(result.person.resolved).toBe('Charles-Emond');
+    expect(result.person.conflict).toBe(false);
   });
 
   it('falls back to the page text person when the land name has none', () => {

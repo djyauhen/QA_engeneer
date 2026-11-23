@@ -4,6 +4,7 @@ import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 import {
   AdminRules,
+  AiProfileChoice,
   CatalogPayload,
   CatalogQuery,
   CheckView,
@@ -46,8 +47,24 @@ export class ApiService {
     return this.http.put<CatalogQuery>(this.url('/admin/catalog-query'), body);
   }
 
-  startCheck(body: { human_id: string; uuid?: string }): Observable<{ check_id: string }> {
+  startCheck(body: { human_id: string; uuid?: string; ai_profile: string }): Observable<{ check_id: string }> {
     return this.http.post<{ check_id: string }>(this.url('/checks'), body);
+  }
+
+  aiProfiles(): Observable<{ profiles: AiProfileChoice[] }> {
+    return this.http.get<{ profiles: AiProfileChoice[] }>(this.url('/ai/profiles'));
+  }
+
+  grokStatus(): Observable<{ connected: boolean }> {
+    return this.http.get<{ connected: boolean }>(this.url('/admin/grok'));
+  }
+
+  grokLogin(): Observable<{ url: string; code: string }> {
+    return this.http.post<{ url: string; code: string }>(this.url('/admin/grok/login'), {});
+  }
+
+  grokLogout(): Observable<{ ok: true }> {
+    return this.http.post<{ ok: true }>(this.url('/admin/grok/logout'), {});
   }
 
   check(checkId: string): Observable<CheckView> {

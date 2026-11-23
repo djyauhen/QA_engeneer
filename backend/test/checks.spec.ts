@@ -7,10 +7,11 @@ import { AppConfig } from '../src/config';
 import { CheckStore } from '../src/checks/check.store';
 import { WorkdirService } from '../src/files/workdir.service';
 import { AioDownloadError } from '../src/aio/aio.client';
-import { MERGED_SPLIT_UNAVAILABLE, STATIC_CHECK_NAMES, StaticChecks } from '../src/static/static-checks';
+import { AdminRules } from '../src/rules/rules';
+import { MERGED_SPLIT_UNAVAILABLE, STATIC_CHECK_NAMES, StaticChecks, runStaticChecks } from '../src/static/static-checks';
 import { StaticItem } from '../src/reports/report.types';
 import { createTestApp, TestApp } from './app';
-import { FakeAio, aioRow, structureFailZip, structurePassZip, zipFiles } from './fakes';
+import { FakeAio, aioRow, assetsExtraZip, phpFailZip, structurePassZip, zipFiles } from './fakes';
 
 class PassedStatic extends StaticChecks {
   async run(): Promise<StaticItem[]> {
@@ -20,7 +21,46 @@ class PassedStatic extends StaticChecks {
 
 class FailedStatic extends StaticChecks {
   async run(): Promise<StaticItem[]> {
-    return [{ name: 'Проверка структуры', status: 'failed', findings: [{ text: 'вложенный каталог' }] }];
+    return [{ name: STATIC_CHECK_NAMES.php, status: 'failed', findings: [{ text: 'index.html: обнаружены вставки PHP' }] }];
+  }
+}
+
+class StructureOnlyStatic extends StaticChecks {
+  async run(): Promise<StaticItem[]> {
+    return Object.values(STATIC_CHECK_NAMES)
+      .filter((name) => name !== STATIC_CHECK_NAMES.split)
+      .map((name) =>
+        name === STATIC_CHECK_NAMES.structure
+          ? { name, status: 'failed' as const, findings: [{ text: 'Фавикон отсутствует в корне или в папках img/images.' }] }
+          : { name, status: 'passed' as const, findings: [] },
+      );
+  }
+}
+
+class UnresolvedFolderStatic extends StaticChecks {
+  async run(_projectPath: string, rules: AdminRules): Promise<StaticItem[]> {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-unresolved-'));
+    fs.mkdirSync(path.join(root, 'one'));
+    fs.mkdirSync(path.join(root, 'two'));
+    try {
+      return await runStaticChecks(root, rules);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+class EchoPlusPhpStatic extends StaticChecks {
+  async run(): Promise<StaticItem[]> {
+    const echo = 'Ожидается одна папка с лендингом в «x», найдено подпапок: 2';
+    return [
+      { name: STATIC_CHECK_NAMES.structure, status: 'failed', findings: [{ text: echo }] },
+      {
+        name: STATIC_CHECK_NAMES.php,
+        status: 'failed',
+        findings: [{ text: echo }, { text: 'index.html: обнаружены вставки PHP' }],
+      },
+    ];
   }
 }
 
@@ -59,7 +99,7 @@ describe('checks, stand, AI and lighthouse', () => {
   });
 
   it('stops AI until an explicit allow when a static item failed, and deny skips stand and lighthouse', async () => {
-    ctx.aio.zip = structureFailZip();
+    ctx.aio.zip = phpFailZip();
     const started = await request(http.getHttpServer())
       .post('/checks')
       .set('x-session-id', session)
@@ -68,10 +108,13 @@ describe('checks, stand, AI and lighthouse', () => {
     const waiting = await waitFor(http, session, started.body.check_id, (body) =>
       body.steps.some((step) => step.name === 'ai_gate' && step.state === 'waiting_user'),
     );
-    expect(waiting.static.items).toHaveLength(2);
-    expect(waiting.static.items[0].status).toBe('failed');
-    expect(waiting.static.items[1].name).toBe(STATIC_CHECK_NAMES.split);
-    expect(waiting.static.items[1].status).toBe('passed');
+    const structure = waiting.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.structure);
+    const php = waiting.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.php);
+    const split = waiting.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.split);
+    expect(structure.status).toBe('passed');
+    expect(php.status).toBe('failed');
+    expect(php.findings.some((finding: { text: string }) => finding.text.includes('PHP'))).toBe(true);
+    expect(split.status).toBe('passed');
     expect(waiting.ai.status).toBe('не запускался (ждут решения пользователя)');
     expect(ctx.ai.calls).toBe(0);
     expect(ctx.lighthouse.calls).toBe(0);
@@ -95,7 +138,7 @@ describe('checks, stand, AI and lighthouse', () => {
     expect(report.status).toBe(200);
     expect(report.body.ai.decision).toBe('deny');
     expect(report.body.ai.status).toBe('не запускался (ждут решения пользователя)');
-    expect(report.body.static.items).toHaveLength(2);
+    expect(report.body.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.php).status).toBe('failed');
     expect(report.body.verdict).toBeUndefined();
     expect(report.body.overall_status).toBeUndefined();
     expect(report.body.stand_url).toBeUndefined();
@@ -326,7 +369,7 @@ describe('checks, stand, AI and lighthouse', () => {
   });
 
   it('replaces only the same user unpacked directory', async () => {
-    ctx.aio.zip = structureFailZip();
+    ctx.aio.zip = phpFailZip();
     const first = await request(http.getHttpServer())
       .post('/checks')
       .set('x-session-id', session)
@@ -421,6 +464,116 @@ describe('checks, stand, AI and lighthouse', () => {
     expect(text).not.toContain('subtitle');
     expect(ctx.ai.calls).toBe(0);
     expect(waiting.steps.find((step: { name: string }) => step.name === 'download_file').state).toBe('done');
+  });
+
+  it('continues stand, AI and lighthouse when only the structure item failed', async () => {
+    await ctx.close();
+    ctx = await createTestApp({ staticChecks: new StructureOnlyStatic() });
+    http = ctx.app;
+    const login = await request(http.getHttpServer()).post('/session').send({ login: 'env-tl', password: 'env-tl-pass' });
+    session = login.body.session_id;
+    ctx.aio.rows = [aioRow({ human_id: '63', uuid: '11111111-1111-4111-8111-111111111163' })];
+    await request(http.getHttpServer()).post('/catalog/refresh').set('x-session-id', session);
+    ctx.aio.zip = structurePassZip();
+    const started = await request(http.getHttpServer())
+      .post('/checks')
+      .set('x-session-id', session)
+      .send({ human_id: '63' });
+    const done = await waitFor(http, session, started.body.check_id, (body) =>
+      body.steps.some((step) => step.name === 'report' && step.state === 'done'),
+    );
+    expect(done.steps.find((step: { name: string }) => step.name === 'ai_gate').state).toBe('done');
+    expect(done.steps.find((step: { name: string }) => step.name === 'stand').state).toBe('done');
+    expect(done.steps.find((step: { name: string }) => step.name === 'ai').state).toBe('done');
+    expect(done.steps.find((step: { name: string }) => step.name === 'lighthouse').state).toBe('done');
+    const structure = done.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.structure);
+    expect(structure.status).toBe('failed');
+    const rest = done.static.items.filter((item: { name: string }) => item.name !== STATIC_CHECK_NAMES.structure);
+    expect(rest.length).toBeGreaterThan(0);
+    expect(rest.every((item: { status: string }) => item.status === 'passed')).toBe(true);
+    expect(done.static.summary).toBe('есть failed');
+    expect(ctx.ai.calls).toBe(1);
+    expect(ctx.lighthouse.calls).toBe(2);
+  });
+
+  it('continues the pipeline when later static items only repeat the landing-folder error', async () => {
+    await ctx.close();
+    ctx = await createTestApp({ staticChecks: new UnresolvedFolderStatic() });
+    http = ctx.app;
+    const login = await request(http.getHttpServer()).post('/session').send({ login: 'env-tl', password: 'env-tl-pass' });
+    session = login.body.session_id;
+    ctx.aio.rows = [aioRow({ human_id: '64', uuid: '11111111-1111-4111-8111-111111111164' })];
+    await request(http.getHttpServer()).post('/catalog/refresh').set('x-session-id', session);
+    ctx.aio.zip = structurePassZip();
+    const started = await request(http.getHttpServer())
+      .post('/checks')
+      .set('x-session-id', session)
+      .send({ human_id: '64' });
+    const done = await waitFor(http, session, started.body.check_id, (body) =>
+      body.steps.some((step) => step.name === 'report' && step.state === 'done'),
+    );
+    expect(done.steps.find((step: { name: string }) => step.name === 'ai_gate').state).toBe('done');
+    expect(done.steps.find((step: { name: string }) => step.name === 'stand').state).toBe('done');
+    expect(done.steps.find((step: { name: string }) => step.name === 'ai').state).toBe('done');
+    expect(done.steps.find((step: { name: string }) => step.name === 'lighthouse').state).toBe('done');
+    const structure = done.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.structure);
+    const php = done.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.php);
+    expect(structure.status).toBe('failed');
+    expect(php.status).toBe('failed');
+    expect(php.findings.every((finding: { text: string }) => finding.text.startsWith('Ожидается одна папка с лендингом'))).toBe(true);
+    expect(ctx.ai.calls).toBe(1);
+    expect(ctx.lighthouse.calls).toBe(2);
+  });
+
+  it('still opens the AI gate when a later item has a real finding next to a resolve error', async () => {
+    await ctx.close();
+    ctx = await createTestApp({ staticChecks: new EchoPlusPhpStatic() });
+    http = ctx.app;
+    const login = await request(http.getHttpServer()).post('/session').send({ login: 'env-tl', password: 'env-tl-pass' });
+    session = login.body.session_id;
+    ctx.aio.rows = [aioRow({ human_id: '65', uuid: '11111111-1111-4111-8111-111111111165' })];
+    await request(http.getHttpServer()).post('/catalog/refresh').set('x-session-id', session);
+    const started = await request(http.getHttpServer())
+      .post('/checks')
+      .set('x-session-id', session)
+      .send({ human_id: '65' });
+    const waiting = await waitFor(http, session, started.body.check_id, (body) =>
+      body.steps.some((step) => step.name === 'ai_gate' && step.state === 'waiting_user'),
+    );
+    const structure = waiting.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.structure);
+    const php = waiting.static.items.find((item: { name: string }) => item.name === STATIC_CHECK_NAMES.php);
+    expect(structure.status).toBe('failed');
+    expect(php.status).toBe('failed');
+    expect(php.findings).toHaveLength(2);
+    expect(ctx.ai.calls).toBe(0);
+    expect(ctx.lighthouse.calls).toBe(0);
+    expect(waiting.steps.find((step: { name: string }) => step.name === 'stand').state).not.toBe('done');
+  });
+
+  it('runs the real static checker when structure fails on an extra assets folder', async () => {
+    ctx.aio.zip = assetsExtraZip();
+    const started = await request(http.getHttpServer())
+      .post('/checks')
+      .set('x-session-id', session)
+      .send({ human_id: '359226' });
+    expect(started.status).toBe(201);
+    const view = await waitFor(http, session, started.body.check_id, (body) =>
+      body.steps.some((step) => step.name === 'ai_gate' && (step.state === 'done' || step.state === 'waiting_user')),
+    );
+    const items = view.static.items as Array<{ name: string; status: string; findings: Array<{ text: string }> }>;
+    expect(items.map((item) => item.name)).toEqual(Object.values(STATIC_CHECK_NAMES));
+    const structure = items.find((item) => item.name === STATIC_CHECK_NAMES.structure);
+    expect(structure?.status).toBe('failed');
+    expect(structure?.findings.some((finding) => finding.text.includes('assets'))).toBe(true);
+    const independent = items.filter((item) => {
+      if (item.status !== 'failed' || item.name === STATIC_CHECK_NAMES.structure) return false;
+      return item.findings.some((finding) => !finding.text.includes('assets') || !finding.text.includes('лишние файлы или папки'));
+    });
+    expect(independent.map((item) => item.name)).toEqual([STATIC_CHECK_NAMES.svg]);
+    expect(view.steps.find((step: { name: string }) => step.name === 'stand').state).not.toBe('skipped');
+    expect(view.steps.find((step: { name: string }) => step.name === 'lighthouse').state).not.toBe('skipped');
+    expect(view.steps.find((step: { name: string }) => step.name === 'ai_gate').state).toBe('waiting_user');
+    expect(ctx.ai.calls).toBe(0);
   });
 });
 

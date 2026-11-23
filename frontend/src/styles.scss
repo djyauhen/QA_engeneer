@@ -236,6 +236,7 @@ textarea { min-height: 96px; resize: vertical; }
 .field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .field-search { width: 240px; }
 .field-human { width: 200px; }
+.field-model { width: 220px; }
 .field input, .field textarea { width: 100%; }
 .spacer { flex: 1; }
 .launch-actions {
@@ -763,6 +764,6 @@ app-requests {
   .login-card { width: min(400px, 100%); }
   .compare, .lh-groups, .preview-layout, .facts div, .report-head { grid-template-columns: 1fr; display: grid; }
   .report-date { margin-left: 0; }
-  .field-search, .field-human, .field input, form.stack input, form.stack textarea, .user-form input { width: 100%; max-width: none; }
+  .field-search, .field-human, .field-model, .field input, form.stack input, form.stack textarea, .user-form input { width: 100%; max-width: none; }
   .spacer { display: none; }
 }

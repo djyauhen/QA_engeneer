@@ -33,6 +33,7 @@ function config(overrides: Partial<AppConfig> = {}): AppConfig {
     aiApiKey: '',
     aiModel: 'deepseek-flash',
     aiVisionModel: 'deepseek-flash',
+    grokModel: 'grok-4.7',
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
     lighthouseNoSandbox: false,

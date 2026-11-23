@@ -44,6 +44,7 @@ function deepseekConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     aiApiKey: 'test-deepseek-placeholder',
     aiModel: DEFAULT_DEEPSEEK_MODEL,
     aiVisionModel: DEFAULT_DEEPSEEK_VISION_MODEL,
+    grokModel: 'grok-4.7',
     lighthouseMode: 'stub',
     lighthouseChromePath: '',
     lighthouseNoSandbox: false,
@@ -899,6 +900,9 @@ describe('DeepSeek chat completions client', () => {
     }
     expect(userJson(callText(calls, 2)).attachments_order).toEqual(['landing_footer', 'outlet_header', 'outlet_footer']);
     expect(userJson(callText(calls, 3)).attachments_order).toEqual(['I1']);
+    expect(callText(calls, 3)).toContain('даже если имя не написано в alt');
+    expect(callText(calls, 3)).toContain('Сверь лицо и подпись');
+    expect(callText(calls, 3)).not.toContain('Кадр не приложен, сверка не проводилась');
     expect(userJson(callText(calls, 9)).attachments_order).toEqual(['I2']);
     expect(userJson(callText(calls, 10)).attachments_order).toEqual(['desktop', 'preview', 'landing_footer', 'I1', 'I2']);
     const framesOf = (category: number): string[] => {
@@ -1387,6 +1391,7 @@ describe('DeepSeek chat completions client', () => {
     expect(userJson(callText(calls, 3)).attachments_order).toEqual([]);
     expect(callText(calls, 3)).not.toContain('Кадры превью приложены в этом вызове');
     expect(callText(calls, 3)).toContain('Сверь лицо');
+    expect(callText(calls, 3)).toContain('Кадр не приложен, сверка не проводилась');
     expect(categorySystemPrompt(3)).toContain('гостя интервью');
     expect(callText(calls, 3)).toContain('Ссылку сам не открывай');
     expect(result.findings).toEqual([

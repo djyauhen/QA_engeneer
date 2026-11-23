@@ -66,6 +66,14 @@ describe('per-category prompts', () => {
       expect(prompt).not.toContain('Этот вызов страницу не загружает');
     }
     expect(prompts[0]).toContain('язык основного текста');
+    expect(prompts[0]).toContain('Прочитай тело статьи в page_text');
+    expect(prompts[0]).toContain('заявленных countries и languages');
+    expect(prompts[0]).toContain('местные топонимы');
+    expect(prompts[0]).toContain('диакритика языка');
+    expect(prompts[0]).toContain(
+      'Текст статьи на другом языке или о другой стране без объяснения в самом тексте — FAIL, quote дословно из page_text.',
+    );
+    expect(prompts[0]).toContain('что текст статьи не оценивался');
     expect(prompts[0]).toContain(
       'Национальная валюта, телефонный код и название издания здесь только признаки страны. Не проверяй сумму депозита, оффер, даты, комментарии, шапку и существование телефонного номера.',
     );
@@ -80,6 +88,10 @@ describe('per-category prompts', () => {
     expect(prompts[1]).toContain('visual_observations');
     expect(prompts[1]).not.toContain('вложенные кадры');
     expect(prompts[1]).toContain(OFFLINE_PHRASE[2]);
+    expect(prompts[1]).toContain('Этот пункт не оценивает текст статьи, персонажа, депозит и комментарии.');
+    expect(prompts[1]).toContain('не копируй в note и clarifications');
+    expect(prompts[1]).toContain('это инструкция модели, не вывод для отчёта');
+    expect(prompts[1]).not.toContain('Не проверяй текст статьи, персонажа, депозит и комментарии.');
     expect(prompts[1]).not.toContain('Ссылку сам не открывай');
     expect(prompts[2]).toContain('fact_sheet.person');
     expect(prompts[2]).toContain('fact_sheet.person.extract');
@@ -94,6 +106,10 @@ describe('per-category prompts', () => {
     expect(prompts[2]).toContain('Пустая карточка не запрещает');
     expect(prompts[2]).toContain('не означает, что человека нет');
     expect(prompts[2]).toContain('гостя интервью');
+    expect(prompts[2]).toContain('даже если имя не написано в alt');
+    expect(prompts[2]).toContain('Сверь лицо и подпись');
+    expect(prompts[2]).toContain('Кадр не приложен, сверка не проводилась');
+    expect(prompts[2]).not.toContain('соседний текст содержит имя персонажа');
     expect(prompts[3]).toContain('Иностранное происхождение');
     expect(prompts[3]).toContain('Википедии или поиском до вызова');
     expect(prompts[3]).toContain('citizenship, description и extract');
@@ -204,11 +220,20 @@ describe('per-category prompts', () => {
   it('pins Russian notes once in every category prompt and leaves page quotes in the landing language', () => {
     const sentence =
       'Пиши по-русски note, clarifications, where, problem, expected и словесные значения general (страна, название языка, издание, человек, оффер), при этом quote оставляй дословной подстрокой page_text на исходном языке, а имена, суммы, коды валют и телефонные коды оставляй как на странице и сам лендинг не переводи.';
+    const visible =
+      'Видимый ответ — ровно один JSON-объект. Первый символ «{», последний «}». Без фразы перед объектом, без markdown-ограждения, без второго сообщения и без «сейчас проверю».';
+    const tools =
+      'Не вызывай инструменты grep, read_file и monitor, чтобы заново читать page_text или кадры. page_text уже в сообщении пользователя, кадры уже приложены.';
     for (let category = 1; category <= QA_CATEGORY_COUNT; category += 1) {
       const prompt = categorySystemPrompt(category);
       const at = prompt.indexOf(sentence);
       expect(at).toBe(prompt.lastIndexOf(sentence));
       expect(at).not.toBe(-1);
+      expect(prompt).toContain('Один JSON-объект и ничего больше. Другие пункты чеклиста не возвращай.');
+      expect(prompt).toContain('{"status":"PASS"|"FAIL"|"N/A"');
+      expect(prompt.indexOf(visible)).toBe(prompt.lastIndexOf(visible));
+      expect(prompt.endsWith(`${visible}\n${tools}`)).toBe(true);
+      expect(categorySystemMessage(category).endsWith(`${visible}\n${tools}`)).toBe(true);
     }
   });
 });

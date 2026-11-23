@@ -1,4 +1,5 @@
 import { DynamicModule, Module } from '@nestjs/common';
+import { AiProfilesModule } from './ai/ai-profiles.module';
 import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
 import { CatalogModule } from './catalog/catalog.module';
@@ -16,6 +17,7 @@ export class AppModule {
       module: AppModule,
       imports: [
         RuntimeModule.register(runtime),
+        AiProfilesModule,
         AuthModule,
         HealthModule,
         UsersModule,

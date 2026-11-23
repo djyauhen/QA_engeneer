@@ -7,7 +7,7 @@ export const NOT_IN_CATALOG = 'Этого human_id нет среди после�
 export const COLLISION_TEXT = 'Несколько записей с одним human_id. Выбор не делается. Скачивание не начато.';
 export const REPLACED_STAND = 'Предыдущий просмотр этого пользователя заменён.';
 export const AI_GATE_TEXT = 'Есть критичные находки статики (failed). ИИ сам не стартовал.';
-export const STRUCTURE_FAILED_TEXT = 'Проверка структуры не пройдена. Остальные статические пункты не запускались.';
+export const STRUCTURE_FAILED_TEXT = 'Проверка структуры не пройдена.';
 export const STRUCTURE_NAME = 'Проверка структуры';
 export const RECOMMENDATION = 'Отчёт рекомендательный. Решение принимаете вы.';
 export const NO_PREVIOUS = 'Прошлого отчёта этого human_id нет.';
@@ -184,6 +184,16 @@ export interface LighthouseBlock {
   desktop: LighthouseMetrics | null;
 }
 
+export interface AiProfileChoice {
+  id: string;
+  label: string;
+}
+
+export interface AiProfileRef {
+  id: string;
+  label: string;
+}
+
 export interface CheckView {
   check_id: string;
   human_id: string;
@@ -201,6 +211,7 @@ export interface CheckView {
   languages?: string[];
   lander_type_name?: string;
   catalog_status?: string;
+  ai_profile?: AiProfileRef;
 }
 
 export interface AiRequestCall {
@@ -233,6 +244,7 @@ export interface ReportPayload {
   lander_type_name?: string;
   status?: string;
   ai_requests?: AiRequests;
+  ai_profile?: AiProfileRef;
 }
 
 export interface ReportListItem {
@@ -284,6 +296,7 @@ export interface ReportBody {
   ai: AiBlock | null;
   ai_note?: string;
   lighthouse: LighthouseBlock | null;
+  ai_profile?: AiProfileRef;
 }
 
 export const LH_METRICS: Array<{ key: LighthouseMetricKey; label: string }> = [

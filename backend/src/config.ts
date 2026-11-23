@@ -33,6 +33,8 @@ export interface AppConfig {
   aiModel: string;
   /** Reads frames. Vision-category verdicts use aiVisionModel; text verdicts stay on aiModel. */
   aiVisionModel: string;
+  /** Grok Build slug for both text and frames. GROK_MODEL overrides the default grok-4.7. */
+  grokModel: string;
   lighthouseMode: 'stub' | 'real';
   lighthouseChromePath: string;
   lighthouseNoSandbox: boolean;
@@ -126,6 +128,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     aiApiKey: unwrapEnv(env.DEEPSEEK_API_KEY) || unwrapEnv(env.AI_API_KEY),
     aiModel: unwrapEnv(env.AI_MODEL) || 'deepseek-v4-pro',
     aiVisionModel: unwrapEnv(env.AI_VISION_MODEL) || 'deepseek-flash',
+    grokModel: unwrapEnv(env.GROK_MODEL) || 'grok-4.7',
     lighthouseMode: env.LIGHTHOUSE_MODE === 'real' ? 'real' : 'stub',
     lighthouseChromePath: lighthouseChromePath || visualChromePath || chromePath,
     lighthouseNoSandbox: env.LIGHTHOUSE_NO_SANDBOX === '1',

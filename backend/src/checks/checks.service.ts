@@ -7,6 +7,7 @@ import {
   NotFoundException,
   OnModuleInit,
 } from '@nestjs/common';
+import { AiProfilesService } from '../ai/ai-profiles.service';
 import { SessionUser } from '../config';
 import { CatalogService } from '../catalog/catalog.service';
 import { toChoiceRow } from '../catalog/map-row';
@@ -24,6 +25,7 @@ export class ChecksService implements OnModuleInit {
     private readonly catalog: CatalogService,
     private readonly store: CheckStore,
     private readonly orchestrator: CheckOrchestrator,
+    private readonly profiles: AiProfilesService,
     @Inject(ACTIVE_CHECKS_REPO) private readonly active: ActiveChecksRepo,
   ) {}
 
@@ -35,6 +37,7 @@ export class ChecksService implements OnModuleInit {
 
   async start(user: SessionUser, body: unknown): Promise<{ check_id: string }> {
     const input = parseStart(body);
+    const profile = this.profiles.choose(input.ai_profile);
     const resolved = await this.catalog.resolve(input.human_id, input.uuid);
     if (resolved.kind === 'collision') {
       throw new ConflictException({
@@ -56,10 +59,12 @@ export class ChecksService implements OnModuleInit {
       });
     }
     const check = new CheckRecord(user.login, user.role, resolved.card);
+    check.aiProfile = profile;
     const previous = await this.active.listByOwner(user.login);
     if (previous.length > 0) check.replaced_previous_stand = true;
     check.step('catalog', 'done');
     this.store.add(check);
+    await this.store.flushed(check.id);
     check.finished = this.orchestrator.run(check);
     return { check_id: check.id };
   }
@@ -174,7 +179,7 @@ export class ChecksService implements OnModuleInit {
   }
 }
 
-function parseStart(body: unknown): { human_id: string; uuid?: string } {
+function parseStart(body: unknown): { human_id: string; uuid?: string; ai_profile?: string } {
   if (!body || typeof body !== 'object') throw new BadRequestException({ error: 'Некорректный запрос' });
   const record = body as Record<string, unknown>;
   if (typeof record.human_id !== 'string' || !record.human_id) {
@@ -183,7 +188,18 @@ function parseStart(body: unknown): { human_id: string; uuid?: string } {
   if (record.uuid != null && (typeof record.uuid !== 'string' || !record.uuid)) {
     throw new BadRequestException({ error: 'Некорректный запрос' });
   }
-  return { human_id: record.human_id, uuid: typeof record.uuid === 'string' ? record.uuid : undefined };
+  let aiProfile: string | undefined;
+  if ('ai_profile' in record && record.ai_profile != null) {
+    if (typeof record.ai_profile !== 'string' || !record.ai_profile) {
+      throw new BadRequestException({ error: 'Некорректный запрос' });
+    }
+    aiProfile = record.ai_profile;
+  }
+  return {
+    human_id: record.human_id,
+    uuid: typeof record.uuid === 'string' ? record.uuid : undefined,
+    ai_profile: aiProfile,
+  };
 }
 
 function parseDecision(body: unknown): 'allow' | 'deny' {

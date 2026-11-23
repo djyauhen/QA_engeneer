@@ -1,7 +1,8 @@
 import { CatalogCard } from '../catalog/map-row';
 import { CheckRecord } from './check.record';
 import { ActiveCheckSnapshot } from '../storage/repos';
-import { AiBlock, LighthouseBlock, StaticBlock, StepSnapshot } from '../reports/report.types';
+import { profileFromSnapshot } from '../ai/ai-profile';
+import { AiBlock, AiProfileRef, LighthouseBlock, StaticBlock, StepSnapshot } from '../reports/report.types';
 
 export function toSnapshot(check: CheckRecord): ActiveCheckSnapshot {
   const snapshot: ActiveCheckSnapshot = {
@@ -31,6 +32,7 @@ export function toSnapshot(check: CheckRecord): ActiveCheckSnapshot {
     reportSaved: check.reportSaved,
     aborted: check.aborted,
     pendingDecision: null,
+    ai_profile: { id: check.aiProfile.id, label: check.aiProfile.label },
   };
   if (check.wantsClearPending()) {
     (snapshot as ActiveCheckSnapshot & { clearPending?: boolean }).clearPending = true;
@@ -56,6 +58,7 @@ export function viewFromParts(input: {
   languages?: string[];
   lander_type_name?: string;
   catalog_status?: string;
+  ai_profile?: AiProfileRef;
 }): Record<string, unknown> {
   const body: Record<string, unknown> = {
     check_id: input.id,
@@ -77,6 +80,7 @@ export function viewFromParts(input: {
   if (input.languages && input.languages.length > 0) body.languages = [...input.languages];
   if (input.lander_type_name) body.lander_type_name = input.lander_type_name;
   if (input.catalog_status) body.catalog_status = input.catalog_status;
+  body.ai_profile = input.ai_profile ?? { id: 'deepseek', label: 'DeepSeek' };
   const downloaded = input.steps.find((step) => step.name === 'download_file')?.state;
   if (downloaded === 'pending' || downloaded === 'running' || downloaded === 'retrying') {
     body.preview_image = input.preview_image;
@@ -104,6 +108,7 @@ export function viewFromRecord(check: CheckRecord): Record<string, unknown> {
     languages: check.card.languages,
     lander_type_name: check.card.lander_type_name,
     catalog_status: check.card.status,
+    ai_profile: check.aiProfile,
   });
 }
 
@@ -126,6 +131,7 @@ export function viewFromSnapshot(id: string, snapshot: ActiveCheckSnapshot): Rec
     languages: snapshot.languages,
     lander_type_name: snapshot.lander_type_name,
     catalog_status: snapshot.catalog_status,
+    ai_profile: profileFromSnapshot(snapshot),
   });
 }
 
@@ -166,6 +172,7 @@ export function recordFromSnapshot(id: string, snapshot: ActiveCheckSnapshot): C
   check.actionsAllowed = snapshot.actionsAllowed;
   check.reportSaved = snapshot.reportSaved;
   check.aborted = snapshot.aborted;
+  check.aiProfile = profileFromSnapshot(snapshot);
   return check;
 }
 

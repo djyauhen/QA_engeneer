@@ -56,6 +56,11 @@ export interface AiMeta {
   person_conflict?: boolean;
 }
 
+export interface AiProfileRef {
+  id: 'deepseek' | 'grok';
+  label: string;
+}
+
 export interface AiBlock {
   status: string;
   findings: AiFinding[];
@@ -122,4 +127,6 @@ export interface ReportPayload {
   lighthouse: LighthouseBlock | null;
   replaced_previous_stand: boolean;
   ai_requests?: AiRequests;
+  /** Model chosen before the check started. Absent on reports saved before profiles existed. */
+  ai_profile?: AiProfileRef;
 }
