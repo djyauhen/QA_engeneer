@@ -257,7 +257,7 @@ export interface AttachmentImageRefs {
 export function attachmentLabels(
   category: number,
   available: readonly string[],
-  _images: AttachmentImageRefs,
+  images: AttachmentImageRefs,
 ): string[] {
   if (!categoryUsesVision(category)) return [];
   const present = new Set(available);
@@ -265,6 +265,11 @@ export function attachmentLabels(
   if (category === 2) {
     if (present.has(OUTLET_HEADER_REF)) want.add(OUTLET_HEADER_REF);
     if (present.has(OUTLET_FOOTER_REF)) want.add(OUTLET_FOOTER_REF);
+  }
+  // Page slices win. With none, category 3 still attaches the hero content frame.
+  const hero = images.hero;
+  if (category === 3 && want.size === 0 && hero && present.has(hero) && images.content.includes(hero)) {
+    want.add(hero);
   }
   return available.filter((label) => want.has(label));
 }
