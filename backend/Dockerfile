@@ -26,11 +26,11 @@ WORKDIR /app
 ENV NODE_ENV=production \
     PUPPETEER_SKIP_DOWNLOAD=true \
     PUPPETEER_SKIP_CHROME_DOWNLOAD=true \
-    PUPPETEER_SKIP_CHROME_HEADLESS_SHELL_DOWNLOAD=true
+    PUPPETEER_SKIP_CHROME_HEADLESS_SHELL_DOWNLOAD=true \
+    PATH="/app/node_modules/.bin:${PATH}"
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev \
-    && npm install -g @xai-official/grok@1.0.92 \
     && grok --version \
     && npm cache clean --force \
     && mkdir -p /var/lib/qa/workdir /home/node/.grok \

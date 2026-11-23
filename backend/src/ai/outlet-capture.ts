@@ -143,8 +143,10 @@ async function capturePreviewOnce(executablePath: string, url: string): Promise<
       const scrollHeight = Math.max(VIEWPORT.height, Math.round(doc.height) || 0);
       const offsets = previewSliceOffsets(scrollHeight, VIEWPORT.height);
       const shots: Buffer[] = [];
-      for (const y of offsets) {
-        const height = Math.min(VIEWPORT.height, Math.max(24, scrollHeight - y));
+      for (let index = 0; index < offsets.length; index += 1) {
+        const y = offsets[index];
+        const next = index + 1 < offsets.length ? offsets[index + 1] : scrollHeight;
+        const height = Math.max(1, next - y);
         const shot = await page.screenshot({
           type: 'jpeg',
           quality: 60,

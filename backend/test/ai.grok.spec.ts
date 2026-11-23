@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { AiCallError } from '../src/ai/ai.client';
 import { GrokBuildAiClient } from '../src/ai/grok.client';
 import { GROK_DISALLOWED_TOOLS, grokLogHint } from '../src/ai/grok.spawn';
 import { AppConfig } from '../src/config';
@@ -63,14 +64,15 @@ describe('grok build profile', () => {
       grokConfig(grokModel),
       async (command, args, options) => {
         const cwd = options.cwd ?? '';
-        const file = path.join(cwd, 'desktop.jpg');
+        const file = path.join(cwd, 'preview.jpg');
         const hadJpeg = fs.existsSync(file);
         if (hadJpeg) {
           expect(fs.readFileSync(file).equals(jpeg)).toBe(true);
-          expect(args[args.indexOf('-p') + 1]).toContain('@desktop.jpg');
         }
-        seen.push({ command, args: [...args], cwd, hadJpeg });
         const prompt = args[args.indexOf('-p') + 1] ?? '';
+        if (prompt.includes('"labels"')) expect(prompt).toContain('@preview.jpg');
+        else expect(prompt).not.toContain('@preview.jpg');
+        seen.push({ command, args: [...args], cwd, hadJpeg });
         return {
           stdout: JSON.stringify({
             text: answerFor(prompt),
@@ -89,6 +91,7 @@ describe('grok build profile', () => {
       standUrl: null,
       files: [],
       screenshot: jpeg,
+      previewShots: [jpeg],
       checkDate: '2026-11-22',
     });
     return { seen, result };
@@ -99,7 +102,19 @@ describe('grok build profile', () => {
     expect(seen.length).toBeGreaterThan(1);
     expect(seen.some((call) => (call.args[call.args.indexOf('-p') + 1] ?? '').includes('"labels"'))).toBe(true);
     expect(seen.some((call) => (call.args[call.args.indexOf('-p') + 1] ?? '').includes('"category"'))).toBe(true);
-    expect(seen.some((call) => call.hadJpeg)).toBe(true);
+    expect(seen.every((call) => call.hadJpeg)).toBe(true);
+    expect(seen[0].args).not.toContain('--resume');
+    expect(seen[0].cwd).toBe(seen[1].cwd);
+    expect(fs.existsSync(path.join(seen[1].cwd, 'preview.jpg'))).toBe(false);
+    const resumed = seen.slice(1);
+    for (const call of resumed) {
+      expect(call.args[call.args.indexOf('--resume') + 1]).toBe('session-should-not-leak');
+      expect(call.cwd).toBe(seen[0].cwd);
+      const system = call.args[call.args.indexOf('--system-prompt-override') + 1] ?? '';
+      expect(system).not.toContain('ТВОЯ РОЛЬ');
+    }
+    const firstSystem = seen[0].args[seen[0].args.indexOf('--system-prompt-override') + 1] ?? '';
+    expect(firstSystem).toContain('ТВОЯ РОЛЬ');
     for (const call of seen) {
       expect(call.command).toBe('grok');
       expect(call.args[0]).toBe('--no-auto-update');
@@ -149,6 +164,7 @@ describe('grok build profile', () => {
         return {
           stdout: JSON.stringify({
             text: answerFor(prompt),
+            sessionId: 'kept-session',
             usage: { input_tokens: 3, output_tokens: 1 },
           }),
           stderr: 'Error: max turns reached',
@@ -171,26 +187,24 @@ describe('grok build profile', () => {
     expect(checks.every((check) => check.status === 'PASS' && check.note === 'ок')).toBe(true);
   });
 
-  it('still fails a non-zero exit when stdout is empty or not the JSON answer', async () => {
+  it('aborts the landing when grok never returns a session id', async () => {
     for (const stdout of ['', 'Error: max turns reached', '{"usage":{"input_tokens":1}}']) {
       const client = new GrokBuildAiClient(
         grokConfig(),
         async () => ({ stdout, stderr: 'Error: max turns reached', code: 1 }),
         () => 'grok',
       );
-      const result = await client.review({
-        name: 'Lander',
-        languages: ['ru'],
-        countries: ['PL'],
-        standUrl: null,
-        files: [],
-        screenshot: jpeg,
-        checkDate: '2026-11-22',
-      });
-      const checks = result.report?.checks ?? [];
-      expect(checks.length).toBeGreaterThan(0);
-      expect(checks.every((check) => check.status === 'GAP')).toBe(true);
-      expect(JSON.stringify(result)).not.toContain('"note":"ок"');
+      await expect(
+        client.review({
+          name: 'Lander',
+          languages: ['ru'],
+          countries: ['PL'],
+          standUrl: null,
+          files: [],
+          screenshot: jpeg,
+          checkDate: '2026-11-22',
+        }),
+      ).rejects.toBeInstanceOf(AiCallError);
     }
   });
 
@@ -214,7 +228,10 @@ describe('grok build profile', () => {
             shape === 'prose'
               ? `Проверяю поле телефона на лендинге и сверю международный код с GEO Канады.\n${body}`
               : body;
-          return { stdout: JSON.stringify({ text, usage: { input_tokens: 2, output_tokens: 1 } }), code: 0 };
+          return {
+            stdout: JSON.stringify({ text, sessionId: 'kept-session', usage: { input_tokens: 2, output_tokens: 1 } }),
+            code: 0,
+          };
         },
         () => 'grok',
       );
@@ -240,6 +257,7 @@ describe('grok build profile', () => {
       async () => ({
         stdout: JSON.stringify({
           text: 'Проверяю поле телефона на лендинге и сверю международный код с GEO Канады.',
+          sessionId: 'kept-session',
           usage: { input_tokens: 1, output_tokens: 1 },
         }),
         code: 0,

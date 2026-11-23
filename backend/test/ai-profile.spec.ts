@@ -55,10 +55,20 @@ describe('ai profile choice', () => {
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-grok-bin-'));
     const exe = path.join(bin, process.platform === 'win32' ? 'grok.exe' : 'grok');
     fs.writeFileSync(exe, '');
+    const absent = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-grok-absent-'));
+    const local = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-grok-local-'));
+    const localExe = path.join(local, process.platform === 'win32' ? 'grok.exe' : 'grok');
+    fs.writeFileSync(localExe, '');
     try {
       expect(grokSessionPresent({ GROK_HOME: home })).toBe(true);
       expect(grokSessionPresent({ GROK_HOME: path.join(home, 'missing') })).toBe(false);
-      expect(findGrokCommand({ PATH: bin, Path: bin })).toBe(exe);
+      const packaged = findGrokCommand({ PATH: '', Path: '' });
+      expect(packaged?.replace(/\\/g, '/')).toMatch(
+        /node_modules\/(?:\.bin\/grok(?:\.cmd)?|@xai-official\/grok\/bin\/grok)$/,
+      );
+      expect(findGrokCommand({ PATH: bin, Path: bin }, absent)).toBe(exe);
+      expect(findGrokCommand({ PATH: '', Path: '' }, absent)).toBeNull();
+      expect(findGrokCommand({ PATH: bin, Path: bin }, local)).toBe(localExe);
       const listed = listAiProfiles(
         { aiMode: 'stub', aiApiKey: '', grokModel: 'grok-4.7' },
         { command: true, session: true },
@@ -78,6 +88,8 @@ describe('ai profile choice', () => {
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
       fs.rmSync(bin, { recursive: true, force: true });
+      fs.rmSync(absent, { recursive: true, force: true });
+      fs.rmSync(local, { recursive: true, force: true });
     }
   });
 
