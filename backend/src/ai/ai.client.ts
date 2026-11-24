@@ -13,6 +13,7 @@ import {
   attachmentLabels,
   categorySystemPrompt,
   categoryUsesVision,
+  FRAME_TOOLS_LINE,
   mergeCategoryParts,
 } from './qa-categories';
 import {
@@ -34,19 +35,39 @@ export const DEEPSEEK_MAX_OUTPUT_TOKENS = 12288;
 /** One checklist item is one completion. A second try covers a timeout, an empty body, or a missing status. */
 export const CATEGORY_ATTEMPTS = 2;
 export const CATEGORY_TIMEOUT_MS = 120_000;
+/** Checklist points in flight at once. A point's own retries stay sequential. */
+export const DEEPSEEK_CATEGORY_CONCURRENCY = 4;
 
 const VISION_SYSTEM = [
   'Ты только глаза. Статус PASS, FAIL или N/A не ставь. Отчёт пункта не пиши.',
   'На каждый приложенный кадр — одна запись. ref обязателен и берётся только из labels. Порядок записей — как у кадров.',
   'visible_text — текст, который читается на кадре: шапка, плашка, форма, аватар. visible_name — имя, написанное на кадре. note — короткое наблюдение на русском, без вердикта.',
   'person_match — только про человека из main_person_name: match, mismatch или uncertain. Других людей не оценивай.',
-  'Имени нет — person_match не ставь и лицо не узнавай.',
-  'Лица не видно — face_visible false и person_match uncertain.',
+  'Если main_person_name задано, на каждом кадре, где видно лицо, ставь person_match против этого имени (match, mismatch или uncertain), даже когда имя не написано на пикселях. Лица не видно — face_visible false и person_match uncertain. Если main_person_name null, person_match не ставь.',
   'Фразу «без визуального осмотра» не пиши.',
-  'Ответ — один JSON и ничего больше: {"observations":[{"ref":"","visible_text":"","visible_name":"","face_visible":false,"person_match":"match|mismatch|uncertain","note":""}]}',
+  'Ответ — один JSON и ничего больше: {"observations":[{"ref":"preview_0","visible_text":"","visible_name":"","face_visible":false,"person_match":"uncertain","note":"лица не видно"}]}',
   'Видимый ответ — ровно один JSON-объект. Первый символ «{», последний «}». Без фразы перед объектом, без markdown-ограждения, без второго сообщения и без «сейчас проверю».',
-  'Не вызывай инструменты grep, read_file и monitor, чтобы заново читать кадры. Кадры уже приложены.',
+  FRAME_TOOLS_LINE,
 ].join('\n');
+
+/** Grok system file for the eye pass. DeepSeek still sends VISION_SYSTEM inside the user text. */
+export function grokVisionSystem(): string {
+  return [
+    'Ты только глаза. Статус PASS, FAIL или N/A не ставь. Отчёт пункта не пиши.',
+    'На каждый приложенный кадр — одна запись. ref обязателен и берётся только из labels. Порядок записей — как у кадров.',
+    'visible_text — текст, который читается на кадре: шапка, плашка, форма, аватар. visible_name — имя, написанное на кадре. note — короткое наблюдение на русском, без вердикта.',
+    'person_match — только про человека из main_person_name: match, mismatch или uncertain. Других людей не оценивай.',
+    'Если main_person_name задано, на каждом кадре, где видно лицо, ставь person_match против этого имени (match, mismatch или uncertain), даже когда имя не написано на пикселях. Лица не видно — face_visible false и person_match uncertain. Если main_person_name null, person_match не ставь.',
+    'Фразу «без визуального осмотра» не пиши.',
+    'Ответ — один JSON и ничего больше:',
+    '{"observations":[{"ref":"preview_0","visible_text":"","visible_name":"","face_visible":false,"person_match":"uncertain","note":"лица не видно"}]}',
+    'ref — только метка из labels. Если main_person_name null, поле person_match не включай.',
+    'Видимый ответ — ровно один JSON-объект. Первый символ {, последний }. После } ничего нет.',
+  ].join('\n');
+}
+
+const GROK_READ_FRAMES_LINE =
+  'Не вызывай grep, monitor и list_dir. page_text уже в этом промпте. Кадры — только строки в конце промпта, которые начинаются с @ и кончаются на .jpg. Метка в JSON — имя этого файла без @ и без .jpg. Каждую такую строку открой один раз через read_file и смотри как изображение. Каталог не листай, файлы без такой строки не открывай. Нет таких строк — пиксели не выдумывай. Пиксели не видны — кадр не выдумывай. В пункте статус N/A и эта фраза в note. В глазах статус не ставь: face_visible false и та же фраза в note записи.';
 
 export interface AiInput {
   /** Legacy file dump; no longer sent to the model (page_text replaces it). */
@@ -158,6 +179,10 @@ export class AiCallError extends Error {
   }
 }
 
+function isAiCallOrGrokSession(error: unknown): boolean {
+  return error instanceof AiCallError || (error instanceof Error && error.name === 'GrokSessionError');
+}
+
 export class StubAiClient extends AiClient {
   async review(): Promise<AiResult> {
     return { findings: [], usage: null, skipped: true };
@@ -174,6 +199,40 @@ type ChatContent =
   | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>;
 
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: ChatContent };
+
+function copyChatMessage(message: ChatMessage): ChatMessage {
+  if (typeof message.content === 'string') return { role: message.role, content: message.content };
+  return {
+    role: message.role,
+    content: message.content.map((part) =>
+      part.type === 'text'
+        ? { type: 'text', text: part.text }
+        : { type: 'image_url', image_url: { url: part.image_url.url } },
+    ),
+  };
+}
+
+/** A few workers share the list. Results stay in input order. One item occupies one worker until it settles. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const lanes = Math.max(1, Math.min(limit, items.length));
+  const runLane = async (): Promise<void> => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: lanes }, () => runLane()));
+  return results;
+}
 
 export class DeepSeekAiClient extends AiClient {
   private readonly openai: OpenAI;
@@ -219,35 +278,39 @@ export class DeepSeekAiClient extends AiClient {
         }
         this.afterTurn();
       }
-      const parts: CategoryPart[] = [];
-      for (const category of CATEGORIES) {
-        const user: ChatMessage = { role: 'user', content: categoryUserText(bundle, category, observations) };
-        const seen = await this.ask(messages, user, modelFor(category), usage, trace, bundle.modelShots, 'category', (content) => {
-          const parsed = parseJsonContent(content);
-          const labels = attachmentLabels(category, bundle.available, shotKinds(bundle));
-          const mapped = mapCategoryResponse(category, parsed, {
-            pageText: bundle.input.pageText,
-            screenshots: bundle.screenshots,
-            attachmentLabels: labels,
-          });
-          if (!mapped.accepted) return null;
-          const imageChecks =
-            category === 3 ? imageChecksFor(bundle, parsed, observations) : undefined;
-          return { raw: content, mapped, imageChecks };
-        }, category);
-        if (seen) {
-          messages.push(user, { role: 'assistant', content: seen.raw });
-          parts.push({
+      const parts = await mapWithConcurrency(CATEGORIES, this.categoryConcurrency(), async (category) => {
+        const history = messages.map(copyChatMessage);
+        const user = categoryUser(bundle, category, observations);
+        try {
+          const seen = await this.ask(history, user, modelFor(category), usage, trace, bundle.modelShots, 'category', (content) => {
+            const parsed = parseJsonContent(content);
+            const labels = attachmentLabels(category, bundle.available, shotKinds(bundle));
+            const mapped = mapCategoryResponse(category, parsed, {
+              pageText: bundle.input.pageText,
+              screenshots: bundle.screenshots,
+              attachmentLabels: labels,
+            });
+            if (!mapped.accepted) return null;
+            const imageChecks =
+              category === 3 ? imageChecksFor(bundle, parsed, observations) : undefined;
+            return { raw: content, mapped, imageChecks };
+          }, category);
+          if (!seen) return { category, accepted: false };
+          return {
             category,
             accepted: true,
             result: seen.mapped.result,
             ...(category === 3 ? { imageChecks: seen.imageChecks } : {}),
-          });
-        } else {
-          parts.push({ category, accepted: false });
+          };
+        } catch (error) {
+          if (!isAiCallOrGrokSession(error)) throw error;
+          const detail = error instanceof AiCallError ? error.detail : aiFailureLabel(error);
+          logAiFailure(`category ${category}: ${detail}`);
+          return { category, accepted: false };
+        } finally {
+          this.afterTurn();
         }
-        this.afterTurn();
-      }
+      });
       const parsed = mergeCategoryParts(parts, {
         pageText: input.pageText,
         screenshots: bundle.screenshots,
@@ -274,8 +337,13 @@ export class DeepSeekAiClient extends AiClient {
     }
   }
 
-  /** Grok overrides this once a turn has settled, so a missing session aborts the landing. */
+  /** Subclasses may observe a settled turn. Grok does not require a server session. */
   protected afterTurn(): void {}
+
+  /** Checklist points in flight. Grok overrides this; a point's retries stay inside ask(). */
+  protected categoryConcurrency(): number {
+    return DEEPSEEK_CATEGORY_CONCURRENCY;
+  }
 
   private async ask<T>(
     history: readonly ChatMessage[],
@@ -292,7 +360,7 @@ export class DeepSeekAiClient extends AiClient {
     const countCategory = kind === 'category';
     for (let attempt = 1; attempt <= CATEGORY_ATTEMPTS; attempt += 1) {
       try {
-        const request = chatRequest(model, [...history, user]);
+        const request = chatRequest(model, pixelsOnlyOnLastUser([...history, user]));
         rememberSentRequest(trace, request, modelShots, kind, category);
         const completion = await this.complete(request);
         absorbUsage(usage, completion.usage, countCategory);
@@ -308,8 +376,7 @@ export class DeepSeekAiClient extends AiClient {
         }
         return accepted;
       } catch (error) {
-        if (error instanceof AiCallError) throw error;
-        if (error instanceof Error && error.name === 'GrokSessionError') throw error;
+        if (isAiCallOrGrokSession(error)) throw error;
         lastDetail = error instanceof SyntaxError ? 'invalid_json' : aiFailureLabel(error);
       }
     }
@@ -317,7 +384,7 @@ export class DeepSeekAiClient extends AiClient {
     return null;
   }
 
-  /** Chat completion. Grok Build replaces this with one CLI call and does not use the HTTP body. */
+  /** Chat completion. Grok Build replaces this with one self-contained CLI call. */
   protected async complete(
     request: DeepSeekChatRequest,
   ): Promise<{ content: string; usage: Record<string, unknown> | null }> {
@@ -383,6 +450,7 @@ interface ReviewBundle {
   images: MaterialImage[];
   contentRefs: string[];
   commentRefs: string[];
+  proofRefs: string[];
   heroRef: string | null;
   landingHeader: Buffer | null;
   landingFooter: Buffer | null;
@@ -398,6 +466,7 @@ function buildBundle(input: AiInput): ReviewBundle {
   const previewShots = (input.previewShots ?? []).filter((item) => item.length > 0);
   const previewLabels = previewShotLabels(previewShots.length);
   const images = input.images ?? [];
+  const heroRef = images.find((image) => image.kind !== 'comment' && image.claims_person)?.ref ?? null;
   const landingHeader = input.landingHeader?.length ? input.landingHeader : null;
   const landingFooter = input.landingFooter?.length ? input.landingFooter : null;
   const outlet = input.outlet?.header.length && input.outlet.footer.length ? input.outlet : null;
@@ -410,7 +479,14 @@ function buildBundle(input: AiInput): ReviewBundle {
   if (landingFooter) screenshots[LANDING_FOOTER_REF] = desktopShotDataUrl(landingFooter);
   for (const image of images) screenshots[image.ref] = imageDataUrl(image);
   const modelShots: Record<string, string> = {};
-  for (const label of previewLabels) modelShots[label] = screenshots[label];
+  if (previewLabels.length) {
+    for (const label of previewLabels) modelShots[label] = screenshots[label];
+  } else if (shot) {
+    modelShots[DESKTOP_SHOT] = screenshots[DESKTOP_SHOT];
+  }
+  for (const image of images) {
+    if (screenshots[image.ref]) modelShots[image.ref] = screenshots[image.ref];
+  }
   if (outlet) {
     modelShots[OUTLET_HEADER_REF] = desktopShotDataUrl(outlet.header);
     modelShots[OUTLET_FOOTER_REF] = desktopShotDataUrl(outlet.footer);
@@ -422,8 +498,9 @@ function buildBundle(input: AiInput): ReviewBundle {
     previewLabels,
     images,
     contentRefs: images.filter((image) => image.kind !== 'comment').map((image) => image.ref),
-    commentRefs: images.filter((image) => image.kind === 'comment').map((image) => image.ref),
-    heroRef: images.find((image) => image.kind !== 'comment' && image.claims_person)?.ref ?? null,
+    commentRefs: images.filter((image) => image.kind === 'comment' && !image.proof).map((image) => image.ref),
+    proofRefs: images.filter((image) => image.proof).map((image) => image.ref),
+    heroRef,
     landingHeader,
     landingFooter,
     outlet,
@@ -467,8 +544,20 @@ function imageMeta(bundle: ReviewBundle): Array<Record<string, unknown>> {
 }
 
 function conversationFrames(bundle: ReviewBundle): string[] {
-  const labels = [...bundle.previewLabels];
-  if (bundle.outlet) labels.push(OUTLET_HEADER_REF, OUTLET_FOOTER_REF);
+  const labels: string[] = [];
+  if (bundle.previewLabels.length) {
+    for (const label of bundle.previewLabels) {
+      if (bundle.modelShots[label]) labels.push(label);
+    }
+  } else if (bundle.shot && bundle.modelShots[DESKTOP_SHOT]) {
+    labels.push(DESKTOP_SHOT);
+  }
+  for (const image of bundle.images) {
+    if (bundle.modelShots[image.ref]) labels.push(image.ref);
+  }
+  if (bundle.outlet && bundle.modelShots[OUTLET_HEADER_REF] && bundle.modelShots[OUTLET_FOOTER_REF]) {
+    labels.push(OUTLET_HEADER_REF, OUTLET_FOOTER_REF);
+  }
   return labels;
 }
 
@@ -487,7 +576,7 @@ function visionUser(bundle: ReviewBundle, labels: readonly string[]): ChatMessag
       images: imageMeta(bundle),
     }),
     VISION_SYSTEM,
-    'Кадры приложены в порядке labels и покрывают всю высоту страницы сверху вниз. outlet_header и outlet_footer — чужой сайт, только если эти метки есть. Верни observations только по этим меткам.',
+    visionFrameLine(labels),
   ].join('\n');
   return {
     role: 'user',
@@ -497,6 +586,41 @@ function visionUser(bundle: ReviewBundle, labels: readonly string[]): ChatMessag
         type: 'image_url' as const,
         image_url: { url: bundle.modelShots[label] },
       })),
+    ],
+  };
+}
+
+function visionFrameLine(labels: readonly string[]): string {
+  const page = labels.filter((label) => label !== OUTLET_HEADER_REF && label !== OUTLET_FOOTER_REF);
+  const outlet = `outlet_header и outlet_footer — чужой сайт, только если эти метки есть. Верни observations только по этим меткам.`;
+  if (page.length > 0 && page.every(isPreviewLabel)) {
+    return `Кадры приложены в порядке labels и покрывают всю высоту страницы сверху вниз. ${outlet}`;
+  }
+  const slices = page.filter(isPreviewLabel);
+  if (slices.length > 0) {
+    const rest = page.filter((label) => !isPreviewLabel(label));
+    return `Кадры приложены в порядке labels. Срезы ${slices.join(', ')} покрывают всю высоту страницы сверху вниз. ${rest.join(', ')} — фото, приложенное следом. ${outlet}`;
+  }
+  return `Приложенные файлы — метки этого сообщения, по порядку (${labels.join(', ')}). ${outlet}`;
+}
+
+function categoryUser(
+  bundle: ReviewBundle,
+  category: number,
+  observations: readonly VisualObservation[],
+): ChatMessage {
+  const text = categoryUserText(bundle, category, observations);
+  const labels = attachmentLabels(category, bundle.available, shotKinds(bundle));
+  if (!categoryUsesVision(category) || !labels.length) return { role: 'user', content: text };
+  return {
+    role: 'user',
+    content: [
+      { type: 'text', text },
+      ...labels.flatMap((label) => {
+        const url = bundle.modelShots[label];
+        if (!url) return [];
+        return [{ type: 'image_url' as const, image_url: { url } }];
+      }),
     ],
   };
 }
@@ -538,8 +662,8 @@ function celebrityName(person: AiInput['person']): string {
   return person?.from_land_name?.trim() || person?.resolved?.trim() || '';
 }
 
-function shotKinds(bundle: ReviewBundle): { content: string[]; comment: string[]; hero: string | null } {
-  return { content: bundle.contentRefs, comment: bundle.commentRefs, hero: bundle.heroRef };
+function shotKinds(bundle: ReviewBundle): { content: string[]; comment: string[]; proof: string[]; hero: string | null } {
+  return { content: bundle.contentRefs, comment: bundle.commentRefs, proof: bundle.proofRefs, hero: bundle.heroRef };
 }
 
 function observationsFor(labels: readonly string[], observations: readonly VisualObservation[]): VisualObservation[] {
@@ -558,11 +682,12 @@ function isPreviewLabel(label: string): boolean {
 
 function imageChecksFor(bundle: ReviewBundle, parsed: unknown, observations: readonly VisualObservation[]) {
   const labels = attachmentLabels(3, bundle.available, shotKinds(bundle));
+  const content = new Set(bundle.contentRefs);
   const checks = imageChecksFromObservations({
     observations,
     guestRefs: readGuestRefs(parsed),
     celebrityName: celebrityName(bundle.input.person),
-    claimedRefs: [],
+    claimedRefs: labels.filter((label) => content.has(label)),
     previewRefs: labels.filter(isPreviewLabel),
   });
   const hero = bundle.images.find((image) => image.kind !== 'comment' && image.claims_person);
@@ -574,8 +699,8 @@ function imageChecksFor(bundle: ReviewBundle, parsed: unknown, observations: rea
 }
 
 function categoryNotes(bundle: ReviewBundle, category: number, labels: string[]): string[] {
-  const notes = [attachmentNote(category, labels), previewNote(bundle, category), renderedNote(bundle.input)];
-  if (category === 2) notes.push(outletNote(bundle));
+  const notes = [attachmentNote(category, labels), previewNote(bundle, category, labels), renderedNote(bundle.input)];
+  if (category === 2) notes.push(outletNote(bundle, labels));
   const facts = factNote(bundle, category);
   if (facts) notes.push(facts);
   if (category === 3) notes.push(correspondenceNote(bundle, labels));
@@ -584,39 +709,68 @@ function categoryNotes(bundle: ReviewBundle, category: number, labels: string[])
 }
 
 function attachmentNote(category: number, labels: string[]): string {
+  if (!categoryUsesVision(category)) {
+    return `Пункт ${category} судит page_text. Кадры к этому пункту не приложены. Визуальный FAIL не ставь и не пиши, что изображения не были предоставлены.`;
+  }
   if (!labels.length) {
-    return 'Срезов страницы в этой беседе нет. Суди только по page_text и не выдумывай содержимое изображений, в screenshot_ref ставь короткую метку места на странице.';
+    return `Пункт ${category}. У этого вызова кадров нет. Суди page_text и не выдумывай содержимое изображений, в screenshot_ref ставь короткую метку места на странице.`;
   }
   const refs = `В screenshot_ref ставь только метку из этого списка. ${OUTLET_HEADER_REF} и ${OUTLET_FOOTER_REF} в screenshot_ref не ставь, никогда не base64 и не описание.`;
-  if (categoryUsesVision(category)) {
-    return `Кадры уже в первом сообщении, attachments_order (${labels.join(', ')}). В этом сообщении пиксели не повторяются. ${refs}`;
-  }
-  return `Пикселей в этом сообщении нет. Видимое содержимое — visual_observations по меткам attachments_order (${labels.join(', ')}). ${refs}`;
+  return `Кадры этого сообщения приложены сразу после текста, attachments_order (${labels.join(', ')}). ${refs}`;
 }
 
-function previewNote(bundle: ReviewBundle, category: number): string {
+function pageLabels(labels: readonly string[]): string[] {
+  return labels.filter((label) => label !== OUTLET_HEADER_REF && label !== OUTLET_FOOTER_REF);
+}
+
+function previewNote(bundle: ReviewBundle, category: number, labels: string[]): string {
   if (category === 2) {
-    const slices = bundle.previewLabels;
-    const top = slices[0] ?? 'среза страницы нет';
-    const bottom = slices[slices.length - 1] ?? 'среза страницы нет';
-    return `Пункт 2. Шапка ленда — ${top}, футер ленда — ${bottom}. Рядом outlet_header и outlet_footer, только если эти метки есть в attachments_order. Отдельных кропов шапки ленда нет. Повторно сайт издания не открывай.`;
+    const slices = bundle.previewLabels.length ? bundle.previewLabels : pageLabels(labels);
+    const tail =
+      'Рядом outlet_header и outlet_footer, только если эти метки есть в attachments_order. Отдельных кропов шапки ленда нет. Повторно сайт издания не открывай.';
+    if (slices.length >= 2) {
+      return `Пункт 2. Шапка ленда — ${slices[0]}, футер ленда — ${slices[slices.length - 1]}. ${tail}`;
+    }
+    if (slices.length === 1) {
+      return `Пункт 2. Шапка ленда — ${slices[0]}. Футер ленда в этом вызове отсутствует. ${tail}`;
+    }
+    return `Пункт 2. Шапка ленда — среза страницы нет, футер ленда — среза страницы нет. ${tail}`;
   }
   if (category === 3) {
-    const labels = attachmentLabels(3, bundle.available, shotKinds(bundle));
     if (!labels.length) {
-      return 'Пункт 3. Кадр не приложен, сверка не проводилась. Срезов страницы нет. guest_refs оставь пустым. Ссылку сам не открывай.';
+      return 'Пункт 3. Вложения нет: лицо не выдумывай, guest_refs оставь пустым. Ссылку сам не открывай.';
     }
-    return `Пункт 3 сверяет лицо и подпись по срезам страницы ${labels.join(', ')} из первого сообщения. Совпало лицо и подпись — не ошибка. Кадр подан как он, а лицо другое — FAIL. Лица не видно — clarifications, не FAIL. Ссылку сам не открывай.`;
+    return `Пункт 3. ${labels.join(', ')} — фото, приложенные сразу после этого сообщения (срезы preview, desktop или файлы картинок вроде I1). Сверь лицо и подпись. Совпало лицо и подпись — не ошибка. Кадр подан как он, а лицо другое — FAIL. Лица не видно — clarifications, не FAIL. Ссылку сам не открывай.`;
   }
   if (category === 9) {
-    return 'Пункт 9 смотрит аватары на срезах страницы из первого сообщения, отдельных файлов аватаров нет. Аватар — картинка рядом с именем. Картинка внутри текста комментария — вложение: это не второе фото этого имени и не аватар другого комментатора. Иллюстрации статьи — не аватары. Одно и то же фото у одного имени в нескольких комментариях — нормально. Явный конфликт пола аватара и имени — minor. Одно реальное фото у разных имён или одно имя с разными фото — major. Заглушка и невидимый аватар — не FAIL.';
+    const avatarRules =
+      'Аватар — картинка рядом с именем. Картинка внутри текста комментария — вложение: это не второе фото этого имени и не аватар другого комментатора. Иллюстрации статьи — не аватары. Одно и то же фото у одного имени в нескольких комментариях — нормально. Явный конфликт пола аватара и имени — minor. Одно реальное фото у разных имён или одно имя с разными фото — major. Заглушка и невидимый аватар — не FAIL.';
+    const files = labels.filter((label) => bundle.commentRefs.includes(label));
+    const pages = labels.filter((label) => isPreviewLabel(label) || label === DESKTOP_SHOT);
+    if (files.length && pages.length) {
+      return `Пункт 9 смотрит аватары на срезах ${pages.join(', ')} и на файлах комментариев ${files.join(', ')}, приложенных сразу после текста этого сообщения. ${avatarRules}`;
+    }
+    if (files.length) {
+      return `Пункт 9 смотрит аватары на приложенных файлах ${files.join(', ')}, сразу после текста этого сообщения. ${avatarRules}`;
+    }
+    if (pages.length) {
+      return `Пункт 9 смотрит аватары на срезах страницы, приложенных сразу после текста этого сообщения, отдельных файлов аватаров нет. ${avatarRules}`;
+    }
+    return `Пункт 9. Кадров аватаров в этом вызове нет. Пять критериев текста закрой по page_text. ${avatarRules}`;
   }
   if (category !== 10) return '';
-  const labels = bundle.previewLabels;
+  const slices = bundle.previewLabels;
+  if (slices.length) {
+    const first = slices[0];
+    const last = slices[slices.length - 1];
+    const files = labels.filter((label) => bundle.contentRefs.includes(label) || bundle.proofRefs.includes(label));
+    const native = files.length
+      ? ` Файлы ${files.join(', ')} — сами картинки: текст на них сверяй с подписью, не только со срезом.`
+      : '';
+    return `Кадры ${slices.join(', ')} — страница landing_preview_url, уже снятая нашим браузером сверху вниз без пропусков. ${first} — верх и шапка, ${last} — низ и футер. Эти кадры приложены сразу после текста этого сообщения.${native} Повторно превью не скачивай.`;
+  }
   if (labels.length) {
-    const first = labels[0];
-    const last = labels[labels.length - 1];
-    return `Кадры ${labels.join(', ')} — страница landing_preview_url, уже снятая нашим браузером сверху вниз без пропусков. ${first} — верх и шапка, ${last} — низ и футер. Эти кадры в первом сообщении. Повторно превью не скачивай.`;
+    return `Приложенные файлы ${labels.join(', ')} — метки этого сообщения, по порядку. По ним и суди. Повторно превью не скачивай.`;
   }
   if (bundle.landingPreviewUrl) {
     return 'landing_preview_url есть, но кадров страницы нет: ссылка сама по себе не картинка. Не ставь визуальный FAIL и не выдумывай кадр.';
@@ -624,14 +778,19 @@ function previewNote(bundle: ReviewBundle, category: number): string {
   return 'Кадров превью нет. Не ставь визуальный FAIL из-за отсутствующего кадра.';
 }
 
-function outletNote(bundle: ReviewBundle): string {
+function outletNote(bundle: ReviewBundle, labels: string[]): string {
   if (!bundle.outlet) {
     return 'Категория 2: скриншотов оригинала издания нет, ставь N/A и не утверждай совпадение шапки и футера. Живой сайт отсюда не открывается.';
   }
-  const slices = bundle.previewLabels;
+  const slices = bundle.previewLabels.length ? bundle.previewLabels : pageLabels(labels);
+  const tail = `Это уже снятые кадры официальной главной ${bundle.outlet.name} (${bundle.outlet.url}). Совпадение утверждай только по visual_observations этих меток.`;
+  if (slices.length === 1) {
+    const header = slices[0];
+    return `Категория 2: сравни шапку (${header}) с ${OUTLET_HEADER_REF}. Футер ленда в этом вызове отсутствует: ${header} футером не называй и низ с ${OUTLET_FOOTER_REF} не сравнивай. ${tail}`;
+  }
   const header = slices[0] ?? 'среза шапки нет';
   const footer = slices[slices.length - 1] ?? 'среза футера нет';
-  return `Категория 2: сравни верх страницы (${header}) с ${OUTLET_HEADER_REF} и низ страницы (${footer}) с ${OUTLET_FOOTER_REF}. Это уже снятые кадры официальной главной ${bundle.outlet.name} (${bundle.outlet.url}). Совпадение утверждай только по visual_observations этих меток.`;
+  return `Категория 2: сравни верх страницы (${header}) с ${OUTLET_HEADER_REF} и низ страницы (${footer}) с ${OUTLET_FOOTER_REF}. ${tail}`;
 }
 
 function factNote(bundle: ReviewBundle, category: number): string {
@@ -674,17 +833,25 @@ function renderedNote(input: AiInput): string {
 function correspondenceNote(bundle: ReviewBundle, labels: string[]): string {
   const personName = bundle.input.person?.from_land_name?.trim() || bundle.input.person?.resolved?.trim() || '';
   if (personName && labels.length) {
-    return `Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text. Сверь лицо и подпись по срезам ${labels.join(', ')} из первого сообщения. Если page_text подаёт человека как гостя, читателя или пользователя платформы, не FAIL и верни метку среза в guest_refs.`;
+    return `Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text. ${labels.join(', ')} — фото, приложенные сразу после этого сообщения (срезы preview, desktop или файлы картинок вроде I1). Сверь лицо и подпись. Если page_text подаёт человека как гостя, читателя или пользователя платформы, не FAIL и верни метку в guest_refs.`;
   }
   if (personName) {
-    return `Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text. Кадр не приложен, сверка не проводилась.`;
+    return `Персонаж из названия ленда — «${personName}». Это имя должно быть в page_text. Вложения нет, лицо не выдумывай, guest_refs оставь пустым.`;
   }
   return '';
 }
 
-function commentNote(_bundle: ReviewBundle, labels: string[]): string {
+function commentNote(bundle: ReviewBundle, labels: string[]): string {
   if (!labels.length) return 'Аватар комментария — не главный персонаж. Фото не видно — текстовые критерии комментариев всё равно закрой. Картинка внутри текста комментария — вложение, не аватар.';
-  return `Аватары смотри на срезах ${labels.join(', ')} в первом сообщении. Аватар — картинка рядом с именем, не главный персонаж и не вложение внутри текста комментария.`;
+  const files = labels.filter((label) => bundle.commentRefs.includes(label));
+  const pages = labels.filter((label) => isPreviewLabel(label) || label === DESKTOP_SHOT);
+  const where = [
+    pages.length ? `срезах ${pages.join(', ')}` : '',
+    files.length ? `файлах комментариев ${files.join(', ')}` : '',
+  ]
+    .filter(Boolean)
+    .join(' и на ');
+  return `Аватары смотри на ${where || labels.join(', ')}, приложенных сразу после текста этого сообщения. Аватар — картинка рядом с именем, не главный персонаж и не вложение внутри текста комментария.`;
 }
 
 function parseJsonContent(content: string): unknown {
@@ -774,6 +941,21 @@ function systemText(content: unknown): string {
   return typeof content === 'string' ? content : '';
 }
 
+/** Earlier user turns keep their text. Pixels stay on the latest user message only. */
+function pixelsOnlyOnLastUser(messages: ChatMessage[]): ChatMessage[] {
+  let lastUser = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user') {
+      lastUser = index;
+      break;
+    }
+  }
+  return messages.map((message, index) => {
+    if (message.role !== 'user' || index === lastUser || typeof message.content === 'string') return message;
+    return { role: 'user', content: textOf(message.content) };
+  });
+}
+
 function textOf(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -846,18 +1028,37 @@ function isDataImage(url: string): boolean {
   return /^data:image\/[^;,]+;base64,/i.test(url);
 }
 
-/** Text and JPEG bytes for one Grok Build call. The CLI prompt gets @names, not these bytes. */
+/**
+ * One self-contained Grok Build prompt. System stays out of -p.
+ * The prompt file is only the current user turn. Vision notes travel inside that turn's JSON.
+ * JPEG bytes are only for the current user. The CLI prompt gets @names, not base64.
+ */
 export function grokPromptParts(request: DeepSeekChatRequest): {
   system: string;
   text: string;
+  kind: 'vision' | 'category';
+  category: number | null;
   frames: Array<{ name: string; bytes: Buffer }>;
 } {
+  const messages = request.messages as Array<{ role?: string; content?: unknown }>;
   const system = systemText(messageContent(request, 0));
-  const userContent = lastUserContent(request);
-  const text = textOf(userContent);
+  let lastUser = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      lastUser = index;
+      break;
+    }
+  }
+  const userContent = lastUser >= 0 ? messages[lastUser]?.content : undefined;
+  const userText = textOf(userContent);
   const kind: 'vision' | 'category' =
-    text.trimStart().startsWith('{') && /"labels"\s*:/.test(text) && !/"category"\s*:/.test(text) ? 'vision' : 'category';
-  const labels = declaredLabels(text, kind);
+    userText.trimStart().startsWith('{') && /"labels"\s*:/.test(userText) && !/"category"\s*:/.test(userText) ? 'vision' : 'category';
+  const category = categoryField(userText);
+  let text = userText.replace(DATA_IMAGE_IN_TEXT, '');
+  if (text.endsWith('\nПРОВЕРЯЙ')) text = text.slice(0, -'\nПРОВЕРЯЙ'.length);
+  if (kind === 'vision') text = text.replace(VISION_SYSTEM, '');
+  text = text.replaceAll(FRAME_TOOLS_LINE, GROK_READ_FRAMES_LINE);
+  const labels = declaredLabels(userText, kind);
   const urls = imageUrlsOf(userContent);
   const frames: Array<{ name: string; bytes: Buffer }> = [];
   const count = Math.min(labels.length, urls.length);
@@ -866,8 +1067,21 @@ export function grokPromptParts(request: DeepSeekChatRequest): {
     if (!bytes?.length) continue;
     frames.push({ name: frameFileName(labels[index], index), bytes });
   }
-  return { system, text, frames };
+  return { system, text, kind, category, frames };
 }
+
+function categoryField(userText: string): number | null {
+  const line = userText.split('\n', 1)[0]?.trim() ?? '';
+  if (!line.startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(line) as { category?: unknown };
+    return typeof parsed.category === 'number' && Number.isInteger(parsed.category) ? parsed.category : null;
+  } catch {
+    return null;
+  }
+}
+
+const DATA_IMAGE_IN_TEXT = /data:image\/[^;,]+;base64,[A-Za-z0-9+/=]+/gi;
 
 function decodeDataImage(url: string | undefined): Buffer | null {
   if (!url) return null;

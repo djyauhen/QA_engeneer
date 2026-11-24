@@ -147,3 +147,8 @@ export function categoryInstruction(category: number): string {
 export function categorySystemMessage(category: number): string {
   return `${categoryInstruction(category)}\n\nПРОМПТ\n\n${categorySystemPrompt(category)}`;
 }
+
+/** Grok system file for one category. The category prompt stays in the user message. */
+export function grokCategorySystem(category: number): string {
+  return `${categoryInstruction(category)}\n\nОшибки фиксируй только полями JSON из блока пользователя «Ответ пункта». Прозу чеклиста и разделы «ОБЩАЯ ИНФОРМАЦИЯ» и «РЕЗУЛЬТАТЫ ПРОВЕРКИ» не пиши. Фразу «Не удалось проверить» не пиши: это статус N/A и объяснение в note.`;
+}

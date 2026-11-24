@@ -28,6 +28,8 @@ export interface MaterialImage {
   caption: string;
   context: string;
   kind: ImageKind;
+  /** Comment image that is not an avatar: a screenshot inside the comment text. */
+  proof: boolean;
   claims_person: string | null;
   mime: ImageMime;
   buffer: Buffer;
@@ -271,6 +273,54 @@ function commentItemFrame(offset: number, regions: TagFrame[], cleaned: string):
   return null;
 }
 
+function figureRangesOf(cleaned: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const figureRe = /<figure\b[\s\S]*?<\/figure\s*>/gi;
+  let figure: RegExpExecArray | null;
+  while ((figure = figureRe.exec(cleaned)) !== null) ranges.push([figure.index, figure.index + figure[0].length]);
+  return ranges;
+}
+
+/**
+ * A comment row without class "comment" (a name plus pictures inside a comments wrapper).
+ * An article figure stays out. The picture beside the name is still the only avatar.
+ */
+function assignCommentRows(cleaned: string, imgs: RawImg[], regions: TagFrame[]): void {
+  const figures = figureRangesOf(cleaned);
+  const cache = new Map<string, TagFrame>();
+  for (const img of imgs) {
+    if (img.commentFrame) continue;
+    if (figures.some(([start, end]) => img.offset >= start && img.offset < end)) continue;
+    const region = regions
+      .filter((item) => img.offset >= item.start && img.offset < item.end)
+      .sort((a, b) => a.end - a.start - (b.end - b.start))[0];
+    if (!region) continue;
+    const block = cleaned.slice(region.start, region.end);
+    const imgRel = img.offset - region.start;
+    const anchors = nameAnchors(block);
+    if (!anchors.length) continue;
+    const rows = scanElements(block).filter((element) => {
+      if (imgRel < element.contentStart || imgRel >= element.contentEnd) return false;
+      const inside = anchors.filter(
+        (anchor) => anchor.contentStart >= element.contentStart && anchor.contentEnd <= element.contentEnd,
+      );
+      return inside.length === 1;
+    });
+    if (!rows.length) continue;
+    rows.sort((a, b) => a.contentEnd - a.contentStart - (b.contentEnd - b.contentStart));
+    const row = rows[0];
+    const start = region.start + row.contentStart;
+    const end = region.start + row.contentEnd;
+    const key = `${start}:${end}`;
+    let frame = cache.get(key);
+    if (!frame) {
+      frame = { name: 'div', comment: true, tokens: ['comment'], start, end };
+      cache.set(key, frame);
+    }
+    img.commentFrame = frame;
+  }
+}
+
 function imgHasAvatarToken(tag: string): boolean {
   const marker = `${attrOf(tag, 'class') ?? ''} ${attrOf(tag, 'id') ?? ''}`;
   return markerTokens(marker).some((token) => AVATAR_TOKEN_RE.test(token));
@@ -351,9 +401,10 @@ function markCommentAvatars(cleaned: string, imgs: RawImg[]): void {
     }
   }
   for (const img of imgs) {
+    const inside = img.commentFrame !== null;
     const avatar = chosen.has(img);
     img.avatar = avatar;
-    img.inComment = avatar;
+    img.inComment = inside;
     if (!avatar) img.commentFrame = null;
   }
 }
@@ -390,6 +441,7 @@ function parseTags(cleaned: string): ParsedTags {
   for (const img of imgs) {
     img.commentFrame = commentItemFrame(img.offset, commentRegions, cleaned);
   }
+  assignCommentRows(cleaned, imgs, commentRegions);
   markCommentAvatars(cleaned, imgs);
   return { marked, imgs };
 }
@@ -643,6 +695,7 @@ interface Candidate {
   caption: string;
   context: string;
   kind: ImageKind;
+  avatar: boolean;
   buffer: Buffer;
   mime: ImageMime;
   order: number;
@@ -695,6 +748,7 @@ function selectImages(landingFolder: string, cleaned: string, parsed: ParsedTags
         caption: figureCaption(cleaned, figureRanges, img.offset) || title,
         context: collapse(`${beforeText} ${afterText}`),
         kind: img.inComment ? 'comment' : 'content',
+        avatar: img.avatar,
         buffer,
         mime,
         order,
@@ -707,13 +761,17 @@ function selectImages(landingFolder: string, cleaned: string, parsed: ParsedTags
     !!resolved && personMentioned(`${candidate.alt} ${candidate.caption} ${candidate.context}`, resolved);
   const content = candidates.filter((candidate) => candidate.kind === 'content');
   const comments = candidates.filter((candidate) => candidate.kind === 'comment');
+  const proofs = comments.filter((candidate) => !candidate.avatar);
+  const avatars = comments.filter((candidate) => candidate.avatar);
   const nearby = content.find((candidate) => mentions(candidate)) ?? null;
   const hero = nearby ?? (resolved ? content[0] ?? null : null);
-  const ordered = [
-    ...content.filter(mentions),
-    ...content.filter((candidate) => !mentions(candidate)),
-    ...comments,
-  ].slice(0, MAX_AI_IMAGES);
+  const contentOrdered = [...content.filter(mentions), ...content.filter((candidate) => !mentions(candidate))];
+  // Proof screenshots follow content and precede avatars. They keep a slot inside the cap:
+  // trailing article images yield, the cap stays MAX_AI_IMAGES, and avatars stay last.
+  const proofTake = proofs.slice(0, MAX_AI_IMAGES);
+  const contentTake = contentOrdered.slice(0, Math.max(0, MAX_AI_IMAGES - proofTake.length));
+  const avatarTake = avatars.slice(0, Math.max(0, MAX_AI_IMAGES - contentTake.length - proofTake.length));
+  const ordered = [...contentTake, ...proofTake, ...avatarTake];
 
   return ordered.map((candidate, index) => ({
     ref: `I${index + 1}`,
@@ -722,6 +780,7 @@ function selectImages(landingFolder: string, cleaned: string, parsed: ParsedTags
     caption: candidate.caption,
     context: candidate.context,
     kind: candidate.kind,
+    proof: candidate.kind === 'comment' && !candidate.avatar,
     claims_person: resolved && hero && candidate.kind === 'content' && candidate.order === hero.order ? resolved : null,
     mime: candidate.mime,
     buffer: candidate.buffer,
@@ -736,9 +795,14 @@ function markerTokens(marker: string): string[] {
   return marker.split(/[^A-Za-z0-9\u0400-\u04FF]+/).filter(Boolean);
 }
 
+function isNameToken(token: string): boolean {
+  if (NAME_TOKEN_RE.test(token)) return true;
+  return token.length > 4 && /name$/i.test(token);
+}
+
 function isAuthorMarker(marker: string): boolean {
   if (!marker.trim() || NAME_REJECT_RE.test(marker)) return false;
-  return markerTokens(marker).some((token) => NAME_TOKEN_RE.test(token));
+  return markerTokens(marker).some((token) => isNameToken(token));
 }
 
 function looksLikePerson(name: string): boolean {

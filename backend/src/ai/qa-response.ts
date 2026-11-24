@@ -16,8 +16,11 @@ export interface QaParseOptions {
   screenshots?: Record<string, string>;
   /**
    * Labels of this call, from attachmentLabels.
-   * Non-empty: screenshot_ref must be one of them.
-   * Empty: a short place label is kept as text and is not resolved through screenshots.
+   * A label in the list resolves to its data URL.
+   * A short place name stays text, including when the list is non-empty and the name is not in it.
+   * Missing or empty screenshot_ref becomes the place label «страница».
+   * data:, long base64, outlet_header and outlet_footer are dropped.
+   * Omitted: a known shot still becomes its data URL.
    */
   attachmentLabels?: readonly string[];
 }
@@ -67,31 +70,41 @@ function isLongBase64(label: string): boolean {
 }
 
 /**
- * Non-empty attachmentLabels: the ref must be in that list, then a known shot becomes its data URL.
- * Empty attachmentLabels: keep a short place label as text. Do not look it up in the global shot map.
+ * A listed label becomes its data URL.
+ * A short place name stays text and is not looked up in the shot map, even when attachmentLabels is non-empty.
+ * data:, long base64, outlet_header and outlet_footer return null.
  * Omitted attachmentLabels: a known shot still becomes its data URL.
  */
 function resolveScreenshot(label: string, options: QaParseOptions): string | null {
   if (label === OUTLET_HEADER_REF || label === OUTLET_FOOTER_REF) return null;
+  if (label.startsWith('data:') || isLongBase64(label)) return null;
   const screenshots = options.screenshots ?? {};
   const labels = options.attachmentLabels;
-  if (labels !== undefined && labels.length === 0) {
-    if (label.startsWith('data:') || isLongBase64(label)) return null;
-    return label;
+  if (labels !== undefined && labels.includes(label)) {
+    return Object.prototype.hasOwnProperty.call(screenshots, label) ? screenshots[label] : label;
   }
-  if (labels !== undefined && !labels.includes(label)) return null;
+  if (labels !== undefined) return label;
   return Object.prototype.hasOwnProperty.call(screenshots, label) ? screenshots[label] : label;
 }
 
+const PAGE_PLACE = 'страница';
+
+/**
+ * file and quote are required. A quote that is not in page_text is dropped later.
+ * Missing or empty screenshot_ref, and a name that is not an attachment label, keep the finding:
+ * an omitted ref becomes «страница», a short place name stays as written.
+ * data:, long base64, outlet_header and outlet_footer still drop the finding.
+ * An attached image label (I1, preview, desktop) does not accept a quote absent from page_text.
+ * Digits that appear only in problem still leave the finding in place when the quote is on the page.
+ */
 function mapFinding(raw: unknown, options: QaParseOptions): Partial<AiFinding> | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const item = raw as Record<string, unknown>;
   const file = str(item.file);
   const quote = str(item.quote);
+  if (!file || !quote) return null;
   const shotRaw = str(item.screenshot_ref) ?? str(item.screenshot);
-  if (!file || !quote || !shotRaw) return null;
-  const label = shotRaw.trim();
-  const screenshot = resolveScreenshot(label, options);
+  const screenshot = shotRaw ? resolveScreenshot(shotRaw.trim(), options) : PAGE_PLACE;
   if (!screenshot) return null;
   const finding: Partial<AiFinding> = {
     file,
@@ -143,6 +156,15 @@ function mapGeneral(raw: unknown): AiGeneral | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
+/**
+ * The quote must be a verbatim page_text fragment.
+ * problem may name amounts read off an attached frame; those digits are not required to occur in page_text.
+ * A quote that is absent from page_text is dropped for every screenshot_ref, including I1, preview and desktop.
+ */
+function quoteInPageText(quote: string, haystack: string): boolean {
+  return haystack.includes(normalizeWhitespace(quote));
+}
+
 export function mapQaResponse(parsed: unknown, options: QaParseOptions = {}): QaParseResult {
   const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
   const haystack = normalizeWhitespace(options.pageText ?? '');
@@ -151,7 +173,7 @@ export function mapQaResponse(parsed: unknown, options: QaParseOptions = {}): Qa
   for (const raw of rawFindings) {
     const finding = mapFinding(raw, options);
     if (!finding) continue;
-    if (haystack && !haystack.includes(normalizeWhitespace(finding.quote as string))) continue;
+    if (haystack && !quoteInPageText(finding.quote as string, haystack)) continue;
     findings.push(finding);
   }
 

@@ -1,25 +1,26 @@
-import { AsyncLocalStorage } from 'async_hooks';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { AppConfig } from '../config';
-import { AiCallError, AiInput, AiResult, CATEGORY_TIMEOUT_MS, DeepSeekAiClient, DeepSeekChatRequest, grokPromptParts } from './ai.client';
+import { AiCallError, AiInput, AiResult, DeepSeekAiClient, DeepSeekChatRequest, grokPromptParts, grokVisionSystem } from './ai.client';
 import { DEFAULT_GROK_MODEL, findGrokCommand } from './ai-profile';
-import { grokArgv, grokLogHint, GrokSpawn, readGrokResult, spawnGrok } from './grok.spawn';
+import { errorMessageThenStderr, grokArgv, grokLogHint, GROK_SPAWN_TIMEOUT_MS, grokSystemFileText, GrokSpawn, GrokSpawnResult, readGrokResult, spawnGrok } from './grok.spawn';
+import { grokCategorySystem } from './qa-category-instruction';
 
-interface GrokTurnState {
-  dir: string;
-  sessionId: string | null;
-  wroteFrames: boolean;
-}
+/** Checklist points in flight. Each spawn has its own directory, so prompt files do not clobber. */
+export const GROK_CATEGORY_CONCURRENCY = 2;
 
-const grokTurn = new AsyncLocalStorage<GrokTurnState>();
+const GROK_FRAME_LINE =
+  'Каждая строка выше начинается с @ и кончается на .jpg. Это один кадр. Метка в JSON — имя файла без @ и без .jpg. Открой каждый названный файл один раз через read_file и смотри как изображение. Каталог не листай. Пиксели не видны — кадр не выдумывай. В пункте статус N/A и эта фраза в note. В глазах статус не ставь: face_visible false и та же фраза в note записи.';
 
 /**
- * One Grok Build session per review(). Frames are written once into that temp directory.
- * The first spawn is a fresh -p. Later spawns --resume the sessionId from that stdout.
+ * One fresh Grok Build process per turn, in its own subdirectory of the review temp dir.
+ * The prompt file is the current user turn, so the CLI does not need a session id or --resume.
+ * System and prompt stay on disk: Windows rejects a command line near 32KB.
  */
 export class GrokBuildAiClient extends DeepSeekAiClient {
+  private turnDir: string | null = null;
+
   constructor(
     config: AppConfig,
     private readonly spawnImpl: GrokSpawn = spawnGrok,
@@ -32,22 +33,24 @@ export class GrokBuildAiClient extends DeepSeekAiClient {
 
   override async review(input: AiInput): Promise<AiResult> {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-grok-'));
-    const state: GrokTurnState = { dir, sessionId: null, wroteFrames: false };
+    this.turnDir = dir;
     try {
-      const result = await grokTurn.run(state, () => super.review(input));
+      const result = await super.review(input);
       if (!result.ai_requests) return result;
       return {
         ...result,
-        ai_requests: { shots: {}, calls: result.ai_requests.calls },
+        ai_requests: {
+          shots: {},
+          calls: result.ai_requests.calls.map((call) => ({
+            ...call,
+            system: grokSystemFileText(grokTurnSystem(call.kind, call.category ?? null)),
+          })),
+        },
       };
     } finally {
+      this.turnDir = null;
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  }
-
-  protected override afterTurn(): void {
-    const state = grokTurn.getStore();
-    if (state && !state.sessionId) throw new AiCallError('grok session: no sessionId');
   }
 
   protected override model(): string {
@@ -58,35 +61,49 @@ export class GrokBuildAiClient extends DeepSeekAiClient {
     return this.slug();
   }
 
+  protected override categoryConcurrency(): number {
+    return GROK_CATEGORY_CONCURRENCY;
+  }
+
   protected override async complete(
     request: DeepSeekChatRequest,
   ): Promise<{ content: string; usage: Record<string, unknown> | null }> {
-    const state = grokTurn.getStore();
+    const parent = this.turnDir;
     const command = this.commandImpl();
-    if (!command || !state) throw grokFailure('missing');
-    const parts = grokPromptParts(request);
-    if (!state.wroteFrames && parts.frames.length) {
+    if (!parent || !command) throw new AiCallError('Grok Build не найден.');
+    const dir = fs.mkdtempSync(path.join(parent, 'call-'));
+    try {
+      const parts = grokPromptParts(request);
       for (const frame of parts.frames) {
-        fs.writeFileSync(path.join(state.dir, frame.name), frame.bytes);
+        fs.writeFileSync(path.join(dir, frame.name), frame.bytes);
       }
-      state.wroteFrames = true;
+      const mentions = parts.frames.map((frame) => `@${frame.name}`);
+      const prompt = mentions.length ? `${parts.text}\n${mentions.join('\n')}\n${GROK_FRAME_LINE}` : parts.text;
+      const promptFile = path.join(dir, 'prompt.txt');
+      const systemFile = path.join(dir, 'system.txt');
+      fs.writeFileSync(promptFile, prompt, 'utf8');
+      fs.writeFileSync(systemFile, grokSystemFileText(grokTurnSystem(parts.kind, parts.category)), 'utf8');
+      const args = grokArgv({ promptFile, model: this.slug(), cwd: dir, systemFile });
+      let result: GrokSpawnResult;
+      try {
+        result = await this.spawnImpl(command, args, { cwd: dir, timeoutMs: GROK_SPAWN_TIMEOUT_MS });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '';
+        throw new AiCallError(message && message !== 'spawn' ? message : 'Grok Build не запустился.');
+      }
+      if (result.code !== 0) throw new AiCallError(cliDetail(result));
+      let parsed: { content: string; usage: Record<string, unknown> | null } | null;
+      try {
+        parsed = result.stdout.trim() ? readGrokResult(result.stdout) : null;
+      } catch (error) {
+        if (error instanceof SyntaxError) throw new AiCallError(cliDetail(result));
+        throw error;
+      }
+      if (!parsed?.content.trim()) throw new AiCallError(cliDetail(result));
+      return { content: parsed.content, usage: parsed.usage };
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
-    const resume = state.sessionId;
-    const mentions = resume ? [] : parts.frames.map((frame) => `@${frame.name}`);
-    const prompt = mentions.length ? `${parts.text}\n${mentions.join('\n')}` : parts.text;
-    const args = grokArgv({ prompt, model: this.slug(), cwd: state.dir, system: parts.system, resume });
-    const result = await this.spawnImpl(command, args, { cwd: state.dir, timeoutMs: CATEGORY_TIMEOUT_MS });
-    const parsed = result.code === 0 ? readGrokResult(result.stdout) : readFinishedAnswer(result.stdout);
-    if (!parsed) {
-      throw grokFailure(
-        result.code == null ? 'timeout' : 'exit',
-        result.code == null,
-        grokLogHint(result.code, result.stderr ?? ''),
-      );
-    }
-    if (!parsed.sessionId) throw new AiCallError('grok session: no sessionId');
-    state.sessionId = parsed.sessionId;
-    return { content: parsed.content, usage: parsed.usage };
   }
 
   private slug(): string {
@@ -94,31 +111,15 @@ export class GrokBuildAiClient extends DeepSeekAiClient {
   }
 }
 
-/**
- * A non-zero exit still counts when stdout is already the JSON answer wrapper.
- * Empty stdout and non-JSON stay a failure so the caller can log the exit.
- */
-function readFinishedAnswer(stdout: string): {
-  content: string;
-  usage: Record<string, unknown> | null;
-  sessionId: string | null;
-} | null {
-  const trimmed = stdout.trim();
-  if (!trimmed) return null;
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    if (typeof (parsed as { text?: unknown }).text !== 'string') return null;
-    return readGrokResult(trimmed);
-  } catch (error) {
-    if (error instanceof SyntaxError) return null;
-    throw error;
-  }
+function grokTurnSystem(kind: 'vision' | 'category', category: number | null): string {
+  if (kind === 'vision') return grokVisionSystem();
+  if (kind === 'category' && category != null && category >= 1 && category <= 11) return grokCategorySystem(category);
+  throw new AiCallError('Grok Build не собрал system.');
 }
 
-function grokFailure(message: string, timeout = false, logHint = ''): Error {
-  const error = new Error(message);
-  error.name = timeout ? 'TimeoutError' : 'GrokCallError';
-  if (logHint) (error as Error & { logHint?: string }).logHint = logHint;
-  return error;
+function cliDetail(result: GrokSpawnResult): string {
+  const hint = grokLogHint(result.code, errorMessageThenStderr(result.stdout, result.stderr ?? ''));
+  if (hint) return hint;
+  if (result.code == null) return 'timeout';
+  return `exit ${result.code}`;
 }

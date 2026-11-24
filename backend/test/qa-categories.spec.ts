@@ -53,7 +53,7 @@ describe('per-category prompts', () => {
     const bodies = prompts.map((prompt) => prompt.replace(/\d+/g, '#'));
     expect(new Set(bodies).size).toBe(QA_CATEGORY_COUNT);
     for (const prompt of prompts) {
-      expect(prompt).toContain('{"status":"PASS"|"FAIL"|"N/A"');
+      expect(prompt).toContain('{"status":"PASS","note":"Проверено, подтверждённой ошибки нет.","findings":[],"clarifications":[]}');
       expect(prompt).not.toContain('Интернет не открывай');
       expect(prompt).not.toContain('открой сайт');
       expect(prompt).not.toContain('используй интернет');
@@ -78,13 +78,24 @@ describe('per-category prompts', () => {
       'Национальная валюта, телефонный код и название издания здесь только признаки страны. Не проверяй сумму депозита, оффер, даты, комментарии, шапку и существование телефонного номера.',
     );
     expect(prompts[0]).not.toContain('ПРОВЕРКА ТЕЛЕФОННОГО КОДА');
+    expect(prompts[0]).toContain('Пункт 1. Если attachments_order этого вызова не пуст');
+    expect(prompts[0]).toContain('первая метка preview* или desktop');
+    expect(prompts[0]).toContain('visual_observations');
     expect(prompts[1]).toContain('outlet_header');
-    expect(prompts[1]).toContain('Шапка ленда — верхний срез страницы в первом сообщении, футер ленда — нижний срез.');
-    expect(prompts[1]).toContain('Сравни верхний срез страницы с outlet_header и нижний срез с outlet_footer.');
+    expect(prompts[1]).toContain('Пункт 2. Две или больше метки preview*: первая — шапка ленда, последняя — футер ленда.');
+    expect(prompts[1]).toContain(
+      'Ровно одна метка страницы (один preview* или один desktop) — только верх страницы, шапка; футер ленда в этот вызов не входит.',
+    );
+    expect(prompts[1]).toContain('Ту же метку футером не называй, футер не описывай и FAIL за отсутствующий футер не ставь.');
+    expect(prompts[1]).toContain('Пункт 2. При двух или больше preview* сравни первую метку с outlet_header и последнюю метку с outlet_footer.');
+    expect(prompts[1]).toContain('При ровно одной метке страницы сравни только эту шапку с outlet_header: футер ленда в этот вызов не входит.');
+    expect(prompts[1]).not.toContain('последняя такая метка — футер ленда');
+    expect(prompts[1]).not.toContain('Нет срезов страницы — визуальный FAIL не ставь и кадр не описывай');
     expect(prompts[1]).not.toContain('первая метка preview');
     expect(prompts[1]).not.toContain('иначе текст page_text');
     expect(prompts[1]).toContain('отсутствие кадра ошибкой не считай');
-    expect(prompts[1]).toContain('Пиксели уже в первом сообщении беседы, в этом сообщении кадры не повторяются.');
+    expect(prompts[1]).toContain('Пункт 2. Если attachments_order этого вызова не пуст, эти метки — кадры, приложенные сразу после текста: смотри пиксели и visual_observations.');
+    expect(prompts[1]).toContain('Если attachments_order пуст, пиксели не выдумывай и не пиши, что кадр был приложен.');
     expect(prompts[1]).toContain('visual_observations');
     expect(prompts[1]).not.toContain('вложенные кадры');
     expect(prompts[1]).toContain(OFFLINE_PHRASE[2]);
@@ -100,7 +111,7 @@ describe('per-category prompts', () => {
     expect(prompts[2]).toContain(OFFLINE_PHRASE[3]);
     expect(prompts[2]).toContain('guest_refs');
     expect(prompts[2]).toContain('visual_observations');
-    expect(prompts[2]).toContain('Пиксели уже в первом сообщении беседы, в этом сообщении кадры не повторяются.');
+    expect(prompts[2]).toContain('Пункт 3. Если attachments_order этого вызова не пуст, эти метки — кадры, приложенные сразу после текста: смотри пиксели и visual_observations.');
     expect(prompts[2]).toContain('Возраст, пол и должность без карточки не подтверждай и не опровергай.');
     expect(prompts[2]).not.toContain('image_checks');
     expect(prompts[2]).toContain('Пустая карточка не запрещает');
@@ -108,7 +119,11 @@ describe('per-category prompts', () => {
     expect(prompts[2]).toContain('гостя интервью');
     expect(prompts[2]).toContain('даже если имя не написано в alt');
     expect(prompts[2]).toContain('Сверь лицо и подпись');
-    expect(prompts[2]).toContain('Кадр не приложен, сверка не проводилась');
+    expect(prompts[2]).toContain('Пункт 3. Метки в attachments_order (срезы preview, desktop или файлы картинок вроде I1) — фото этого вызова, приложенные после текста.');
+    expect(prompts[2]).toContain('attachments_order пуст — фото не выдумывай и не пиши, что кадр был приложен.');
+    expect(prompts[2]).toContain('attachments_order не пуст — смотри эти пиксели и не пиши, что кадр не приложен.');
+    expect(prompts[2]).not.toContain('Кадр не приложен, сверка не проводилась');
+    expect(prompts[2]).not.toContain('не отдельный файл картинки');
     expect(prompts[2]).not.toContain('соседний текст содержит имя персонажа');
     expect(prompts[3]).toContain('Иностранное происхождение');
     expect(prompts[3]).toContain('Википедии или поиском до вызова');
@@ -119,46 +134,56 @@ describe('per-category prompts', () => {
     expect(prompts[4]).toContain('PLN');
     expect(prompts[4]).toContain('Разные валюты одного депозита на странице — FAIL.');
     expect(prompts[4]).not.toContain('185–215');
-    expect(prompts[4]).toContain('написанные на срезе страницы в первом сообщении');
+    expect(prompts[4]).toContain('написанные на срезе страницы этого сообщения');
     expect(prompts[4]).toContain('упоминание этого факта');
     expect(prompts[4]).toContain('только валюту депозита');
     expect(prompts[4]).toContain('суди только по page_text');
     expect(prompts[4]).toContain('не выдумывай содержимое изображений');
-    expect(prompts[4]).toContain('Нет срезов страницы у пункта 5');
+    expect(prompts[4]).toContain('Пункт 5. Если attachments_order этого вызова пуст, суди только по page_text и не выдумывай содержимое изображений.');
+    expect(prompts[4]).toContain('Если attachments_order не пуст, эти метки (срезы preview, desktop или файлы картинок вроде I1) приложены после текста: с них читай только валюту депозита.');
+    expect(prompts[4]).not.toContain('Нет срезов страницы у пункта 5');
     expect(prompts[4]).toContain('screenshot_ref — короткая метка места на странице, не описание изображения, никогда не base64');
-    expect(prompts[4]).not.toContain('метка из attachments_order');
-    expect(prompts[4]).toContain('Когда attachments_order не пуст, срезы страницы уже в первом сообщении');
+    expect(taskBody(prompts[4])).not.toContain('метка из attachments_order');
     expect(prompts[4]).toContain('не переноси в пункт 10');
     expect(prompts[4]).toContain('не копируй сюда поиск противоречий');
     expect(prompts[4]).toContain('visual_observations');
     expect(prompts[5]).toContain('185–215');
     expect(prompts[5]).toContain('fx_rates');
     expect(prompts[5]).not.toContain('PLN');
-    expect(prompts[5]).toContain('написанные на срезе страницы в первом сообщении');
+    expect(prompts[5]).toContain('написанные на срезе страницы этого сообщения');
     expect(prompts[5]).toContain('упоминание этого факта');
     expect(prompts[5]).toContain('только сумму депозита');
     expect(prompts[5]).toContain('суди только по page_text');
-    expect(prompts[5]).toContain('Нет срезов страницы у пункта 6');
+    expect(prompts[5]).toContain('Пункт 6. Если attachments_order этого вызова пуст, суди только по page_text и не выдумывай содержимое изображений.');
+    expect(prompts[5]).toContain('Если attachments_order не пуст, эти метки (срезы preview, desktop или файлы картинок вроде I1) приложены после текста: с них читай только сумму депозита.');
+    expect(prompts[5]).not.toContain('Нет срезов страницы у пункта 6');
     expect(prompts[5]).toContain('screenshot_ref — короткая метка места на странице, не описание изображения, никогда не base64');
-    expect(prompts[5]).not.toContain('метка из attachments_order');
-    expect(prompts[5]).toContain('Когда attachments_order не пуст, срезы страницы уже в первом сообщении');
+    expect(taskBody(prompts[5])).not.toContain('метка из attachments_order');
     expect(prompts[5]).toContain('не переноси в пункт 10');
+    expect(prompts[5]).toContain(
+      'Пункт 6. Баланс, вывод и прибыль на скриншоте — не минимальный депозит и не FAIL пункта 6, а PASS пункта 6 не закрывает противоречие этих чисел с соседним текстом: такое противоречие относится к пункту 10.',
+    );
     expect(prompts[6]).toContain('Quifix');
-    expect(prompts[6]).toContain('написанные на срезе страницы в первом сообщении');
+    expect(prompts[6]).toContain('написанные на срезе страницы этого сообщения');
     expect(prompts[6]).toContain('упоминание этого факта');
     expect(prompts[6]).toContain('только название оффера');
     expect(prompts[6]).toContain('суди только по page_text');
-    expect(prompts[6]).toContain('Нет срезов страницы у пункта 7');
+    expect(prompts[6]).toContain('Пункт 7. Если attachments_order этого вызова пуст, суди только по page_text и не выдумывай содержимое изображений.');
+    expect(prompts[6]).toContain('Если attachments_order не пуст, эти метки (срезы preview, desktop или файлы картинок вроде I1) приложены после текста: с них читай только название оффера.');
+    expect(prompts[6]).not.toContain('Нет срезов страницы у пункта 7');
     expect(prompts[6]).toContain('screenshot_ref — короткая метка места на странице, не описание изображения, никогда не base64');
-    expect(prompts[6]).not.toContain('метка из attachments_order');
-    expect(prompts[6]).toContain('Когда attachments_order не пуст, срезы страницы уже в первом сообщении');
+    expect(taskBody(prompts[6])).not.toContain('метка из attachments_order');
     expect(prompts[6]).toContain('не переноси в пункт 10');
+    expect(prompts[6]).toContain(
+      'Пункт 7. Если единственное название оффера — ровно Brand, либо в page_text виден фрагмент {{aio, это FAIL и quote — этот фрагмент page_text; более длинное настоящее имя, где просто есть буквы brand, не FAIL.',
+    );
     for (const index of [0, 1, 2, 3, 7, 8, 9, 10]) {
-      expect(prompts[index]).not.toContain('написанные на срезе страницы в первом сообщении');
+      expect(prompts[index]).not.toContain('написанные на срезе страницы этого сообщения');
     }
     expect(prompts[7]).toContain('check_date');
     expect(prompts[8]).toContain('Заглушка');
-    expect(prompts[8]).toContain('Пиксели уже в первом сообщении беседы, в этом сообщении кадры не повторяются.');
+    expect(prompts[8]).toContain('Пункт 9. Если attachments_order этого вызова не пуст, эти метки — кадры, приложенные сразу после текста: смотри пиксели и visual_observations.');
+    expect(prompts[8]).toContain('Пункт 9. Скриншот банка или приложения внутри текста комментария — не аватар и в этот вызов не входит.');
     expect(prompts[8]).not.toContain('image_checks');
     expect(prompts[8]).not.toContain('Фото аватара сверь с родом имени.');
     expect(prompts[8]).not.toContain('соседних кадрах preview');
@@ -167,6 +192,7 @@ describe('per-category prompts', () => {
         'Имена и GEO. Имена правдоподобны для GEO. Иностранное имя само по себе не FAIL. Явно чужое имя вместе с другими признаками неправильной локализации — FAIL.',
         'Грамматический род. Род имени и род текста комментария согласованы, если язык различает род. Пример ошибки: имя Анна и текст «Я зарегистрировался». Фактический пол человека по одному имени не определяй.',
         'Комментарий и статья. Другое имя платформы, другой обязательный депозит или другой продукт — FAIL.',
+        'Пункт 9. Другое имя человека в комментарии, когда статья называет другого, — не FAIL и не finding пункта 9, это противоречие относится к пункту 10.',
         'Релевантность офферу. Комментарий относится к основному офферу. Случайный чужой продукт без объяснения — FAIL.',
         [
           'Фото.',
@@ -181,7 +207,7 @@ describe('per-category prompts', () => {
           'Категорию целиком не ставь N/A или FAIL только потому, что аватары не видны.',
         ].join('\n'),
         'Аватар комментатора — не главный персонаж статьи. Не переноси эту проверку в данные персонажа.',
-        'В пункт 9 входят комментарии. Аватары смотри на срезах страницы в первом сообщении, отдельных файлов аватаров нет. Нет срезов страницы — пикселей нет, пять критериев текста всё равно закрой по page_text.',
+        'В пункт 9 входят комментарии. Если attachments_order не пуст, эти метки (срезы страницы, desktop или файлы картинок комментариев) — кадры аватаров пункта 9, приложенные после текста: смотри пиксели. Если attachments_order пуст, пикселей нет, пять критериев текста всё равно закрой по page_text. Категорию целиком не ставь N/A или FAIL только потому, что аватары не видны.',
       ]),
     );
     expect(prompts[9]).toContain('подпись');
@@ -189,11 +215,50 @@ describe('per-category prompts', () => {
       'Отдельную ошибку валюты против GEO, размера депозита или телефонного кода не дублируй, если части страницы друг другу не противоречат.',
     );
     expect(prompts[9]).not.toContain('курса или телефонного кода');
-    expect(prompts[9]).toContain('Пиксели уже в первом сообщении беседы, в этом сообщении кадры не повторяются.');
-    expect(prompts[0]).not.toContain('visual_observations');
+    expect(prompts[9]).toContain('Пункт 10. Если attachments_order этого вызова не пуст, эти метки — кадры, приложенные сразу после текста: смотри пиксели и visual_observations.');
+    expect(prompts[9]).toContain('Метки, которой нет в attachments_order, — этот кадр не суди.');
+    expect(prompts[9]).toContain('Метки, которые есть, приложены и их надо смотреть.');
+    expect(prompts[9]).toContain('screenshot_ref может быть коротким названием места.');
+    expect(prompts[9]).toContain(
+      'Пункт 10. Комментарий, который называет участника статьи иначе, чем статья, — FAIL. quote — дословная подстрока page_text. Не оставляй это только в clarifications.',
+    );
+    expect(prompts[9]).toContain(
+      'Пункт 10. Заголовок, который называет недельный доход (per week / a la semana / por semana), а статья не называет эту сумму таким доходом, — FAIL, даже если то же число дальше стоит как депозит или вывод. quote — подстрока заголовка.',
+    );
+    expect(prompts[9]).toContain(
+      'Пункт 10. Когда finding — текстовое противоречие, screenshot_ref — короткое название места, например «комментарий» или «заголовок», file — index лендинга. screenshot_ref не опускай. Ошибку не оставляй только в note.',
+    );
+    expect(prompts[9]).toContain('Файл картинки I в attachments_order — сам креатив.');
+    expect(prompts[9]).not.toContain('Файлы комментариев к пункту 10 не прилагаются');
+    expect(prompts[9]).not.toContain('Кадр не приложен, сверка не проводилась');
+    expect(prompts[9]).toContain(
+      'Пункт 10. Две суммы на одном приложенном кадре, которые не могут принадлежать одному счёту (saldo total и больший saldo disponible), — FAIL.',
+    );
+    expect(prompts[9]).toContain(
+      'Пункт 10. quote этой находки — ближайшее дословное предложение page_text рядом с кадром, а не цифры, скопированные с пикселей.',
+    );
+    expect(prompts[9]).toContain(
+      'Пункт 10. screenshot_ref этой находки — метка этого кадра, а problem называет обе суммы, прочитанные с пикселей.',
+    );
+    expect(prompts[9]).toContain('Пункт 10. Не оставляй противоречие двух сумм одного кадра только в clarifications или только в note.');
+    expect(prompts[9]).toContain(
+      'Пункт 10. Имя, банк или сумма на приложенном кадре, которые противоречат комментарию или подписи, содержащим этот кадр, — FAIL, и quote берётся тем же ближайшим предложением page_text.',
+    );
+    expect(prompts[9]).toContain(
+      'Пункт 10. Одно и то же имя комментатора с двумя несовместимыми длительностями или суммами одного и того же действия — FAIL, quote — одно из этих предложений page_text.',
+    );
+    expect(prompts[9]).toContain('Пункт 10. Скриншоты-доказательства из комментариев приложены к этому вызову и не являются аватарами.');
+    expect(prompts[9]).toContain('Пункт 10. Сверь каждый такой скриншот с комментарием, внутри которого он стоит.');
+    expect(prompts[9]).toContain('Пункт 10. Повтор логотипа одного и того же учреждения сам по себе не FAIL.');
+    expect(prompts[9]).not.toContain('Изображения нет среди вложений — не суди о его содержимом');
     expect(prompts[3]).not.toContain('visual_observations');
+    expect(prompts[7]).not.toContain('visual_observations');
     expect(prompts[10]).toContain('+48');
     expect(prompts[10]).toContain('Код другой страны — FAIL. Поля телефона нет или код страны не найден — N/A и так и напиши в note.');
+    expect(prompts[10]).toContain('Пункт 11. Метка страницы этого вызова — последний срез preview*, а если срезов нет — desktop.');
+    expect(prompts[10]).toContain('Кадром формы называй её, только когда на кадре видно поле телефона');
+    expect(prompts[10]).toContain('этот кадр кадром формы не называй');
+    expect(prompts[10]).not.toContain('смотри только кадр формы (последняя метка preview* или desktop)');
     expect(prompts[10]).not.toContain('Поля телефона или кода не видно');
     expect(prompts[10]).toContain('существует ли номер');
     for (const category of [2, 3, 4]) {
@@ -223,14 +288,14 @@ describe('per-category prompts', () => {
     const visible =
       'Видимый ответ — ровно один JSON-объект. Первый символ «{», последний «}». Без фразы перед объектом, без markdown-ограждения, без второго сообщения и без «сейчас проверю».';
     const tools =
-      'Не вызывай инструменты grep, read_file и monitor, чтобы заново читать page_text или кадры. page_text уже в сообщении пользователя, кадры уже приложены.';
+      'Не вызывай инструменты grep и monitor. page_text уже в сообщении пользователя. Кадры image_url смотри как картинки. Файл @name.jpg открой один раз через read_file.';
     for (let category = 1; category <= QA_CATEGORY_COUNT; category += 1) {
       const prompt = categorySystemPrompt(category);
       const at = prompt.indexOf(sentence);
       expect(at).toBe(prompt.lastIndexOf(sentence));
       expect(at).not.toBe(-1);
       expect(prompt).toContain('Один JSON-объект и ничего больше. Другие пункты чеклиста не возвращай.');
-      expect(prompt).toContain('{"status":"PASS"|"FAIL"|"N/A"');
+      expect(prompt).toContain('{"status":"PASS","note":"Проверено, подтверждённой ошибки нет.","findings":[],"clarifications":[]}');
       expect(prompt.indexOf(visible)).toBe(prompt.lastIndexOf(visible));
       expect(prompt.endsWith(`${visible}\n${tools}`)).toBe(true);
       expect(categorySystemMessage(category).endsWith(`${visible}\n${tools}`)).toBe(true);
@@ -239,32 +304,86 @@ describe('per-category prompts', () => {
 });
 
 describe('vision attachments', () => {
-  it('cites page slices for vision items and adds outlet crops only on point 2', () => {
-    expect(VISION_CATEGORIES).toEqual([2, 3, 5, 6, 7, 9, 10]);
+  it('keeps native files with the page slices and limits points 1 and 11 to one frame', () => {
+    expect(VISION_CATEGORIES).toEqual([1, 2, 3, 5, 6, 7, 9, 10, 11]);
     const slices = ['preview', 'preview_2'];
-    for (let category = 1; category <= 11; category += 1) {
-      const labels = attachmentLabels(category, order, kinds);
-      if (categoryUsesVision(category)) {
-        expect(labels).toEqual(category === 2 ? [...slices, 'outlet_header', 'outlet_footer'] : slices);
-      } else {
-        expect(labels).toEqual([]);
-      }
+    expect(attachmentLabels(1, order, kinds)).toEqual(['preview']);
+    expect(attachmentLabels(2, order, kinds)).toEqual([...slices, 'outlet_header', 'outlet_footer']);
+    expect(attachmentLabels(3, order, kinds)).toEqual([...slices, 'I1']);
+    for (const category of [5, 6, 7, 10]) {
+      expect(attachmentLabels(category, order, kinds)).toEqual([...slices, 'I1']);
+    }
+    expect(attachmentLabels(9, order, kinds)).toEqual([...slices, 'I2']);
+    expect(attachmentLabels(11, order, kinds)).toEqual(['preview_2']);
+    for (const category of [4, 8]) {
+      expect(categoryUsesVision(category)).toBe(false);
+      expect(attachmentLabels(category, order, kinds)).toEqual([]);
     }
     expect(attachmentLabels(2, ['landing_header', 'landing_footer', 'outlet_header', 'outlet_footer'], kinds)).toEqual([
       'outlet_header',
       'outlet_footer',
     ]);
     expect(attachmentLabels(2, ['preview', 'preview_2', 'desktop', 'I1'], kinds)).toEqual(['preview', 'preview_2']);
-    expect(attachmentLabels(3, order, kinds)).toEqual(slices);
-    expect(attachmentLabels(9, order, kinds)).toEqual(slices);
-    expect(attachmentLabels(10, order, kinds)).toEqual(slices);
+    expect(attachmentLabels(1, ['preview', 'preview_2', 'desktop', 'I1', 'outlet_header'], kinds)).toEqual(['preview']);
+    expect(attachmentLabels(11, ['preview', 'desktop', 'I1', 'I2'], kinds)).toEqual(['preview']);
+    expect(attachmentLabels(3, ['preview', 'preview_2', 'desktop', 'I1', 'I3'], { content: ['I1', 'I3'], comment: [], hero: 'I1' })).toEqual([
+      'preview',
+      'preview_2',
+      'I1',
+    ]);
     expect(attachmentLabels(5, ['I2', 'desktop', 'preview', 'I1', 'I3'], { content: ['I1', 'I3'], comment: ['I2'] })).toEqual([
       'preview',
+      'I1',
+      'I3',
     ]);
-    for (const category of [1, 4, 8, 11]) {
-      expect(categoryUsesVision(category)).toBe(false);
-      expect(attachmentLabels(category, order, kinds)).toEqual([]);
+    expect(attachmentLabels(9, ['I2', 'desktop', 'preview', 'I1', 'I3'], { content: ['I1', 'I3'], comment: ['I2'] })).toEqual([
+      'I2',
+      'preview',
+    ]);
+    expect(attachmentLabels(10, ['I2', 'desktop', 'preview', 'I1', 'I3'], { content: ['I1', 'I3'], comment: ['I2'] })).toEqual([
+      'preview',
+      'I1',
+      'I3',
+    ]);
+    const withProof = { content: ['I1'], comment: ['I2'], proof: ['I4'], hero: 'I1' };
+    expect(attachmentLabels(10, ['preview', 'I2', 'I1', 'I4'], withProof)).toEqual(['preview', 'I1', 'I4']);
+    expect(attachmentLabels(9, ['preview', 'I2', 'I1', 'I4'], withProof)).toEqual(['preview', 'I2']);
+    expect(attachmentLabels(5, ['preview', 'I2', 'I1', 'I4'], withProof)).toEqual(['preview', 'I1']);
+    expect(attachmentLabels(6, ['preview', 'I2', 'I1', 'I4'], withProof)).toEqual(['preview', 'I1']);
+    expect(attachmentLabels(7, ['preview', 'I2', 'I1', 'I4'], withProof)).toEqual(['preview', 'I1']);
+    expect(attachmentLabels(1, ['I1', 'I2'], kinds)).toEqual([]);
+    expect(attachmentLabels(11, ['I1', 'outlet_header'], kinds)).toEqual([]);
+  });
+
+  it('attaches desktop and material refs when page slices are missing', () => {
+    const available = ['desktop', 'I1', 'I2'];
+    const loose = { content: ['I1'], comment: ['I2'], hero: 'I1' };
+    expect(attachmentLabels(1, available, loose)).toEqual(['desktop']);
+    expect(attachmentLabels(11, available, loose)).toEqual(['desktop']);
+    for (const category of [3, 5, 6, 7, 10]) {
+      expect(attachmentLabels(category, available, loose)).toEqual(['desktop', 'I1']);
     }
+    expect(attachmentLabels(9, available, loose)).toEqual(['desktop', 'I2']);
+    expect(attachmentLabels(2, available, loose)).toEqual(['desktop']);
+    for (const category of [4, 8]) {
+      expect(attachmentLabels(category, available, loose)).toEqual([]);
+    }
+    expect(attachmentLabels(3, ['desktop', 'I1', 'I3'], { content: ['I1', 'I3'], comment: [], hero: 'I1' })).toEqual([
+      'desktop',
+      'I1',
+    ]);
+    expect(attachmentLabels(5, ['desktop', 'I1', 'I3'], { content: ['I1', 'I3'], comment: [], hero: 'I1' })).toEqual([
+      'desktop',
+      'I1',
+      'I3',
+    ]);
+    expect(attachmentLabels(3, ['I2', 'I1', 'desktop'], loose)).toEqual(['I1', 'desktop']);
+    expect(attachmentLabels(9, ['I2', 'desktop', 'I1'], loose)).toEqual(['I2', 'desktop']);
+    expect(attachmentLabels(2, ['I1', 'outlet_footer', 'desktop', 'outlet_header'], loose)).toEqual([
+      'outlet_footer',
+      'desktop',
+      'outlet_header',
+    ]);
   });
 });
 
@@ -524,7 +643,6 @@ describe('category merge', () => {
           { file: 'index.html', quote: 'форму', screenshot_ref: 'data:image/png;base64,QQ' },
           { file: 'index.html', quote: 'форму', screenshot_ref: blob },
           { file: 'index.html', quote: 'форму', screenshot_ref: 'outlet_footer' },
-          { file: 'index.html', quote: 'форму', screenshot_ref: '' },
         ],
       },
       { pageText, screenshots, attachmentLabels: [] },
@@ -533,7 +651,56 @@ describe('category merge', () => {
     expect(dropped.result.report?.checks).toEqual([{ category: 8, status: 'N/A', note: 'Нет подтверждённой находки' }]);
   });
 
-  it('drops a screenshot_ref outside this call and keeps a listed label as a data URL', () => {
+  it('keeps a page-text FAIL when screenshot_ref is missing and labels the place страница', () => {
+    const pageText = 'Soy autónomo como Daniel. ¿3.300 € por semana sin experiencia previa?';
+    const quote = 'Soy autónomo como Daniel';
+    const headline = '¿3.300 € por semana sin experiencia previa?';
+    const missing = mapCategoryResponse(
+      10,
+      { status: 'FAIL', note: 'имена расходятся', findings: [{ file: 'index.html', quote }] },
+      { pageText, attachmentLabels: ['I1', 'preview'] },
+    );
+    expect(missing.result.findings).toEqual([{ file: 'index.html', quote, screenshot: 'страница', category: 10 }]);
+    expect(missing.result.report?.checks).toEqual([{ category: 10, status: 'FAIL', note: 'имена расходятся' }]);
+    const empty = mapCategoryResponse(
+      10,
+      { status: 'FAIL', findings: [{ file: 'index.html', quote: headline, screenshot_ref: '   ' }] },
+      { pageText, attachmentLabels: ['preview'] },
+    );
+    expect(empty.result.findings).toEqual([{ file: 'index.html', quote: headline, screenshot: 'страница', category: 10 }]);
+    expect(empty.result.report?.checks).toEqual([{ category: 10, status: 'FAIL' }]);
+    const besideRejected = mapCategoryResponse(
+      10,
+      {
+        status: 'FAIL',
+        findings: [
+          { file: 'index.html', quote, screenshot_ref: 'data:image/png;base64,QQ' },
+          { file: 'index.html', quote: headline, screenshot_ref: '' },
+        ],
+      },
+      { pageText, attachmentLabels: ['I1'] },
+    );
+    expect(besideRejected.result.findings).toEqual([
+      { file: 'index.html', quote: headline, screenshot: 'страница', category: 10 },
+    ]);
+    expect(besideRejected.result.report?.checks).toEqual([{ category: 10, status: 'FAIL' }]);
+    const invented = mapCategoryResponse(
+      10,
+      { status: 'FAIL', note: 'выдумка', findings: [{ file: 'index.html', quote: 'этого нет на странице' }] },
+      { pageText },
+    );
+    expect(invented.result.findings).toEqual([]);
+    expect(invented.result.report?.checks).toEqual([
+      { category: 10, status: 'N/A', note: 'выдумка (нет подтверждённой находки)' },
+    ]);
+    const bare = mapCategoryResponse(10, { status: 'FAIL', note: 'только note', findings: [] }, { pageText });
+    expect(bare.result.findings).toEqual([]);
+    expect(bare.result.report?.checks).toEqual([
+      { category: 10, status: 'N/A', note: 'только note (нет подтверждённой находки)' },
+    ]);
+  });
+
+  it('keeps a short place name outside this call and resolves a listed label to a data URL', () => {
     const pageText = 'Minimum deposit 250 PLN.';
     const shot = 'data:image/png;base64,QQ';
     const quote = 'Minimum deposit 250 PLN';
@@ -542,8 +709,29 @@ describe('category merge', () => {
       { status: 'FAIL', findings: [{ file: 'index.html', quote, screenshot_ref: 'desktop' }] },
       { pageText, attachmentLabels: ['I1'], screenshots: { I1: shot, desktop: 'data:image/jpeg;base64,DD' } },
     );
-    expect(missing.result.findings).toEqual([]);
-    expect(missing.result.report?.checks).toEqual([{ category: 6, status: 'N/A', note: 'Нет подтверждённой находки' }]);
+    expect(missing.result.findings).toEqual([{ file: 'index.html', quote, screenshot: 'desktop', category: 6 }]);
+    expect(missing.result.report?.checks).toEqual([{ category: 6, status: 'FAIL' }]);
+    const place = mapCategoryResponse(
+      10,
+      { status: 'FAIL', findings: [{ file: 'index.html', quote, screenshot_ref: 'подпись' }] },
+      { pageText, attachmentLabels: ['preview', 'I1'], screenshots: { preview: shot, I1: shot } },
+    );
+    expect(place.result.findings).toEqual([{ file: 'index.html', quote, screenshot: 'подпись', category: 10 }]);
+    expect(place.result.report?.checks).toEqual([{ category: 10, status: 'FAIL' }]);
+    const blob = 'B'.repeat(120);
+    const poisoned = mapCategoryResponse(
+      9,
+      {
+        status: 'FAIL',
+        findings: [
+          { file: 'index.html', quote, screenshot_ref: 'data:image/png;base64,QQ' },
+          { file: 'index.html', quote, screenshot_ref: blob },
+        ],
+      },
+      { pageText, attachmentLabels: ['preview'], screenshots: { preview: shot } },
+    );
+    expect(poisoned.result.findings).toEqual([]);
+    expect(poisoned.result.report?.checks).toEqual([{ category: 9, status: 'N/A', note: 'Нет подтверждённой находки' }]);
     const outlet = mapCategoryResponse(
       2,
       { status: 'FAIL', findings: [{ file: 'index.html', quote, screenshot_ref: 'outlet_header' }] },

@@ -105,7 +105,10 @@ describe('ai profile choice', () => {
     expect(chooseAiProfile('grok', [both[0]])).toBeNull();
     expect(loadConfig(required).grokModel).toBe('grok-4.7');
     expect(loadConfig({ ...required, GROK_MODEL: ' grok-4.7 ' }).grokModel).toBe('grok-4.7');
-    expect('xaiApiKey' in loadConfig(required)).toBe(false);
+    const bare = loadConfig(required);
+    expect('xaiApiKey' in bare).toBe(false);
+    expect('grokApiKey' in bare).toBe(false);
+    expect('grokBaseUrl' in bare).toBe(false);
   });
 
   it('reads a snapshot without a profile as deepseek and keeps a stored grok profile', () => {

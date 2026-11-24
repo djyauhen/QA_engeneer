@@ -171,6 +171,80 @@ describe('buildAiMaterials', () => {
     expect(result.images[1].caption).toBe('Street crowd');
     expect(result.images.every((image) => image.kind === 'content')).toBe(true);
     expect(result.images.filter((image) => image.claims_person).map((image) => image.file)).toEqual(['images/c2.jpg']);
+    expect(result.images.every((image) => image.proof === false)).toBe(true);
+  });
+
+  it('orders content, then proof screenshots, then avatars', () => {
+    write(
+      'index.html',
+      `<h1>Andrzej Duda</h1>
+      <img src="images/hero.jpg" alt="Andrzej Duda">
+      <div class="comments">
+        <div class="comment">
+          <img src="images/ava.jpg" alt="">
+          <div class="name">Anna Nowak</div>
+          <p>Llego el ingreso.</p>
+          <img src="images/shot.jpg" alt="">
+        </div>
+      </div>`,
+    );
+    write('images/hero.jpg', jpeg(3000, 11));
+    write('images/ava.jpg', jpeg(3000, 12));
+    write('images/shot.jpg', jpeg(3000, 13));
+    const result = buildAiMaterials(dir, 'PL_Andrzej_Duda', '2026-10-26');
+    expect(result.images.map((image) => [image.file, image.kind, image.proof])).toEqual([
+      ['images/hero.jpg', 'content', false],
+      ['images/shot.jpg', 'comment', true],
+      ['images/ava.jpg', 'comment', false],
+    ]);
+    expect(result.commentAvatars.map((avatar) => avatar.name)).toEqual(['Anna Nowak']);
+  });
+
+  it('keeps in-comment proof screenshots ahead of avatars inside the cap of 8', () => {
+    const content = Array.from({ length: 7 }, (_, index) => `<p>${'word '.repeat(20)}</p><img src="images/c${index}.jpg" alt="">`).join('');
+    const row = (name: string, avatar: string, shot: string | null): string => `<div class="_3-8y">
+      <div class="_ohe"><a class="UFIImageBlockImage"><img src="images/${avatar}" alt=""></a></div>
+      <div class="UFIImageBlockContent">
+        <a class="UFICommentActorName">${name}</a>
+        <div class="_3-8m">Texto de ${name}.</div>
+        ${shot ? `<div class="image"><img src="images/${shot}" alt=""></div>` : ''}
+      </div>
+    </div>`;
+    const comments = [
+      row('Maria Jimenez', 'a0.jpg', 's0.jpg'),
+      row('Esther Marchetti', 'a1.jpg', 's1.jpg'),
+      row('Jose Camorra', 'a2.jpg', null),
+      row('Carlos Ruiz', 'a3.jpg', null),
+      row('Ana Lopez', 'a4.jpg', null),
+      row('Luis Perez', 'a5.jpg', null),
+    ].join('');
+    write('index.html', `<h1>Andrzej Duda</h1>${content}<div class="comments"><div id="comments_form"></div>${comments}</div>`);
+    for (let index = 0; index < 7; index += 1) write(`images/c${index}.jpg`, jpeg(3000, 30 + index));
+    for (let index = 0; index < 6; index += 1) write(`images/a${index}.jpg`, jpeg(3000, 40 + index));
+    write('images/s0.jpg', jpeg(3000, 50));
+    write('images/s1.jpg', jpeg(3000, 51));
+    const result = buildAiMaterials(dir, 'PL_Andrzej_Duda', '2026-10-26');
+    expect(result.images).toHaveLength(8);
+    const files = result.images.map((image) => image.file);
+    expect(files).toContain('images/s0.jpg');
+    expect(files).toContain('images/s1.jpg');
+    expect(files.filter((file) => file.startsWith('images/a'))).toEqual([]);
+    expect(files.indexOf('images/s0.jpg')).toBeGreaterThan(files.lastIndexOf('images/c0.jpg'));
+    expect(files.indexOf('images/s1.jpg')).toBeGreaterThan(files.indexOf('images/s0.jpg'));
+    expect(result.images.find((image) => image.file === 'images/s0.jpg')).toMatchObject({
+      kind: 'comment',
+      proof: true,
+      claims_person: null,
+    });
+    expect(result.images.find((image) => image.file === 'images/s1.jpg')).toMatchObject({ kind: 'comment', proof: true });
+    expect(result.commentAvatars.map((avatar) => avatar.name)).toEqual([
+      'Maria Jimenez',
+      'Esther Marchetti',
+      'Jose Camorra',
+      'Carlos Ruiz',
+      'Ana Lopez',
+      'Luis Perez',
+    ]);
   });
 
   it('marks comment avatars and leaves claims_person null on every avatar', () => {
@@ -579,10 +653,10 @@ describe('buildAiMaterials', () => {
     const photoKey = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
     expect(result.commentAvatars.map((item) => item.name)).toEqual(['Marco Rossi', 'Marco Rossi']);
     expect(result.commentAvatars.map((item) => item.photoKey)).toEqual([photoKey(avatar), photoKey(avatar)]);
-    expect(result.images.find((image) => image.file === 'images/marco.jpg')?.kind).toBe('comment');
-    expect(result.images.find((image) => image.file === 'images/banks.jpg')?.kind).toBe('content');
-    expect(result.images.find((image) => image.file === 'images/selfie.jpg')?.kind).toBe('content');
-    expect(result.images.find((image) => image.file === 'images/watch.jpg')?.kind).toBe('content');
+    expect(result.images.find((image) => image.file === 'images/marco.jpg')).toMatchObject({ kind: 'comment', proof: false });
+    expect(result.images.find((image) => image.file === 'images/banks.jpg')).toMatchObject({ kind: 'comment', proof: true });
+    expect(result.images.find((image) => image.file === 'images/selfie.jpg')).toMatchObject({ kind: 'comment', proof: true });
+    expect(result.images.find((image) => image.file === 'images/watch.jpg')).toMatchObject({ kind: 'comment', proof: true });
     const enforced = enforceCommentAvatars(
       { findings: [], report: { checks: [{ category: 9, status: 'PASS' }] } },
       { pageText: result.pageText, avatars: result.commentAvatars },
@@ -653,6 +727,51 @@ describe('qa-response mapper', () => {
     expect(mapQaResponse(body, {}).findings).toHaveLength(2);
   });
 
+  it('keeps an attached-image finding when the quote is on the page and problem cites digits that are not', () => {
+    const text = 'Pedí un retiro por Bizum. Llegó en 40 minutos.';
+    const shot = 'data:image/webp;base64,QQ';
+    const kept = mapQaResponse(
+      {
+        checks: [{ category: 10, status: 'FAIL' }],
+        findings: [
+          {
+            file: 'index.html',
+            quote: 'Llegó en 40 minutos.',
+            screenshot_ref: 'I4',
+            problem: 'На кадре Saldo total 3.312,00 € и Saldo disponible 9.000,00 €',
+            category: 10,
+          },
+        ],
+      },
+      { pageText: text, attachmentLabels: ['I4', 'preview'], screenshots: { I4: shot } },
+    );
+    expect(kept.findings).toEqual([
+      expect.objectContaining({
+        quote: 'Llegó en 40 minutos.',
+        screenshot: shot,
+        problem: 'На кадре Saldo total 3.312,00 € и Saldo disponible 9.000,00 €',
+      }),
+    ]);
+    expect(kept.report?.checks).toEqual([expect.objectContaining({ category: 10, status: 'FAIL' })]);
+    const dropped = mapQaResponse(
+      {
+        checks: [{ category: 10, status: 'FAIL' }],
+        findings: [
+          {
+            file: 'index.html',
+            quote: '3.312,00 €',
+            screenshot_ref: 'I4',
+            problem: 'Saldo total 3.312,00 € и Saldo disponible 9.000,00 €',
+            category: 10,
+          },
+        ],
+      },
+      { pageText: text, attachmentLabels: ['I4', 'preview', 'desktop'], screenshots: { I4: shot } },
+    );
+    expect(dropped.findings).toEqual([]);
+    expect(dropped.report?.checks).toEqual([{ category: 10, status: 'N/A', note: 'Нет подтверждённой находки' }]);
+  });
+
   it('strips the «Общий результат» line from report_markdown', () => {
     const md = 'ИТОГ\n\nПодтверждённых ошибок: 1.\nMajor: 1.\n\nОбщий результат: FAIL\n';
     expect(stripOverallLine(md)).toBe('ИТОГ\n\nПодтверждённых ошибок: 1.\nMajor: 1.');
@@ -717,7 +836,12 @@ describe('qa-response mapper', () => {
       { findings: [{ file: 'a.html', quote: 'q', screenshot: 's' }, { file: 'b.html', quote: 'q' }] },
       { pageText: 'a q b' },
     );
-    expect(result).toEqual({ findings: [{ file: 'a.html', quote: 'q', screenshot: 's' }] });
+    expect(result).toEqual({
+      findings: [
+        { file: 'a.html', quote: 'q', screenshot: 's' },
+        { file: 'b.html', quote: 'q', screenshot: 'страница' },
+      ],
+    });
     expect(result.report).toBeUndefined();
   });
 });

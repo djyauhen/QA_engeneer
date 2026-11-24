@@ -1,6 +1,5 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
-import { CATEGORY_TIMEOUT_MS } from './ai.client';
 
 export interface GrokSpawnResult {
   stdout: string;
@@ -25,7 +24,15 @@ const STDOUT_CAP = 2_000_000;
 const STDERR_CAP = 8_000;
 const LOG_LINE_MAX = 180;
 const LOGIN_TIMEOUT_MS = 300_000;
+/** One Grok Build process. Longer than the DeepSeek HTTP timeout: frames plus a large prompt file. */
+export const GROK_SPAWN_TIMEOUT_MS = 300_000;
+/**
+ * Same budget DeepSeek sends (`reasoning_effort: low`).
+ * The CLI default is high: one checklist point then spends minutes reasoning inside a single turn.
+ */
+export const GROK_REASONING_EFFORT = 'low';
 const ARGV_OR_PROMPT = /(?:^|\s)(?:-p|--system-prompt(?:-override)?|--disallowed-tools|--cwd)\b|"prompt"\s*:|data:image\//i;
+const SANDBOX_NOISE = /sandbox could not be applied|profile is not in effect/i;
 const SECRET = /\b(?:sk|xai|tok)[-_][A-Za-z0-9_-]{8,}\b|\bBearer\s+\S+|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b|\b[A-Za-z0-9_-]{40,}\b/gi;
 
 /**
@@ -42,7 +49,7 @@ function safeStderrLine(stderr: string): string {
   const lines = stderr.split(/\r?\n/);
   for (const raw of lines) {
     const line = raw.replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!line || line.length > 400 || ARGV_OR_PROMPT.test(line)) continue;
+    if (!line || line.length > 400 || ARGV_OR_PROMPT.test(line) || SANDBOX_NOISE.test(line)) continue;
     const redacted = line.replace(SECRET, '[redacted]').trim();
     if (!redacted || ARGV_OR_PROMPT.test(redacted)) continue;
     return redacted.length > LOG_LINE_MAX ? `${redacted.slice(0, LOG_LINE_MAX - 1)}…` : redacted;
@@ -53,44 +60,57 @@ function safeStderrLine(stderr: string): string {
 /**
  * File-edit and shell ids, plus the search and monitor ids that burned the turn
  * budget before any JSON existed. read_file stays: an @mention sends the path,
- * and the model reads JPEG bytes with that tool. Web tools are already off via --disable-web-search.
+ * and the model reads JPEG bytes with that tool. Eight turns leave room for a
+ * few read_file calls and still one turn for the JSON answer.
+ * Web tools are already off via --disable-web-search.
  */
 export const GROK_DISALLOWED_TOOLS = 'run_terminal_cmd,search_replace,write,grep,monitor';
 
 /** One Grok-only line. The shared checklist prompt stays untouched. */
 const JSON_ONLY_LINE =
-  'Видимый ответ — ровно один JSON-объект, он начинается с {, без предложения перед ним и без пересказа вызовов инструментов.';
+  'Видимый ответ — ровно один JSON-объект, он начинается с { и заканчивается на }. После } ничего нет. Перед объектом не пиши предложения и не пересказывай вызовы инструментов.';
 
+/** System file body: the checklist system plus the JSON-only line. Never an argv string. */
+export function grokSystemFileText(system: string): string {
+  return `${system}\n${JSON_ONLY_LINE}`;
+}
+
+/**
+ * One-shot argv. `--prompt-file` is itself a single-turn headless prompt (same mode as
+ * `-p` / `--single`). A bare `-p` with no text reads stdin, so it is not passed and the
+ * next flag cannot be swallowed as PROMPT. Prompt and system text stay in files:
+ * Windows CreateProcess rejects a command line near 32KB.
+ */
 export function grokArgv(input: {
-  prompt: string;
+  promptFile: string;
   model: string;
   cwd: string;
-  system: string;
-  resume?: string | null;
+  systemFile: string;
 }): string[] {
   const args = [
     '--no-auto-update',
-    '-p',
-    input.prompt,
+    '--prompt-file',
+    input.promptFile,
     '-m',
     input.model,
+    '--reasoning-effort',
+    GROK_REASONING_EFFORT,
     '--output-format',
     'json',
     '--max-turns',
-    '4',
+    '8',
     '--no-plan',
     '--no-subagents',
     '--disable-web-search',
     '--cwd',
     input.cwd,
-    '--system-prompt-override',
-    input.resume ? JSON_ONLY_LINE : `${input.system}\n${JSON_ONLY_LINE}`,
+    '--system-prompt-file',
+    input.systemFile,
     '--disallowed-tools',
     GROK_DISALLOWED_TOOLS,
-    '--sandbox',
-    'read-only',
   ];
-  if (input.resume) args.push('--resume', input.resume);
+  // This Windows build prints a warning and does not enforce the profile.
+  if (process.platform !== 'win32') args.push('--sandbox', 'read-only');
   return args;
 }
 
@@ -112,6 +132,27 @@ export function readGrokResult(stdout: string): {
   const content = typeof record.text === 'string' ? checklistObjectText(record.text) : '';
   const sessionId = typeof record.sessionId === 'string' && record.sessionId.trim() ? record.sessionId.trim() : null;
   return { content, usage: numericUsage(record.usage), sessionId };
+}
+
+/** Error-object message first, so a headless failure is not hidden behind a partial `text`. */
+export function errorMessageThenStderr(stdout: string, stderr: string): string {
+  const message = jsonErrorMessage(stdout);
+  if (!message) return stderr;
+  return `${message}\n${stderr}`;
+}
+
+function jsonErrorMessage(stdout: string): string {
+  const trimmed = stdout.trim();
+  if (!trimmed) return '';
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '';
+    const record = parsed as { type?: unknown; message?: unknown };
+    if (record.type !== 'error' || typeof record.message !== 'string') return '';
+    return record.message;
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -189,7 +230,7 @@ function numericUsage(usage: unknown): Record<string, unknown> | null {
 export const spawnGrok: GrokSpawn = (command, args, options) =>
   runProcess(command, args, {
     cwd: options.cwd,
-    timeoutMs: options.timeoutMs ?? CATEGORY_TIMEOUT_MS,
+    timeoutMs: options.timeoutMs ?? GROK_SPAWN_TIMEOUT_MS,
     onText: null,
   });
 
