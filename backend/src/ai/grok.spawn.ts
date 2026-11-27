@@ -27,10 +27,17 @@ const LOGIN_TIMEOUT_MS = 300_000;
 /** One Grok Build process. Longer than the DeepSeek HTTP timeout: frames plus a large prompt file. */
 export const GROK_SPAWN_TIMEOUT_MS = 300_000;
 /**
- * Same budget DeepSeek sends (`reasoning_effort: low`).
- * The CLI default is high: one checklist point then spends minutes reasoning inside a single turn.
+ * Checklist points use the same budget DeepSeek sends (`reasoning_effort: low`).
+ * The CLI default is high: one point then spends minutes inside a single turn.
+ * The eye pass is the only call that has to read faces and text on pixels, so it
+ * stays above low. High on that pass alone was several minutes; medium is the next step.
  */
 export const GROK_REASONING_EFFORT = 'low';
+export const GROK_VISION_REASONING_EFFORT = 'medium';
+/** One read of the frames, then the JSON. A spare turn covers a tool the denylist still rejects. */
+export const GROK_VISION_MAX_TURNS = '4';
+/** A checklist point answers from page_text and visual_observations. No second look at the files. */
+export const GROK_CATEGORY_MAX_TURNS = '2';
 const ARGV_OR_PROMPT = /(?:^|\s)(?:-p|--system-prompt(?:-override)?|--disallowed-tools|--cwd)\b|"prompt"\s*:|data:image\//i;
 const SANDBOX_NOISE = /sandbox could not be applied|profile is not in effect/i;
 const SECRET = /\b(?:sk|xai|tok)[-_][A-Za-z0-9_-]{8,}\b|\bBearer\s+\S+|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b|\b[A-Za-z0-9_-]{40,}\b/gi;
@@ -58,13 +65,15 @@ function safeStderrLine(stderr: string): string {
 }
 
 /**
- * File-edit and shell ids, plus the search and monitor ids that burned the turn
- * budget before any JSON existed. read_file stays: an @mention sends the path,
- * and the model reads JPEG bytes with that tool. Eight turns leave room for a
- * few read_file calls and still one turn for the JSON answer.
+ * Tools that burned a turn before any JSON existed: directory listing, search,
+ * workflows, and image generation. read_file stays on the eye pass only.
+ * An @mention is a path; JPEG pixels arrive when that tool reads the file.
+ * Checklist points do not get read_file: they judge visual_observations.
  * Web tools are already off via --disable-web-search.
  */
-export const GROK_DISALLOWED_TOOLS = 'run_terminal_cmd,search_replace,write,grep,monitor';
+export const GROK_DISALLOWED_TOOLS =
+  'run_terminal_cmd,search_replace,write,grep,monitor,list_dir,search_tool,workflow,image_gen,image_edit,image_to_video,reference_to_video,ask_user_question,todo_write,enter_plan_mode,exit_plan_mode,web_search,web_fetch,task';
+export const GROK_CATEGORY_DISALLOWED_TOOLS = `${GROK_DISALLOWED_TOOLS},read_file`;
 
 /** One Grok-only line. The shared checklist prompt stays untouched. */
 const JSON_ONLY_LINE =
@@ -86,6 +95,9 @@ export function grokArgv(input: {
   model: string;
   cwd: string;
   systemFile: string;
+  reasoningEffort?: string;
+  maxTurns?: string;
+  disallowedTools?: string;
 }): string[] {
   const args = [
     '--no-auto-update',
@@ -94,11 +106,11 @@ export function grokArgv(input: {
     '-m',
     input.model,
     '--reasoning-effort',
-    GROK_REASONING_EFFORT,
+    input.reasoningEffort ?? GROK_REASONING_EFFORT,
     '--output-format',
     'json',
     '--max-turns',
-    '8',
+    input.maxTurns ?? GROK_CATEGORY_MAX_TURNS,
     '--no-plan',
     '--no-subagents',
     '--disable-web-search',
@@ -107,7 +119,7 @@ export function grokArgv(input: {
     '--system-prompt-file',
     input.systemFile,
     '--disallowed-tools',
-    GROK_DISALLOWED_TOOLS,
+    input.disallowedTools ?? GROK_DISALLOWED_TOOLS,
   ];
   // This Windows build prints a warning and does not enforce the profile.
   if (process.platform !== 'win32') args.push('--sandbox', 'read-only');
