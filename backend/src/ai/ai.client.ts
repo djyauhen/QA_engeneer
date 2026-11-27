@@ -66,8 +66,11 @@ export function grokVisionSystem(): string {
   ].join('\n');
 }
 
-const GROK_READ_FRAMES_LINE =
-  'Не вызывай grep, monitor и list_dir. page_text уже в этом промпте. Кадры — только строки в конце промпта, которые начинаются с @ и кончаются на .jpg. Метка в JSON — имя этого файла без @ и без .jpg. Каждую такую строку открой один раз через read_file и смотри как изображение. Каталог не листай, файлы без такой строки не открывай. Нет таких строк — пиксели не выдумывай. Пиксели не видны — кадр не выдумывай. В пункте статус N/A и эта фраза в note. В глазах статус не ставь: face_visible false и та же фраза в note записи.';
+const GROK_VISION_TOOLS_LINE =
+  'Не вызывай grep, monitor, list_dir и search_tool. page_text уже в этом промпте. Кадры — только строки в конце промпта, которые начинаются с @ и кончаются на .jpg. Метка в JSON — имя этого файла без @ и без .jpg. Открой каждый такой файл один раз через read_file, все в одном сообщении, и смотри как изображение. Каталог не листай. Нет таких строк — пиксели не выдумывай. Пиксели не видны — кадр не выдумывай: face_visible false и эта фраза в note записи. Статус не ставь.';
+
+const GROK_CATEGORY_TOOLS_LINE =
+  'Не вызывай инструменты, в том числе read_file, list_dir, grep и monitor. page_text уже в этом промпте. Кадры глаз уже записаны в visual_observations. Пиксель, которого там нет, не выдумывай. quote — дословная подстрока page_text; нет такой подстроки — finding не пиши.';
 
 export interface AiInput {
   /** Legacy file dump; no longer sent to the model (page_text replaces it). */
@@ -1057,7 +1060,7 @@ export function grokPromptParts(request: DeepSeekChatRequest): {
   let text = userText.replace(DATA_IMAGE_IN_TEXT, '');
   if (text.endsWith('\nПРОВЕРЯЙ')) text = text.slice(0, -'\nПРОВЕРЯЙ'.length);
   if (kind === 'vision') text = text.replace(VISION_SYSTEM, '');
-  text = text.replaceAll(FRAME_TOOLS_LINE, GROK_READ_FRAMES_LINE);
+  text = text.replaceAll(FRAME_TOOLS_LINE, kind === 'vision' ? GROK_VISION_TOOLS_LINE : GROK_CATEGORY_TOOLS_LINE);
   const labels = declaredLabels(userText, kind);
   const urls = imageUrlsOf(userContent);
   const frames: Array<{ name: string; bytes: Buffer }> = [];

@@ -23,9 +23,9 @@ export interface FactSheet {
 const USER_AGENT = 'QA-assistant/0.1 (landing fact check)';
 const EXTRACT_LIMIT = 4000;
 const CANDIDATE_LIMIT = 8;
-const FRANKFURTER_URL = 'https://api.frankfurter.app/latest?from=USD';
-const FALLBACK_FX_URL = 'https://open.er-api.com/v6/latest/USD';
-const FACT_HOSTS = new Set(['www.wikidata.org', 'api.frankfurter.app', 'open.er-api.com']);
+const CHECK_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const CURRENCY_API_PAGES_HOST = /^\d{4}-\d{2}-\d{2}\.currency-api\.pages\.dev$/;
+const FACT_HOSTS = new Set(['www.wikidata.org', 'api.frankfurter.app', 'cdn.jsdelivr.net']);
 
 /** Wikipedia language subdomains. Fixed set: never taken from page content. */
 const WIKI_LANGS = [
@@ -59,7 +59,7 @@ for (const names of GEO_NAMES) {
 const FX_CODES = new Set([
   'AED', 'ALL', 'AUD', 'AZN', 'BAM', 'BDT', 'BGN', 'BRL', 'BYN', 'CAD', 'CHF', 'CLP', 'CNY', 'COP', 'CZK', 'DKK', 'EGP',
   'EUR', 'GBP', 'GEL', 'HKD', 'HUF', 'IDR', 'ILS', 'INR', 'ISK', 'JPY', 'KES', 'KRW', 'KZT', 'MAD', 'MDL', 'MKD', 'MXN',
-  'MYR', 'NGN', 'NOK', 'NZD', 'PEN', 'PHP', 'PKR', 'PLN', 'RON', 'RSD', 'SAR', 'SEK', 'SGD', 'THB', 'TRY', 'UAH', 'VND',
+  'MYR', 'NGN', 'NOK', 'NZD', 'PEN', 'PHP', 'PKR', 'PLN', 'RON', 'RSD', 'SAR', 'SEK', 'SGD', 'THB', 'TRY', 'UAH', 'UYU', 'VND',
   'ZAR',
 ]);
 
@@ -86,6 +86,7 @@ export function isAllowedFactUrl(url: string): boolean {
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return false;
   if (parsed.port && parsed.port !== '443') return false;
   if (FACT_HOSTS.has(parsed.hostname)) return true;
+  if (CURRENCY_API_PAGES_HOST.test(parsed.hostname)) return true;
   return isWikipediaHost(parsed.hostname);
 }
 
@@ -292,36 +293,22 @@ export function readFrankfurter(body: unknown): FxRates | null {
   return Object.keys(rates).length ? { date: record.date, base: 'USD', rates } : null;
 }
 
-/** Fallback FX payload. A non-USD base is converted into units of currency per 1 USD. */
-export function readFallbackFx(body: unknown): FxRates | null {
+/** Dated currency-api `usd` map. Values are already units of currency per 1 USD. */
+export function readCurrencyApi(body: unknown, checkDate: string): FxRates | null {
+  if (!CHECK_DATE.test(checkDate)) return null;
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
   const record = body as Record<string, unknown>;
-  if (typeof record.result === 'string' && record.result !== 'success') return null;
-  const date = readFxDate(record);
-  if (!date) return null;
-  const baseRaw = typeof record.base_code === 'string' ? record.base_code : typeof record.base === 'string' ? record.base : '';
-  const base = baseRaw.trim().toUpperCase();
-  if (!/^[A-Z]{3}$/.test(base)) return null;
-  if (!record.rates || typeof record.rates !== 'object' || Array.isArray(record.rates)) return null;
-  const raw: Record<string, number> = {};
-  for (const [code, value] of Object.entries(record.rates as Record<string, unknown>)) {
-    const upper = code.trim().toUpperCase();
-    if (!/^[A-Z]{3}$/.test(upper)) continue;
-    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
-    raw[upper] = value;
-  }
-  if (base !== 'USD' && !(typeof raw.USD === 'number' && raw.USD > 0)) return null;
-  const usdPerBase = base === 'USD' ? 1 : raw.USD;
+  if (record.date !== checkDate) return null;
+  const usd = record.usd;
+  if (!usd || typeof usd !== 'object' || Array.isArray(usd)) return null;
   const rates: Record<string, number> = {};
-  for (const code of new Set([...Object.keys(raw), base])) {
-    if (!FX_CODES.has(code)) continue;
-    const perBase = code === base ? 1 : raw[code];
-    if (typeof perBase !== 'number' || !Number.isFinite(perBase) || perBase <= 0) continue;
-    const perUsd = perBase / usdPerBase;
-    if (!Number.isFinite(perUsd) || perUsd <= 0) continue;
-    rates[code] = perUsd;
+  for (const [code, value] of Object.entries(usd as Record<string, unknown>)) {
+    const upper = code.toUpperCase();
+    if (!FX_CODES.has(upper)) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
+    rates[upper] = value;
   }
-  return Object.keys(rates).length ? { date, base: 'USD', rates } : null;
+  return Object.keys(rates).length ? { date: checkDate, base: 'USD', rates } : null;
 }
 
 interface FactLookup {
@@ -384,7 +371,7 @@ export async function loadFactSheet(
   options: FactLookup,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<{ person: PersonFact | null; fx: FxRates | null }> {
-  const [person, fx] = await Promise.all([loadPerson(options, fetchImpl), fetchFx(fetchImpl)]);
+  const [person, fx] = await Promise.all([loadPerson(options, fetchImpl), fetchFx(options.checkDate, fetchImpl)]);
   return { person, fx };
 }
 
@@ -1043,16 +1030,46 @@ async function summaryOf(lang: string, title: string, wanted: string, fetchImpl:
   };
 }
 
-async function fetchFx(fetchImpl: typeof fetch): Promise<FxRates | null> {
+async function fetchFx(checkDate: string, fetchImpl: typeof fetch): Promise<FxRates | null> {
+  if (!CHECK_DATE.test(checkDate)) return null;
+  const frankfurter = await fetchFrankfurter(checkDate, fetchImpl);
+  const filler = await fetchCurrencyFiller(checkDate, fetchImpl);
+  return mergeFx(checkDate, filler, frankfurter);
+}
+
+async function fetchFrankfurter(checkDate: string, fetchImpl: typeof fetch): Promise<FxRates | null> {
+  const url = `https://api.frankfurter.app/${checkDate}?from=USD`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const rates = readFrankfurter(await getJsonOnce(FRANKFURTER_URL, fetchImpl));
-    if (rates) return rates;
-  }
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const rates = readFallbackFx(await getJsonOnce(FALLBACK_FX_URL, fetchImpl));
+    const rates = readFrankfurter(await getJsonOnce(url, fetchImpl));
     if (rates) return rates;
   }
   return null;
+}
+
+async function fetchCurrencyFiller(checkDate: string, fetchImpl: typeof fetch): Promise<FxRates | null> {
+  const jsDelivr = `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${checkDate}/v1/currencies/usd.json`;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const rates = readCurrencyApi(await getJsonOnce(jsDelivr, fetchImpl), checkDate);
+    if (rates) return rates;
+  }
+  const pagesDev = `https://${checkDate}.currency-api.pages.dev/v1/currencies/usd.json`;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const rates = readCurrencyApi(await getJsonOnce(pagesDev, fetchImpl), checkDate);
+    if (rates) return rates;
+  }
+  return null;
+}
+
+function mergeFx(checkDate: string, filler: FxRates | null, frankfurter: FxRates | null): FxRates | null {
+  const rates: Record<string, number> = {};
+  if (filler) {
+    for (const [code, value] of Object.entries(filler.rates)) rates[code] = value;
+  }
+  if (frankfurter) {
+    for (const [code, value] of Object.entries(frankfurter.rates)) rates[code] = value;
+  }
+  if (!Object.keys(rates).length) return null;
+  return { date: checkDate, base: 'USD', rates };
 }
 
 function summaryUrl(lang: string, title: string): string {
@@ -1205,19 +1222,6 @@ function langFromSource(source: string): string | null {
   } catch {
     return null;
   }
-}
-
-function readFxDate(record: Record<string, unknown>): string | null {
-  if (typeof record.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(record.date)) return record.date;
-  if (typeof record.time_last_update_unix === 'number') return dateFromUnix(record.time_last_update_unix);
-  return null;
-}
-
-function dateFromUnix(seconds: number): string | null {
-  if (!Number.isFinite(seconds) || seconds <= 0) return null;
-  const date = new Date(seconds * 1000);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.toISOString().slice(0, 10);
 }
 
 function parseDate(iso: string): { year: number; month: number; day: number } | null {

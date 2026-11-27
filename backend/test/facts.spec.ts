@@ -10,7 +10,7 @@ import {
   loadFactSheet,
   readBirth,
   readEntityIds,
-  readFallbackFx,
+  readCurrencyApi,
   readFrankfurter,
   readIntro,
   readLabels,
@@ -101,8 +101,20 @@ describe('fact sheet parsing', () => {
       citizenship: [],
       positions: [],
     });
-    expect(sheet.fx).toEqual({ date: '2026-10-24', base: 'USD', rates: { PLN: 4 } });
-    expect(calls.every((href) => href.startsWith('https://en.wikipedia.org/') || href.startsWith('https://www.wikidata.org/') || href.startsWith('https://api.frankfurter.app/'))).toBe(true);
+    expect(sheet.fx).toEqual({ date: '2026-10-27', base: 'USD', rates: { PLN: 4 } });
+    expect(sheet.fx?.rates.UYU).toBeUndefined();
+    expect(calls.filter((href) => href.includes('frankfurter.app')).every((href) => href === 'https://api.frankfurter.app/2026-10-27?from=USD')).toBe(true);
+    expect(calls.some((href) => href.includes('frankfurter.app/latest'))).toBe(false);
+    expect(
+      calls.every(
+        (href) =>
+          href.startsWith('https://en.wikipedia.org/') ||
+          href.startsWith('https://www.wikidata.org/') ||
+          href.startsWith('https://api.frankfurter.app/') ||
+          href.startsWith('https://cdn.jsdelivr.net/') ||
+          href.startsWith('https://2026-10-27.currency-api.pages.dev/'),
+      ),
+    ).toBe(true);
     await expect(loadFactSheet({ person: 'x', checkDate: '2026-10-27' }, fetchImpl)).resolves.toMatchObject({ person: null });
   });
 
@@ -138,41 +150,39 @@ describe('fact sheet parsing', () => {
     expect(positions.map((id) => labels[id])).toEqual(['entrepreneur']);
   });
 
-  it('reads a fallback FX payload as units per 1 USD, including EUR', () => {
+  it('reads a dated currency-api usd map and drops a missing or different date', () => {
     expect(
-      readFallbackFx({ result: 'success', base_code: 'USD', date: '2026-10-24', rates: { EUR: 0.92, USD: 1, XXX: 3 } }),
-    ).toEqual({ date: '2026-10-24', base: 'USD', rates: { EUR: 0.92 } });
-    const converted = readFallbackFx({
-      base_code: 'EUR',
-      date: '2026-10-24',
-      rates: { USD: 1.25, EUR: 1, GBP: 0.86 },
-    });
-    expect(converted?.base).toBe('USD');
-    expect(converted?.date).toBe('2026-10-24');
-    expect(converted?.rates.EUR).toBeCloseTo(1 / 1.25);
-    expect(converted?.rates.GBP).toBeCloseTo(0.86 / 1.25);
-    expect(readFallbackFx({ result: 'error', base_code: 'USD', date: '2026-10-24', rates: { EUR: 0.92 } })).toBeNull();
-    expect(readFallbackFx({ base_code: 'EUR', date: '2026-10-24', rates: { GBP: 0.86 } })).toBeNull();
+      readCurrencyApi(
+        { date: '2026-10-27', usd: { eur: 0.92, uyu: 40, usd: 1, bad: 1, xxx: 0 } },
+        '2026-10-27',
+      ),
+    ).toEqual({ date: '2026-10-27', base: 'USD', rates: { EUR: 0.92, UYU: 40 } });
+    expect(readCurrencyApi({ usd: { eur: 0.92, uyu: 40 } }, '2026-10-27')).toBeNull();
+    expect(readCurrencyApi({ date: '2026-10-24', usd: { eur: 0.92, uyu: 40 } }, '2026-10-27')).toBeNull();
   });
 
   it('rejects a host that is not on the fact allowlist', () => {
     expect(isAllowedFactUrl('https://evil.test/latest?from=USD')).toBe(false);
     expect(isAllowedFactUrl('https://en.wikipedia.org.evil.test/wiki/Ben_Woldring')).toBe(false);
     expect(isAllowedFactUrl('https://xx.wikipedia.org/wiki/Ben_Woldring')).toBe(false);
-    expect(isAllowedFactUrl('http://api.frankfurter.app/latest?from=USD')).toBe(false);
-    expect(isAllowedFactUrl('https://user:pass@api.frankfurter.app/latest?from=USD')).toBe(false);
-    expect(isAllowedFactUrl('https://api.frankfurter.app/latest?from=USD')).toBe(true);
-    expect(isAllowedFactUrl('https://open.er-api.com/v6/latest/USD')).toBe(true);
+    expect(isAllowedFactUrl('http://api.frankfurter.app/2026-10-27?from=USD')).toBe(false);
+    expect(isAllowedFactUrl('https://user:pass@api.frankfurter.app/2026-10-27?from=USD')).toBe(false);
+    expect(isAllowedFactUrl('https://api.frankfurter.app/2026-10-27?from=USD')).toBe(true);
+    expect(isAllowedFactUrl('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@2026-10-27/v1/currencies/usd.json')).toBe(true);
+    expect(isAllowedFactUrl('https://2026-10-27.currency-api.pages.dev/v1/currencies/usd.json')).toBe(true);
+    expect(isAllowedFactUrl('https://evil.currency-api.pages.dev/v1/currencies/usd.json')).toBe(false);
+    expect(isAllowedFactUrl('https://latest.currency-api.pages.dev/v1/currencies/usd.json')).toBe(false);
+    expect(isAllowedFactUrl('https://open.er-api.com/v6/latest/USD')).toBe(false);
     expect(isAllowedFactUrl('https://nl.wikipedia.org/wiki/Ben_Woldring')).toBe(true);
     expect(isAllowedFactUrl('https://www.wikidata.org/wiki/Q123')).toBe(true);
     expect(wikiLangsFor(['nl-NL', 'de'])).toEqual(['nl', 'de', 'en']);
     expect(wikiLangsFor(['xx'])).toEqual(['en']);
   });
 
-  it('loads a Dutch person card and falls back to an allowlisted FX feed', async () => {
+  it('loads a Dutch person card and fills rates from the dated currency-api feed', async () => {
     const calls: string[] = [];
     let frankfurter = 0;
-    let fallback = 0;
+    let jsDelivr = 0;
     const dutch = {
       type: 'standard',
       title: 'Ben Woldring',
@@ -231,10 +241,10 @@ describe('fact sheet parsing', () => {
         frankfurter += 1;
         return new Response('no', { status: 503 });
       }
-      if (href.startsWith('https://open.er-api.com/')) {
-        fallback += 1;
+      if (href === 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@2026-10-27/v1/currencies/usd.json') {
+        jsDelivr += 1;
         return new Response(
-          JSON.stringify({ result: 'success', base_code: 'USD', date: '2026-10-24', rates: { EUR: 0.92, USD: 1, PLN: 4 } }),
+          JSON.stringify({ date: '2026-10-27', usd: { eur: 0.92, pln: 4, uyu: 40 } }),
           { status: 200 },
         );
       }
@@ -249,25 +259,69 @@ describe('fact sheet parsing', () => {
       citizenship: ['Nederland'],
       positions: ['entrepreneur'],
     });
-    expect(sheet.fx).toEqual({ date: '2026-10-24', base: 'USD', rates: { EUR: 0.92, PLN: 4 } });
+    expect(sheet.fx).toEqual({ date: '2026-10-27', base: 'USD', rates: { EUR: 0.92, PLN: 4, UYU: 40 } });
     expect(frankfurter).toBe(2);
-    expect(fallback).toBe(1);
+    expect(jsDelivr).toBe(1);
+    expect(calls.filter((href) => href.startsWith('https://api.frankfurter.app/')).every((href) => href === 'https://api.frankfurter.app/2026-10-27?from=USD')).toBe(true);
+    expect(calls.some((href) => href.includes('pages.dev'))).toBe(false);
+    expect(calls.some((href) => href.includes('open.er-api.com'))).toBe(false);
     expect(calls.some((href) => href.startsWith('https://nl.wikipedia.org/'))).toBe(true);
     expect(calls.some((href) => href.startsWith('https://en.wikipedia.org/'))).toBe(false);
     expect(calls.every((href) => isAllowedFactUrl(href))).toBe(true);
   });
 
-  it('leaves fx null when Frankfurter and the fallback both fail', async () => {
-    let calls = 0;
-    const fetchImpl: typeof fetch = async () => {
-      calls += 1;
+  it('leaves fx null when every dated FX URL fails', async () => {
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (url) => {
+      calls.push(String(url));
       return new Response('no', { status: 503 });
     };
     await expect(loadFactSheet({ person: null, checkDate: '2026-10-27' }, fetchImpl)).resolves.toEqual({
       person: null,
       fx: null,
     });
-    expect(calls).toBe(4);
+    expect(calls).toEqual([
+      'https://api.frankfurter.app/2026-10-27?from=USD',
+      'https://api.frankfurter.app/2026-10-27?from=USD',
+      'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@2026-10-27/v1/currencies/usd.json',
+      'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@2026-10-27/v1/currencies/usd.json',
+      'https://2026-10-27.currency-api.pages.dev/v1/currencies/usd.json',
+      'https://2026-10-27.currency-api.pages.dev/v1/currencies/usd.json',
+    ]);
+    calls.length = 0;
+    await expect(loadFactSheet({ person: null, checkDate: '2026/10/27' }, fetchImpl)).resolves.toEqual({
+      person: null,
+      fx: null,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it('keeps ECB rates over the currency-api filler and publishes the check date', async () => {
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (url) => {
+      const href = String(url);
+      calls.push(href);
+      if (href === 'https://api.frankfurter.app/2026-10-27?from=USD') {
+        return new Response(JSON.stringify({ base: 'USD', date: '2026-10-24', rates: { EUR: 0.92, PLN: 4 } }), { status: 200 });
+      }
+      if (href === 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@2026-10-27/v1/currencies/usd.json') {
+        return new Response(JSON.stringify({ date: '2026-10-27', usd: { eur: 0.5, uyu: 40, aed: 3.67 } }), { status: 200 });
+      }
+      return new Response('no', { status: 404 });
+    };
+    const sheet = await loadFactSheet({ person: null, checkDate: '2026-10-27' }, fetchImpl);
+    expect(sheet.fx).toEqual({
+      date: '2026-10-27',
+      base: 'USD',
+      rates: { AED: 3.67, EUR: 0.92, PLN: 4, UYU: 40 },
+    });
+    expect(calls.filter((href) => href.startsWith('https://api.frankfurter.app/'))).toEqual([
+      'https://api.frankfurter.app/2026-10-27?from=USD',
+    ]);
+    expect(calls.filter((href) => href.includes('jsdelivr.net'))).toEqual([
+      'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@2026-10-27/v1/currencies/usd.json',
+    ]);
+    expect(calls.some((href) => href.includes('pages.dev'))).toBe(false);
   });
 
   it('uses an English summary when Dutch misses, and Wikidata when both summaries miss', async () => {

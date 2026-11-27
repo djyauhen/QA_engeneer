@@ -4,7 +4,16 @@ import path from 'path';
 import { AiCallError, DeepSeekChatRequest } from '../src/ai/ai.client';
 import { GAP_NOTE } from '../src/ai/qa-categories';
 import { GROK_CATEGORY_CONCURRENCY, GrokBuildAiClient } from '../src/ai/grok.client';
-import { GROK_DISALLOWED_TOOLS, GROK_SPAWN_TIMEOUT_MS, grokLogHint } from '../src/ai/grok.spawn';
+import {
+  GROK_CATEGORY_DISALLOWED_TOOLS,
+  GROK_CATEGORY_MAX_TURNS,
+  GROK_DISALLOWED_TOOLS,
+  GROK_REASONING_EFFORT,
+  GROK_SPAWN_TIMEOUT_MS,
+  GROK_VISION_MAX_TURNS,
+  GROK_VISION_REASONING_EFFORT,
+  grokLogHint,
+} from '../src/ai/grok.spawn';
 import { AppConfig } from '../src/config';
 
 function grokConfig(grokModel = 'grok-4.7'): AppConfig {
@@ -142,8 +151,6 @@ describe('grok build profile', () => {
       expect(call.command).toBe('grok');
       expect(call.args[0]).toBe('--no-auto-update');
       expect(call.args[call.args.indexOf('-m') + 1]).toBe('grok-4.7');
-      expect(call.args[call.args.indexOf('--reasoning-effort') + 1]).toBe('low');
-      expect(call.args[call.args.indexOf('--max-turns') + 1]).toBe('8');
       expect(call.args).toEqual(
         expect.arrayContaining(['--no-plan', '--no-subagents', '--disable-web-search']),
       );
@@ -155,7 +162,6 @@ describe('grok build profile', () => {
       }
       expect(call.timeoutMs).toBe(GROK_SPAWN_TIMEOUT_MS);
       expect(GROK_SPAWN_TIMEOUT_MS).toBe(300_000);
-      expect(call.args[call.args.indexOf('--disallowed-tools') + 1]).toBe(GROK_DISALLOWED_TOOLS);
       const promptFile = flagValue(call.args, '--prompt-file');
       const systemFile = flagValue(call.args, '--system-prompt-file');
       expect(promptFile).toBe(path.join(call.cwd, 'prompt.txt'));
@@ -169,14 +175,28 @@ describe('grok build profile', () => {
       const category = categoryMatch ? Number(categoryMatch[1]) : Number.NaN;
       if (!categoryMatch) {
         expect(call.system).toContain('Ты только глаза');
+        expect(call.args[call.args.indexOf('--reasoning-effort') + 1]).toBe(GROK_VISION_REASONING_EFFORT);
+        expect(call.args[call.args.indexOf('--max-turns') + 1]).toBe(GROK_VISION_MAX_TURNS);
+        expect(call.args[call.args.indexOf('--disallowed-tools') + 1]).toBe(GROK_DISALLOWED_TOOLS);
+        expect(GROK_DISALLOWED_TOOLS).toContain('list_dir');
+        expect(GROK_DISALLOWED_TOOLS).not.toContain('read_file');
+        expect(prompt).toContain('"page_text"');
+        expect(prompt).toContain('Каждая строка выше начинается с @ и кончается на .jpg.');
+        expect(prompt).toContain('list_dir не вызывай');
+        expect(prompt).not.toContain('Файлы не открывай');
       } else {
         expect(call.system).toContain('ИНСТРУКЦИЯ');
         expect(call.system).toContain('Этот вызов проверяет только пункт');
+        expect(call.args[call.args.indexOf('--reasoning-effort') + 1]).toBe(GROK_REASONING_EFFORT);
+        expect(call.args[call.args.indexOf('--max-turns') + 1]).toBe(GROK_CATEGORY_MAX_TURNS);
+        expect(call.args[call.args.indexOf('--disallowed-tools') + 1]).toBe(GROK_CATEGORY_DISALLOWED_TOOLS);
+        expect(GROK_CATEGORY_DISALLOWED_TOOLS.endsWith(',read_file')).toBe(true);
+        expect(prompt).toContain('quote — дословная подстрока page_text');
+        expect(prompt).not.toContain('Открой каждый названный файл');
       }
       const wantsFrames = (!categoryMatch && tail.includes('"labels"')) || VISION_CATEGORIES.includes(category);
       if (wantsFrames) {
         expect(prompt).toContain('@desktop.jpg');
-        expect(prompt).toContain('Каждая строка выше начинается с @ и кончается на .jpg.');
         expect(prompt).not.toContain('Эти файлы @jpg — кадры этого сообщения.');
         expect(call.hadJpeg).toBe(true);
       } else {
@@ -249,7 +269,7 @@ describe('grok build profile', () => {
     expect((result.report?.checks ?? []).every((check) => check.status === 'PASS')).toBe(true);
   });
 
-  it('runs two category spawns at once, each with its own prompt, and only after vision', async () => {
+  it('runs category spawns at the concurrency cap, each with its own prompt, and only after vision', async () => {
     let visionDone = false;
     let categoryBeforeVision = false;
     let inFlight = 0;
@@ -299,7 +319,7 @@ describe('grok build profile', () => {
     });
     expect(categoryBeforeVision).toBe(false);
     expect(maxInFlight).toBe(GROK_CATEGORY_CONCURRENCY);
-    expect(GROK_CATEGORY_CONCURRENCY).toBe(2);
+    expect(GROK_CATEGORY_CONCURRENCY).toBe(4);
     expect(clobbered).toEqual([]);
     expect(new Set(cwds).size).toBe(cwds.length);
     const parentDir = path.dirname(cwds[0]);
